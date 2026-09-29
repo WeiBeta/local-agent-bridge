@@ -37,7 +37,7 @@ session-key-init    （无参数，写 Credential Manager）
 `--repository` 缺省是当前目录；`--file` 可重复以给出多个文件。`shadow` 子项：
 
 - `fingerprint {sessions|shadow} uid`
-- `snapshot uid input_sha256`
+- `snapshot uid input_sha256`（写入 shadow 域并占用其滚动额度，不是只读操作）
 - `replay {sessions|shadow} uid input_sha256`
 - `compare {sessions|shadow} first_uid first_input_sha256 {sessions|shadow} second_uid second_input_sha256`
 
@@ -48,7 +48,7 @@ uid 必须是规范 UUID，摘要必须是小写 64 位 SHA-256，否则拒绝�
 | 码 | 含义 |
 | --- | --- |
 | 0 | 生命周期完成且配置已恢复；**不代表模型任务成功** |
-| 2 | 未改配置、未启动的受控拒绝（含未知命令与缺参数） |
+| 2 | 未改配置、未启动的受控拒绝（含未知命令与缺参数）；输入捕获拒绝时可能已留下运行根、计划及私有配置备份 |
 | 3 | 生命周期未完成，或证据无法落盘 |
 
 ## `run` 的行为边界
