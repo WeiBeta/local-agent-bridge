@@ -1,0 +1,64 @@
+# Local Agent Bridge 切片桥使用说明（预览包）
+
+适用版本：`local-agent-bridge` 0.1.0.dev0（内部预览候选）；平台：Windows 11；Python 3.13。
+本模块从冻结提交 `725333c2e345a01faf04475b4b3bcdade91fdd3c` 的 `scripts/ag_slice_workspace.py`、
+`scripts/ag_slice_run.py` 与 `scripts/ag_slice_run_private.ps1` 提取；SESSION 阶段随后把管道持久化改为加密会话，保留单次启动与配置恢复合同。
+
+## 1. 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `local-agent-bridge prepare` | 从本仓库某个完整 commit 取显式文件清单，写入全新任务根（`baseline/`、`work/TASK.md`、`work/` 副本与 `manifest.json`） |
+| `local-agent-bridge collect` | 只读回收：核验冻结面，输出单行 JSON 摘要与 unified diff 到 stdout |
+| `local-agent-bridge plan` | 只读输出固定主机运行计划（cwd、读写路径、规则串、模型、argv），`execution_authorized=false` |
+| `local-agent-bridge run` | 默认 preflight（不写不改不启动）；`--execute` 执行一次固定本地 CLI 运行 |
+| `local-agent-bridge session-status` | 只读查看 sessions / shadow 两域文件长度用量，不读取 key |
+| `local-agent-bridge session-key-init` | 显式初始化本产品独立 Windows 会话密钥 |
+| `local-agent-bridge shadow` | 离线验证、快照、回放或比较已封口会话；详见 [SHADOW_USAGE.md](SHADOW_USAGE.md) |
+
+`local-agent-bridge --help` 列出七条命令与当前限制；`local-agent-bridge-h3` 保持原四工具 H3 MCP 入口不变。
+
+## 2. 保留的原合同
+
+- 只处理**既有文本文件**：新增、删除、重命名、符号链接与子模块一律拒绝；可编辑面必须是已准备文件清单的子集。
+- 冻结语义：内容取自指定 commit 的 Git blob 而非工作树；清单按原始字节数 + SHA-256 绑定，diff 只按 LF 拆行，不给文件补换行。
+- 单次固定调用：`run` 的 argv、模型（`gemini-3.8-flash-high`）、effort（`high`）、`--output-format stream-json`、
+  `--disable-slash-commands`、`--print-timeout 15m` 均由代码固定；调用方不能传 argv、模型或权限规则。
+- 可执行文件必须给定绝对路径与其 SHA-256，身份不符即拒绝，未知可执行文件绝不启动。
+- 配置生命周期：原始字节备份、精确插入本计划的只读/可写规则、`finally` 内恢复；并发语义漂移不被覆盖，恢复被阻断时该次运行不算成功。
+- 运行根全新且不复用；运行根不得位于任务根或安装包目录内。源码树仓库内、`src/local_agent_bridge` 之外的路径不再由旧仓库级规则拒绝。`private/` 与 `capture/` 通过固定 PowerShell 辅助脚本施加仅属主可继承 ACL。
+- 进程收束：CREATE_SUSPENDED 生成 → Job 归属 → 线程归属核验后恢复；任何失败都通过自有句柄与 Job 回收，不存在普通生成回退。
+- 退出码：0 表示生命周期完成且恢复已验证（不等于模型任务成功）；2 表示未改配置、未启动的受控拒绝；3 表示生命周期未完成或证据无法落盘。
+
+## 3. 当前限制（如实声明）
+
+- `run --execute` 对 `work/TASK.md`、固定 CLI 请求参数及 stdout/stderr 原字节使用独立会话密钥加密；`capture/` 不再有永久原始管道副本。必须先显式运行 `session-key-init`；缺 key 会在启动前拒绝。容量、读取格式和宿主明文边界见 [SESSION_STORAGE.md](SESSION_STORAGE.md)。
+- `shadow` 只处理 sealed v2 证据，读取时必须提供明确 UID 与输入摘要；自包含快照另占 shadow 域预算，不调用本地 CLI、模型或 Docker。
+- 任务工作副本与 `private/settings.*.bin` 仍可为 ACL 私有明文，旧材料不迁移；本包仍为内部候选，不应作为正式可部署版本发布。
+- 只覆盖既有文本文件的小切片；不支持新增/删除文件、跨根 diff、二进制内容、ignore 规则或并发运行。
+- 不是 OS 沙箱，不构成授权；`plan` 不是批准，也不证明当前 CLI 能力。
+- 未做 Zcode 适配；本包不包含任何第 Zcode 相关实现或空壳。
+
+## 4. 凭据与主机约定
+
+本包只为加密会话读取本产品独立的 Windows Credential Manager 密钥；`session-key-init` 是唯一显式创建入口，不访问旧 API 凭据。运行 `--exe`/`--settings` 指向的是调用方自备的本机 CLI 与配置文件，
+由调用方负责其权限与内容。包内不捆绑 agy、模型或 ComfyUI，也不改动主机配置。
+
+## 5. 已验与未验边界
+
+**离线（本包自带测试）**：临时合成 Git 仓库、伪造可执行文件、伪造 settings 与受控桩函数；不启动真实
+agy、provider、模型或 Docker。
+
+**实机（2026-09-29 一次显式 opt-in 验收，已验证部分）**：`agy.exe` 确认启动 1 次，子进程退出码 0、耗时
+35.548 秒、产品解析终态 `SUCCESS`；固定计划仅允许写一个文件，`collect` 只报告该文件变化；settings 外部前后
+SHA-256 一致（`f8db8c3a99d02e99bcd9034a13beb43d26d642bec84ba34ce7df2e9af1627af6`），产品已恢复原始字节；
+四条加密流封口成功，并完成离线 shadow snapshot/replay。逐项证据见仓库内
+`docs/reviews/LAB_LIVE_ACCEPTANCE_01.md`（报告不在本发行包内）。
+
+**仍未验证**：
+
+- **上游实际模型身份、token 用量与费用不可观测**；CLI 请求的模型路由（`gemini-3.8-flash-high` / `high`）
+  **不等于**经独立验证的上游实际模型身份，也不得据此报告用量或费用。agy 内部上游请求次数同样不可观测。
+- 候选补丁未应用到任何仓库；该次运行未被当作模型能力或候选接受证据。
+- 真实主机部署、MCP 客户端接入与服务化部署未验收；并发运行、超大切片与失败恢复的真实语义未实测。
+- 只覆盖既有文本文件的小切片；不支持新增/删除文件、跨根 diff、二进制内容或 Zcode。

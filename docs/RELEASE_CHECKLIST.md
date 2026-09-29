@@ -1,0 +1,71 @@
+# Local Agent Bridge 发布检查表（0.1.0.dev0 内部预览候选）
+
+适用范围：Windows 11 / Python 3.13 的 `local-agent-bridge` 内部预览包。本表把发布前要做的事分成
+四栏：**已验**（本机离线证据已通过）、**实机三项**（2026-09-29 已完成授权验收，逐项列出已验与未验）、
+**待许可**、**待远端**。本表不是发布授权，也不是已发布声明。
+
+## 已验（离线、可重复）
+
+| 项 | 证据口径 |
+| --- | --- |
+| 源码树全套单元测试 | `uv run pytest` 的 JUnit XML，而非进度文本 |
+| sdist 解包后全套单元测试 | 从构建出的 sdist 安全解包、`uv sync --locked` 后重跑 |
+| 代码风格 | `uv run ruff check .` 与 `uv run ruff format --check .` |
+| 构建清单与哈希 | `uv build` 的 wheel / sdist 条目数、字节数与 SHA-256 |
+| 隔离安装 | wheel 装入全新 venv，确认导入来自该环境 `site-packages` |
+| 入口面 | `local-agent-bridge --help` 七条子命令；六条 Bridge 子命令各自 `--help`；`shadow --help` 四种操作 |
+| H3 工具面 | 只注册 `h3_backend_status`、`h3_generate_video`、`h3_postprocess_video`、`h3_job_status` |
+| 旧模块隔离 | 隔离环境内 `ask_ai_mcp` 不可导入；wheel/sdist 清单不含旧包路径 |
+| 合成的会话与影子入口 | 注入测试密钥与临时状态根，跑通 `session-status`、`session-key-init`（桩化）、`shadow` 四条操作 |
+| 协议纯净 | MCP 入口不以非协议内容写 stdout |
+| 许可实体入包 | wheel 的 `dist-info/licenses/` 与 sdist 均含 AGPL 全文与上游 MIT 正文，且与冻结 Git blob 逐字节一致 |
+| 许可来源可溯 | sdist 含 `docs/legal/PROVENANCE.zh-CN.md` 与授权截图；截图 SHA-256 与来源记录一致 |
+
+**重要口径（仅针对上表）**：上表的离线验证全部使用注入的测试密钥、临时目录与合成夹具；那些测试本身
+**不**读写真实 Windows Credential Manager，也**不**启动真实 agy、provider、模型、ComfyUI、H3 或 Docker。
+测试通过只覆盖已列出的构建与隔离属性，不构成真实主机可用性、生成质量或供应商行为的证据。真实资源在
+下一节的独立 opt-in 验收中才被使用；不要把两节混读，也不要据上表推断实机结论。
+
+## 实机三项（2026-09-29 已完成授权验收）
+
+三项最小实机验证已在一次显式 opt-in 的验收任务中执行完毕（`LAB-LIVE-ACCEPTANCE-01`，送检候选
+`a17f7e11f9bb1a573bebb6268945a808eb8d6a71`，已审 wheel SHA-256
+`9113686f0faac75c58060a45c35aea0880814d9f87d789123c14480c49e89d09`）。逐项的确切结论与未验证边界见仓库内
+`docs/reviews/LAB_LIVE_ACCEPTANCE_01.md`（报告不在本发行包内，随源码仓库与归档保留）。
+
+| 项 | 已验证 | 仍未验证 |
+| --- | --- | --- |
+| 真实新密钥初始化 | `session-key-init` 恰好 1 次，返回 `session_key_created=true`，产品读回并验证 32 字节 key；只写本产品独立条目，未导出密钥 | 密钥轮换、多用户/多机同步、条目被外部破坏后的恢复 |
+| 一小 agy 切片运行 | `agy.exe` 启动 1 次、退出码 0、耗时 35.548 秒、解析 `SUCCESS`；settings 前后外部哈希一致（`f8db8c3a…`）；`collect` 仅报告 `label_utils.py`；独立小测试通过；四流加密封口并完成离线 shadow snapshot/replay | 上游实际模型身份、token 用量与费用不可观测（未补猜）；CLI 模型路由不等于实际身份证明 |
+| 一小 H3 生成 | 同一持续 MCP 会话内队列 0/0 后仅提交 1 次；4.0 秒 / 864×480 / seed 20260929，107 帧，`prompt_id` `d0e4ea4d-8b82-4c16-afd8-39c8774cda8d`，3 次状态读取后 `succeeded`，产物 182129 B SHA-256 `dd3a463f…` | 24 fps 来自已审查 workflow，`107/24≈4.458 秒` 仅为帧数推算；无 `ffprobe`，容器时长/帧率/分辨率未独立探测；显存释放仅知产品已请求、未测实际释放；生成质量与权重地域用途未验证 |
+
+**后处理（`h3_postprocess_video` 插帧/超分）不在本次实机授权范围内，仍无任何实测**；不要在填写检查表时把它
+当作上述三项之一、也不要因它未测而把三项写成未完成。它需要单独的显式 opt-in 验收。
+
+H3 前次只提交 0 次属历史阶段（当时后端不可达、队列无法核验），**不代表全场 0 次**；其后端退出根因仍**未证实**，
+持续会话复测**未复现**。三项均不得在普通单元测试中触发。
+
+## 待许可
+
+- **许可实体已补齐**（原阻断项已关闭）：`LICENSE`（AGPL-3.0-only 全文）与
+  `LICENSES/MIT-jimmyloi.txt`（上游 MIT 正文与署名）已随树跟踪；wheel 的 `dist-info/licenses/` 与
+  sdist 均携带两者。来源记录 `docs/legal/PROVENANCE.zh-CN.md` 与授权截图
+  `docs/legal/jimmy-mit-permission.png` 亦随 sdist 分发，供溯源核对。来源、固定 Git 对象与核验边界见
+  [LICENSE_PROVENANCE.md](LICENSE_PROVENANCE.md)。
+- 仍待关闭：H3 / 后处理权重的 MiniMax Community License Agreement 地域与用途限制未随包核验。
+- 仍待关闭：第三方依赖许可清单未做整体兼容性审查。
+
+在以上两项关闭前，本包保持内部候选。许可实体补齐只解决材料缺项，不构成公开发布审查通过。
+
+## 待远端
+
+- 尚无远端仓库、tag、release 与对外分发包；产品名 `Local Agent Bridge` 仍为候选名。
+- 公共远端、PR、release、tag 与正式命名均须作者明确授权，且必须在"待许可"关闭之后。
+- 旧 `ask-ai-mcp` 仓库、冻结提交、历史日志与旧状态根保持原位，不迁移、不删除、不覆盖。
+
+## 发布前须复核的声明准确性
+
+- 文档不得把文件长度预算写成 NTFS 磁盘簇占用。
+- 文档不得暗示会话会无条件持续滚动；只有完整、无引用且复验通过的整包才可能被滚动。
+- 文档不得把离线影子回放写成模型复跑成功。
+- 文档不得把本包写成已正式发布的产品。

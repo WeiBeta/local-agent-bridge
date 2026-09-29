@@ -1,0 +1,95 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "local-agent-bridge"
+version = "0.1.0.dev0"
+description = "Windows-only preview package for bounded local Bridge runs and H3 MCP tools"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "LICENSES/*.txt"]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastmcp>=3.4.5,<3.5",
+  "httpx>=0.28.1,<0.29",
+  "pydantic>=2.12,<3",
+  "cryptography>=46,<50",
+  "keyring>=25.6,<26",
+]
+
+[project.scripts]
+local-agent-bridge = "local_agent_bridge.__main__:main_bridge"
+local-agent-bridge-h3 = "local_agent_bridge.__main__:main_h3"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<10",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/local_agent_bridge"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src/local_agent_bridge",
+  "tests/test_h3_adapter.py",
+  "tests/test_h3_mcp.py",
+  "tests/test_distribution.py",
+  "tests/test_bridge_slice.py",
+  "tests/test_bridge_run.py",
+  "tests/test_bridge_winjob.py",
+  "tests/test_bridge_contract.py",
+  "tests/test_session_capture.py",
+  "tests/test_session_retention.py",
+  "tests/test_shadow_replay.py",
+  "tests/fixtures/ag_oneshot",
+  "README.md",
+  "docs/H3_USAGE.md",
+  "docs/BRIDGE_USAGE.md",
+  "docs/SESSION_STORAGE.md",
+  "docs/SHADOW_USAGE.md",
+  "docs/RELEASE_CHECKLIST.md",
+  "docs/LICENSE_PROVENANCE.md",
+  "docs/LOCAL_AGENT_BRIDGE_MIGRATION_PLAN.md",
+  "LICENSE",
+  "LICENSES",
+  "docs/legal/PROVENANCE.zh-CN.md",
+  "docs/legal/jimmy-mit-permission.png",
+  "pyproject.toml",
+  "uv.lock",
+  "AGENTS.md",
+]
+
+[tool.pytest.ini_options]
+# The legacy tests/conftest.py imports the retired ask_ai_mcp package and is kept
+# only as history; this distribution is verified with the three new test modules.
+addopts = "-q --noconftest"
+testpaths = [
+  "tests/test_h3_adapter.py",
+  "tests/test_h3_mcp.py",
+  "tests/test_distribution.py",
+  "tests/test_bridge_slice.py",
+  "tests/test_bridge_run.py",
+  "tests/test_bridge_winjob.py",
+  "tests/test_bridge_contract.py",
+  "tests/test_session_capture.py",
+  "tests/test_session_retention.py",
+  "tests/test_shadow_replay.py",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["mcp_server.py", "README.md", ".test-tmp"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.uv]
+package = true
