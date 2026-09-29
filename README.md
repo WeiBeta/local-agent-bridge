@@ -53,6 +53,8 @@ local-agent-bridge shadow {fingerprint|snapshot|replay|compare} ...
 
 `run` 缺省只做预检：不写文件、不启动进程。`--execute` 是单独的一次性授权，执行一次固定本地 CLI 调用。
 
+在另一台机器上让 Codex 调用已安装的 Bridge：见 [skills/local-agent-bridge](skills/local-agent-bridge/SKILL.md)（Skill 只做调用，不安装、不升级、不登录、不改配置）。
+
 ## 主机前提（本包不安装、不迁移）
 
 - H3：仓库外 `C:\AI\ComfyUI`、H3 与后处理权重、共享视频工作区；启动脚本固定使用
