@@ -12,8 +12,16 @@ import re
 import sys
 from collections.abc import Iterator
 from errno import ENOENT
+from subprocess import TimeoutExpired
 
-from local_agent_bridge.bridge.slice_run import _event_lines, _parse_or_none, _scan_stream
+from local_agent_bridge.bridge.slice_run import (
+    SliceRunError,
+    _event_lines,
+    _parse_or_none,
+    _protect_directory,
+    _scan_stream,
+    _verify_directory,
+)
 from local_agent_bridge.capture.keys import SessionKeyError, load_key
 from local_agent_bridge.capture.retention import StorageError, _canonical_uuid
 from local_agent_bridge.capture.session import (
@@ -409,7 +417,15 @@ def main(argv: list[str]) -> int:
     arguments = _parser().parse_args(argv)
     try:
         key = load_key()
-        stores = {name: SessionStore(key, domain_name=name) for name in ("sessions", "shadow")}
+        stores = {
+            name: SessionStore(
+                key,
+                domain_name=name,
+                protect_directory=_protect_directory,
+                verify_directory=_verify_directory,
+            )
+            for name in ("sessions", "shadow")
+        }
         if arguments.action == "fingerprint":
             result = fingerprint(stores[arguments.domain], arguments.uid)
         elif arguments.action == "snapshot":
@@ -431,7 +447,16 @@ def main(argv: list[str]) -> int:
                 arguments.second_input_sha256,
             )
             result = compare(first, second)
-    except (SessionError, SessionKeyError, ShadowError, StorageError, OSError, ValueError) as error:
+    except (
+        SessionError,
+        SessionKeyError,
+        ShadowError,
+        StorageError,
+        SliceRunError,
+        TimeoutExpired,
+        OSError,
+        ValueError,
+    ) as error:
         reason = _refusal_reason(error)
         print(_canonical({"state": "refused", "reason": reason}).decode(), file=sys.stderr)
         return 2

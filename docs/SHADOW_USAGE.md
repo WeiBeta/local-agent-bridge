@@ -18,6 +18,8 @@ local-agent-bridge shadow compare sessions <UID_A> <INPUT_SHA256_A> sessions <UI
 
 `snapshot` 先验证来源 sessions 包，逐帧读出后按 shadow 域重新加密四流，再复验来源清单和 seal 哈希后封口。`replay shadow` 只依赖 shadow 包，不要求来源仍在 sessions 域。快照不创建原会话的永久引用，因此原会话仍可按既有规则滚动。未封口、旧 v1、跨域直接复制、错摘要、篡改、截断或容量不足均拒绝；中断留下的 `.partial` 继续计入预算，不自动删除。失败只输出 `state=refused` 和无内容的原因类别。
 
+实际访问存储时，shadow 与 Bridge `run` 使用相同的目录保护规则：新建目录施加仅当前用户可继承的 ACL，已有目录只读核验精确合同，不自动改写。即使规范 UID 对应的包不存在、操作随后拒绝，按需创建的状态根也已受保护，后续 Bridge 可以正常重开。已有 ACL 不符合要求或 helper 超时仍以 `storage_unavailable` 拒绝；不修改真实密钥或会话格式。
+
 ## 输出与比较口径
 
 回放结果仅含域与 UID、输入／输出哈希、来源摘要、已封口元数据中的进程退出码，以及可解析 stdout 事件观察。终态只把 `SUCCESS`／`ERROR` 显示为标签，其余状态只标为 `other` 并给出哈希；工具名和文件路径仅按已识别的 `tools`／`tool_calls`、`files`／`file_paths` 列表做去重数量与集合哈希，不回显原值。usage 只认非负整数的 `input_tokens`、`output_tokens`、`total_tokens`、`prompt_tokens`、`completion_tokens`、`cache_read_tokens`、`cache_write_tokens` 字段；未知或缺失字段不会凭空补齐。识别范围仅代表实际可见的事件字段，不代表全部调用、文件或模型能力。

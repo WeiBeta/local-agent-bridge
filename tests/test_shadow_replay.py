@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,13 @@ from local_agent_bridge.shadow import replay as shadow
 KEY = bytes(range(32))
 TASK = b"synthetic offline task"
 REQUEST = b"synthetic fixed request"
+
+
+@pytest.fixture
+def offline_acl_callbacks(monkeypatch) -> None:
+    """Existing parsing tests inject ACL seams; Windows ACLs have a separate probe."""
+    monkeypatch.setattr(shadow, "_protect_directory", lambda path: None, raising=False)
+    monkeypatch.setattr(shadow, "_verify_directory", lambda path: None, raising=False)
 
 
 def _sealed(
@@ -224,8 +232,91 @@ def test_self_contained_snapshot_replays_after_source_session_rolls(tmp_path: Pa
     assert result["terminal"]["label"] == "SUCCESS"
 
 
+@pytest.mark.parametrize("domain", ["sessions", "shadow"])
+def test_shadow_first_initializes_acl_before_bridge_reopens(
+    domain, monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(shadow, "load_key", lambda: KEY)
+    monkeypatch.setattr(slice_run, "load_key", lambda: KEY)
+    protected: set[Path] = set()
+    calls: list[tuple[str, Path]] = []
+
+    def protect(path: Path) -> None:
+        calls.append(("Protect", path))
+        protected.add(path)
+
+    def verify(path: Path) -> None:
+        calls.append(("Verify", path))
+        if path not in protected:
+            raise slice_run.SliceRunError("synthetic ACL was never protected")
+
+    monkeypatch.setattr(shadow, "_protect_directory", protect, raising=False)
+    monkeypatch.setattr(shadow, "_verify_directory", verify, raising=False)
+    monkeypatch.setattr(slice_run, "_protect_directory", protect)
+    monkeypatch.setattr(slice_run, "_verify_directory", verify)
+    absent = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"
+    assert cli.main(["shadow", "fingerprint", domain, absent]) == 2
+    assert json.loads(capsys.readouterr().err)["reason"] == "invalid_or_incomplete_bundle"
+    state = tmp_path / "LocalAgentBridge"
+    assert calls == [("Protect", state), ("Protect", state / domain)]
+
+    bridge = slice_run._session_store()
+    writer = bridge.start()
+    writer.seal({})
+    assert bridge.reader(writer.session_id).manifest()["state"] == "complete"
+    assert calls[2:] == [
+        ("Verify", state),
+        ("Verify" if domain == "sessions" else "Protect", state / "sessions"),
+    ]
+
+
+@pytest.mark.parametrize("domain", ["sessions", "shadow"])
+def test_shadow_rejects_bad_existing_acl_without_writing(
+    domain, monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(shadow, "load_key", lambda: KEY)
+    state = tmp_path / "LocalAgentBridge"
+    state.mkdir()
+
+    def reject(path: Path) -> None:
+        assert path == state
+        raise slice_run.SliceRunError("synthetic bad ACL")
+
+    monkeypatch.setattr(
+        shadow, "_protect_directory", lambda path: pytest.fail("no ACL rewrite"), raising=False
+    )
+    monkeypatch.setattr(shadow, "_verify_directory", reject, raising=False)
+    absent = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"
+    assert cli.main(["shadow", "fingerprint", domain, absent]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"state": "refused", "reason": "storage_unavailable"}
+    assert list(state.iterdir()) == []
+
+
+def test_shadow_acl_helper_timeout_is_a_controlled_refusal(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(shadow, "load_key", lambda: KEY)
+    state = tmp_path / "LocalAgentBridge"
+    state.mkdir()
+
+    def timeout(path: Path) -> None:
+        raise subprocess.TimeoutExpired(["pwsh"], 60)
+
+    monkeypatch.setattr(shadow, "_verify_directory", timeout, raising=False)
+    absent = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"
+    assert cli.main(["shadow", "fingerprint", "sessions", absent]) == 2
+    assert json.loads(capsys.readouterr().err) == {
+        "state": "refused",
+        "reason": "storage_unavailable",
+    }
+    assert list(state.iterdir()) == []
+
+
 def test_shadow_cli_uses_only_injected_key_and_never_launches(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, capsys, offline_acl_callbacks
 ) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(shadow, "load_key", lambda: KEY)
@@ -263,7 +354,7 @@ def test_shadow_cli_uses_only_injected_key_and_never_launches(
 
 
 def test_h1_invalid_uid_and_missing_bundle_are_input_or_bundle_reasons(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, capsys, offline_acl_callbacks
 ) -> None:
     """A caller input error or an absent bundle is not a storage failure."""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -283,7 +374,9 @@ def test_h1_invalid_uid_and_missing_bundle_are_input_or_bundle_reasons(
     assert json.loads(capsys.readouterr().err)["reason"] == "invalid_or_incomplete_bundle"
 
 
-def test_h1_real_storage_failures_stay_storage_unavailable(monkeypatch, tmp_path, capsys) -> None:
+def test_h1_real_storage_failures_stay_storage_unavailable(
+    monkeypatch, tmp_path, capsys, offline_acl_callbacks
+) -> None:
     """A genuine read or lock failure still reports storage, without content."""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(shadow, "load_key", lambda: KEY)
