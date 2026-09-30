@@ -103,6 +103,7 @@ class SessionStore:
         terminal_reserve: int = 4096,
         receipt_reserve: int = 4096,
         protect_directory: Callable[[Path], None] | None = None,
+        verify_directory: Callable[[Path], None] | None = None,
     ) -> None:
         if len(key) != 32:
             raise SessionError("session key must contain exactly 32 bytes")
@@ -116,6 +117,7 @@ class SessionStore:
             terminal_reserve=terminal_reserve,
             receipt_reserve=receipt_reserve,
             protect_directory=protect_directory,
+            verify_directory=verify_directory,
             verify_bundle=self._verify_bundle,
         )
 

@@ -14,6 +14,56 @@ from local_agent_bridge.capture.session import SessionError, SessionStore
 KEY = bytes(range(32))
 
 
+def test_new_store_protects_once_and_reopen_verifies_existing_directories(
+    tmp_path: Path,
+) -> None:
+    private = tmp_path / "private"
+    root = private / "sessions"
+    calls: list[tuple[str, Path]] = []
+
+    def protect(path: Path) -> None:
+        calls.append(("protect", path))
+        if calls.count(("protect", path)) > 1:
+            raise StorageError("synthetic repeat ACL application refused")
+
+    def verify(path: Path) -> None:
+        calls.append(("verify", path))
+
+    first = SessionStore(KEY, root=root, protect_directory=protect, verify_directory=verify)
+    writer = first.start()
+    writer.seal({})
+    reopened = SessionStore(KEY, root=root, protect_directory=protect, verify_directory=verify)
+    reopened.start()
+
+    assert calls == [
+        ("protect", private),
+        ("protect", root),
+        ("verify", private),
+        ("verify", root),
+    ]
+
+
+def test_existing_parent_with_bad_acl_is_rejected_before_session_write(tmp_path: Path) -> None:
+    private = tmp_path / "private"
+    private.mkdir()
+    root = private / "sessions"
+    calls: list[tuple[str, Path]] = []
+
+    def protect(path: Path) -> None:
+        calls.append(("protect", path))
+
+    def reject(path: Path) -> None:
+        calls.append(("verify", path))
+        raise StorageError("owner-only ACL mismatch")
+
+    store = SessionStore(KEY, root=root, protect_directory=protect, verify_directory=reject)
+    with pytest.raises(StorageError, match="owner-only ACL mismatch"):
+        store.start()
+
+    assert calls == [("verify", private)]
+    assert not root.exists()
+
+
 def _worker(root: str, payload: bytes) -> str:
     store = SessionStore(
         KEY, root=Path(root), limit=32_000, terminal_reserve=512, receipt_reserve=512

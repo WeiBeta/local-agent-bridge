@@ -131,22 +131,43 @@ class RetentionDomain:
         terminal_reserve: int = 4096,
         receipt_reserve: int = 4096,
         protect_directory: Callable[[Path], None] | None = None,
+        verify_directory: Callable[[Path], None] | None = None,
         verify_bundle: Callable[[Path], dict] | None = None,
     ) -> None:
         if domain not in {"sessions", "shadow"} or limit < 1:
             raise StorageError("invalid storage domain or limit")
+        if verify_directory is not None and protect_directory is None:
+            raise StorageError("directory verification requires directory protection")
         self.domain = domain
         self.root = root or state_root(domain)
         self.limit = limit
         self.terminal_reserve = terminal_reserve
         self.receipt_reserve = receipt_reserve
         self.protect_directory = protect_directory
+        self.verify_directory = verify_directory
         self.verify_bundle = verify_bundle
         self._root_ready = False
         with _PROCESS_LOCKS_GUARD:
             self._process_lock = _PROCESS_LOCKS.setdefault(
                 str(self.root.resolve()), threading.RLock()
             )
+
+    def _prepare_directory(self, path: Path, *, parents: bool = False) -> None:
+        existed = path.exists()
+        if not existed:
+            try:
+                path.mkdir(parents=parents)
+            except FileExistsError:
+                # Another writer may have created it after the existence check.
+                existed = True
+        _require_plain_directory_chain(path)
+        if existed:
+            if self.verify_directory:
+                self.verify_directory(path)
+            elif self.protect_directory:
+                self.protect_directory(path)
+        elif self.protect_directory:
+            self.protect_directory(path)
 
     def _ensure_root(self) -> None:
         # The default user state root is the only production root. Tests inject a
@@ -155,16 +176,8 @@ class RetentionDomain:
             if self._root_ready:
                 return
             _require_plain_directory_chain(self.root)
-            if not self.root.parent.exists():
-                self.root.parent.mkdir(parents=True, exist_ok=True)
-            _require_plain_directory_chain(self.root)
-            if self.protect_directory:
-                self.protect_directory(self.root.parent)
-            if not self.root.exists():
-                self.root.mkdir(exist_ok=True)
-            _require_plain_directory_chain(self.root)
-            if self.protect_directory:
-                self.protect_directory(self.root)
+            self._prepare_directory(self.root.parent, parents=True)
+            self._prepare_directory(self.root)
             self._root_ready = True
 
     @contextmanager

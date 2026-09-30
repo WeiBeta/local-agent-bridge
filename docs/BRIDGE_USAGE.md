@@ -33,6 +33,7 @@
 ## 3. 当前限制（如实声明）
 
 - `run --execute` 对 `work/TASK.md`、固定 CLI 请求参数及 stdout/stderr 原字节使用独立会话密钥加密；`capture/` 不再有永久原始管道副本。必须先显式运行 `session-key-init`；缺 key 会在启动前拒绝。容量、读取格式和宿主明文边界见 [SESSION_STORAGE.md](SESSION_STORAGE.md)。
+- 会话存储目录首次创建时施加仅属主 ACL；后续进程只读核验已有目录的精确 ACL，不重施 `Set-Acl`。不符合要求则在加密输入写入和 CLI 启动前拒绝。
 - `shadow` 只处理 sealed v2 证据，读取时必须提供明确 UID 与输入摘要；自包含快照另占 shadow 域预算，不调用本地 CLI、模型或 Docker。
 - 任务工作副本与 `private/settings.*.bin` 仍可为 ACL 私有明文，旧材料不迁移；本包仍为内部候选，不应作为正式可部署版本发布。
 - 只覆盖既有文本文件的小切片；不支持新增/删除文件、跨根 diff、二进制内容、ignore 规则或并发运行。

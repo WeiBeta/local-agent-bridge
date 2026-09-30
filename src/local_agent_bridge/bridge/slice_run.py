@@ -271,8 +271,8 @@ def _pwsh_path() -> str:
     raise SliceRunError("pwsh is unavailable for owner-only file access")
 
 
-def _protect_directory(path: Path) -> None:
-    """Owner-only inheritable container ACL through the fixed verified helper."""
+def _run_directory_acl_helper(path: Path, mode: str) -> None:
+    """Apply or verify the fixed owner-only ACL without exposing helper output."""
     completed = subprocess.run(
         [
             _pwsh_path(),
@@ -284,19 +284,34 @@ def _protect_directory(path: Path) -> None:
             str(path),
             "-Kind",
             "Directory",
+            "-Mode",
+            mode,
         ],
         capture_output=True,
         timeout=60,
         check=False,
     )
     if completed.returncode != 0:
-        raise SliceRunError("owner-only directory ACL helper failed for " + str(path))
+        action = "helper" if mode == "Protect" else "verification"
+        raise SliceRunError(f"owner-only directory ACL {action} failed for {path}")
+
+
+def _protect_directory(path: Path) -> None:
+    """Protect a directory that this operation just created."""
+    _run_directory_acl_helper(path, "Protect")
+
+
+def _verify_directory(path: Path) -> None:
+    """Check an existing directory without rewriting its ACL."""
+    _run_directory_acl_helper(path, "Verify")
 
 
 def _session_store() -> SessionStore:
     # Key loading is deliberately read-only. The user must run the separate,
     # explicit session-key-init command before the first execute.
-    return SessionStore(load_key(), protect_directory=_protect_directory)
+    return SessionStore(
+        load_key(), protect_directory=_protect_directory, verify_directory=_verify_directory
+    )
 
 
 def _capture_input(writer, task_root: Path, request: str, manifest_sha256: str) -> bool:

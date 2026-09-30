@@ -870,6 +870,43 @@ def test_acl_failure_means_zero_sensitive_writes_and_zero_launch(
     assert not (run_root / "private" / "settings.original.bin").exists()
 
 
+def test_bad_existing_session_acl_refuses_before_cli_launch(
+    case, capsys, monkeypatch, tmp_path
+) -> None:
+    settings = _new_settings(tmp_path, "settings.json")
+    private = tmp_path / "session-private"
+    private.mkdir()
+    session_root = private / "sessions"
+
+    def reject_existing(path: Path) -> None:
+        assert path == private
+        raise runner.SliceRunError("owner-only directory ACL verification failed")
+
+    store = SessionStore(
+        TEST_KEY,
+        root=session_root,
+        protect_directory=lambda path: pytest.fail("bad existing ACL must not be replaced"),
+        verify_directory=reject_existing,
+    )
+    monkeypatch.setattr(runner, "_session_store", lambda: store)
+    monkeypatch.setattr(runner, "_protect_directory", lambda path: None)
+    monkeypatch.setattr(
+        runner,
+        "_launch_and_capture",
+        lambda *arguments, **keywords: pytest.fail("bad session ACL must not launch"),
+    )
+
+    run_root = tmp_path / "run-root"
+    code, document, _err = _main(_run_arguments(case, run_root, settings, execute=True), capsys)
+    assert code == 2
+    assert document["setup_stage"] == "encrypted session input capture"
+    assert document["setup_reason"] == "capture_unavailable"
+    assert document["setup_error"] == "SliceRunError"
+    assert settings.read_bytes() == SETTINGS_BYTES
+    assert not session_root.exists()
+    assert not (run_root / "config-patch.json").exists()
+
+
 def test_spawn_confirmed_capture_failure_reports_one_launch(
     case, capsys, monkeypatch, tmp_path
 ) -> None:
