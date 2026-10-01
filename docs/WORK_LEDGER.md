@@ -21,6 +21,8 @@
 
 | L12 | LAB-STATE-ROOT-ACL-REPAIR-02（状态根 ACL 修复） | 已完成（PASS）：仅批准的 root/shadow/锁三项 DACL 及继承改动；root/shadow 产品 Verify 均 rc 0；owner/group 与锁内容保全；无新增 session/CLI/provider/key。**存储权限通过不等于产品 smoke 验收** | 报告 SHA-256 `EFCB1B64DDFCAE3A8251315AE7355C96F86C58C8D278C6F7EDAF1F0E9AB08206` | `2026-10-01-LAB-STATE-ROOT-ACL-REPAIR-02/INDEX.md`（归档根） | —（修复会话） | 2026-10-01 |
 
+| L13 | 工程难度路由长期决定（2026-10-01） | Flash=低难度/规格明确基础；GLM5.3=*中档（Cursor Grok4.7 High 非 Fast 仅已验收范围，Gemini4 Pro 仅待评估）；Sol=gpt-6.1-sol@max 处理逻辑耦合/中档易错工程；Astra@medium 仅顶级攻坚或 Sol 失利升级（提强度需作者审批）；Luna=机械调度员不做首次实测/开放排障/验收；不按任务名自动选档、不自动切换已有会话、不扩大权限/付费授权 | 本仓库 AGENTS.md（本提交） | 本仓库 AGENTS.md 模型段 | — | 2026-10-01 |
+
 固定裁决（不再开待办）：Grok `grok-4.7-high` 非 Fast 已确认，不再安排 XHigh 对比；H3 通道按作者决定关闭，不派开启任务；Zcode 暂缓；后续其他 Bridge 仅记 backlog，不视为已启动。
 
 历史边界：旧 Ask AI MCP 仓库的完整任务史以归档根 `INDEX.md` 及该仓库自身记录为入口，本台账不复制、不重述其结论。
