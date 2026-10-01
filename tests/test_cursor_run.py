@@ -384,3 +384,88 @@ def test_run_root_reuse_and_task_overlap_refused(cursor_case, capsys, monkeypatc
     inside = cursor_case.task_root / "nested-run"
     third = _main(_run_arguments(cursor_case, inside, execute=False), capsys)
     assert third[0] == 2 and "task root" in third[2]
+
+
+def test_config_drift_between_verified_plan_and_read_is_refused(
+    cursor_case, capsys, monkeypatch, tmp_path
+):
+    """A config changed after the plan was verified cannot supply its own baseline.
+
+    `build_plan` verifies the work tree against the prepared manifest, but the
+    config bytes are read afterwards. Rewriting the config in that window must
+    still be refused against the frozen manifest entry, not accepted as the new
+    comparison basis.
+    """
+    verified_build_plan = slice_workspace.build_plan
+    changed_config = b'{"permissions":{"allow":["Shell(*)"],"deny":[]}}\n'
+    evidence: dict = {}
+
+    def mutate_after_verified_plan(task_root):
+        plan = verified_build_plan(task_root)
+        manifest = json.loads((Path(task_root) / "manifest.json").read_bytes())
+        frozen = next(
+            item for item in manifest["files"] if item["path"] == cursor.CURSOR_CONFIG_RELATIVE
+        )
+        evidence["manifest_config_sha256"] = frozen["sha256"]
+        cursor_case.config_path.write_bytes(changed_config)
+        evidence["config_after_plan_sha256"] = runner._sha256_file(cursor_case.config_path)
+        assert evidence["config_after_plan_sha256"] != frozen["sha256"]
+        return plan
+
+    calls = _no_launch(monkeypatch)
+    monkeypatch.setattr(slice_workspace, "build_plan", mutate_after_verified_plan)
+    run_root = tmp_path / "run-root"
+    code, document, err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
+    assert (code, document, len(calls)) == (2, {}, 0)
+    assert "differs from the prepared manifest" in err
+    assert not run_root.exists()
+    assert evidence["manifest_config_sha256"] != evidence["config_after_plan_sha256"]
+
+
+def test_config_swapped_manifest_is_not_accepted_as_the_frozen_source(
+    cursor_case, capsys, monkeypatch, tmp_path
+):
+    """A manifest swapped after verification cannot re-freeze a changed config."""
+    verified_build_plan = slice_workspace.build_plan
+    changed_config = b'{"permissions":{"allow":["Shell(*)"],"deny":[]}}\n'
+
+    def swap_manifest_after_verified_plan(task_root):
+        plan = verified_build_plan(task_root)
+        task_root = Path(str(plan["task_root"]))
+        manifest_path = task_root / "manifest.json"
+        document = json.loads(manifest_path.read_bytes())
+        for item in document["files"]:
+            if item["path"] == cursor.CURSOR_CONFIG_RELATIVE:
+                item["bytes"] = len(changed_config)
+                item["sha256"] = runner._sha256_hex(changed_config)
+        manifest_path.write_bytes(
+            json.dumps(
+                document, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            + b"\n"
+        )
+        cursor_case.config_path.write_bytes(changed_config)
+        return plan
+
+    calls = _no_launch(monkeypatch)
+    monkeypatch.setattr(slice_workspace, "build_plan", swap_manifest_after_verified_plan)
+    run_root = tmp_path / "run-root"
+    code, document, err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
+    assert (code, document, len(calls)) == (2, {}, 0)
+    assert "no longer matches the verified plan" in err
+    assert not run_root.exists()
+
+
+def test_cursor_config_bytes_must_match_the_frozen_manifest_entry(
+    cursor_case, monkeypatch, tmp_path
+):
+    """The reported config identity is the frozen entry, not whatever is on disk."""
+    plan = slice_workspace.build_plan(str(cursor_case.task_root))
+    task_root = Path(str(plan["task_root"]))
+    expected = runner._sha256_file(cursor_case.config_path)
+    recorded = cursor._cursor_config(task_root, plan)
+    assert recorded["sha256"] == expected
+    assert recorded["size_bytes"] == len(cursor_case.config_path.read_bytes())
+    cursor_case.config_path.write_bytes(b'{"permissions": {"allow": []}}\n')
+    with pytest.raises(runner.SliceRunError, match="differs from the prepared manifest"):
+        cursor._cursor_config(task_root, plan)

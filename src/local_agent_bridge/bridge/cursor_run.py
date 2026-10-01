@@ -57,20 +57,58 @@ CURSOR_EXIT_NOTE = (
 )
 
 
+def _frozen_manifest_entry(
+    task_root: Path, plan: dict[str, object], relative: str
+) -> tuple[int, str]:
+    """The prepared manifest entry that the verified plan is bound to.
+
+    The plan is addressed by the digest of one exact manifest byte string, so the
+    manifest is re-read here and its identity re-checked against that digest
+    before any entry is trusted. A swapped manifest can therefore never become
+    the source of a frozen entry.
+    """
+    manifest_path = task_root / "manifest.json"
+    _require_plain_file(manifest_path, "task manifest")
+    manifest_bytes = manifest_path.read_bytes()
+    if _sha256_hex(manifest_bytes) != plan["manifest_sha256"]:
+        raise SliceRunError("task manifest no longer matches the verified plan")
+    manifest = slice_workspace._parse_manifest(manifest_bytes)
+    if manifest.source_commit != plan["source_commit"]:
+        raise SliceRunError("task manifest source commit no longer matches the verified plan")
+    for file in manifest.files:
+        if file.path == relative:
+            return file.size, file.sha256
+    raise SliceRunError(
+        "cursor project config must be a prepared frozen input: work/" + CURSOR_CONFIG_RELATIVE
+    )
+
+
 def _cursor_config(task_root: Path, plan: dict[str, object]) -> dict[str, object]:
-    """The project permission config must itself be a prepared frozen input."""
+    """The project permission config must itself be a prepared frozen input.
+
+    The bytes read here are compared against the manifest entry the verified plan
+    is bound to, so a config that changes after the plan was verified cannot
+    supply its own new baseline.
+    """
     path = task_root / "work" / CURSOR_CONFIG_RELATIVE
-    info = _require_plain_file(path, "cursor project config")
+    _require_plain_file(path, "cursor project config")
     read_files = plan.get("read_file")
     if not isinstance(read_files, list) or path.as_posix() not in read_files:
         raise SliceRunError(
             "cursor project config must be a prepared frozen input: work/" + CURSOR_CONFIG_RELATIVE
         )
+    frozen_size, frozen_sha256 = _frozen_manifest_entry(task_root, plan, CURSOR_CONFIG_RELATIVE)
     payload = path.read_bytes()
+    digest = _sha256_hex(payload)
+    if len(payload) != frozen_size or digest != frozen_sha256:
+        raise SliceRunError(
+            "cursor project config differs from the prepared manifest: work/"
+            + CURSOR_CONFIG_RELATIVE
+        )
     value = decode_strict_json_bytes(payload, label="cursor project config")
     if not isinstance(value, dict):
         raise SliceRunError("cursor project config must be one JSON object")
-    return {"path": str(path), "size_bytes": info.st_size, "sha256": _sha256_hex(payload)}
+    return {"path": str(path), "size_bytes": len(payload), "sha256": digest}
 
 
 def _cursor_inputs(task_root: Path, plan: dict[str, object]) -> dict[str, object]:
