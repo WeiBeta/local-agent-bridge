@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from local_agent_bridge.bridge import slice_workspace
-from local_agent_bridge.bridge.contract import decode_strict_json_bytes
+from local_agent_bridge.bridge.contract import BridgeContractError, decode_strict_json_bytes
 from local_agent_bridge.bridge.slice_run import (
     CAPTURE_JOIN_SECONDS,
     EXIT_LABELS,
@@ -105,7 +105,12 @@ def _cursor_config(task_root: Path, plan: dict[str, object]) -> dict[str, object
             "cursor project config differs from the prepared manifest: work/"
             + CURSOR_CONFIG_RELATIVE
         )
-    value = decode_strict_json_bytes(payload, label="cursor project config")
+    try:
+        value = decode_strict_json_bytes(payload, label="cursor project config")
+    except BridgeContractError as error:
+        raise SliceRunError(
+            "cursor project config is not one strict JSON document: work/" + CURSOR_CONFIG_RELATIVE
+        ) from error
     if not isinstance(value, dict):
         raise SliceRunError("cursor project config must be one JSON object")
     return {"path": str(path), "size_bytes": len(payload), "sha256": digest}
@@ -411,6 +416,12 @@ def main(argv: list[str] | None = None) -> int:
     arguments = _build_parser().parse_args(argv)
     try:
         return arguments.handler(arguments)
-    except (SliceRunError, SessionKeyError, StorageError, SessionError) as error:
+    except (
+        SliceRunError,
+        SessionKeyError,
+        StorageError,
+        SessionError,
+        BridgeContractError,
+    ) as error:
         print("local-agent-bridge: " + str(error), file=sys.stderr)
         return EXIT_REFUSED

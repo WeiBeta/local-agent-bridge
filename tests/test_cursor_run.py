@@ -469,3 +469,144 @@ def test_cursor_config_bytes_must_match_the_frozen_manifest_entry(
     cursor_case.config_path.write_bytes(b'{"permissions": {"allow": []}}\n')
     with pytest.raises(runner.SliceRunError, match="differs from the prepared manifest"):
         cursor._cursor_config(task_root, plan)
+
+
+def _prepare_task_with_config_bytes(tmp_path: Path, config_bytes: bytes) -> Path:
+    """Prepare a real task whose frozen config carries the given exact bytes."""
+    repository = tmp_path / "invalid-config-repo"
+    (repository / "src").mkdir(parents=True)
+    (repository / ".cursor").mkdir()
+    (repository / "src" / "alpha.py").write_bytes(b"def alpha():\n    return 1\n")
+    (repository / ".cursor" / "cli.json").write_bytes(config_bytes)
+
+    def git(*arguments: str) -> bytes:
+        done = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "-c",
+                "user.email=tests@example.invalid",
+                "-c",
+                "user.name=tests",
+                *arguments,
+            ],
+            capture_output=True,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-q", "-m", "base")
+    commit = git("rev-parse", "HEAD").decode("ascii").strip()
+    note = tmp_path / "note.md"
+    note.write_bytes(NOTE_BYTES)
+    task_root = tmp_path / "invalid-config-task"
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = cli.main(
+            [
+                "prepare",
+                "--repository",
+                str(repository),
+                "--commit",
+                commit,
+                "--task-note",
+                str(note),
+                "--file",
+                "src/alpha.py",
+                "--editable",
+                "src/alpha.py",
+                "--file",
+                ".cursor/cli.json",
+                "--out",
+                str(task_root),
+            ]
+        )
+    assert code == 0, buffer.getvalue()
+    return task_root
+
+
+def test_invalid_but_prepared_config_is_a_controlled_refusal(
+    cursor_case, capsys, monkeypatch, tmp_path
+):
+    """A frozen config that is not strict JSON must refuse, not raise.
+
+    `prepare` accepts any existing text file, so a syntactically invalid
+    config can be frozen legitimately. Its length and hash then match the
+    manifest, and only the strict decode fails. That failure must reach the
+    documented refusal path instead of escaping as an uncaught error.
+    """
+    cursor_case.task_root = _prepare_task_with_config_bytes(tmp_path, b"{\n")
+    calls = _no_launch(monkeypatch)
+    run_root = tmp_path / "run-root"
+    code, document, err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
+    assert code == 2 and document == {}
+    assert "not one strict JSON document" in err
+    assert "{" not in err
+    assert not calls
+    assert not run_root.exists()
+
+
+def test_invalid_prepared_config_does_not_touch_the_session_key(
+    cursor_case, capsys, monkeypatch, tmp_path
+):
+    cursor_case.task_root = _prepare_task_with_config_bytes(tmp_path, b"{\n")
+
+    def forbidden_key() -> None:
+        raise AssertionError("the invalid config must be refused before any key is read")
+
+    monkeypatch.setattr(cursor, "_session_store", forbidden_key)
+    _no_launch(monkeypatch)
+    run_root = tmp_path / "run-root"
+    code, document, _err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
+    assert code == 2 and document == {}
+    assert not run_root.exists()
+
+
+def test_preflight_also_refuses_invalid_prepared_config(cursor_case, capsys, monkeypatch, tmp_path):
+    cursor_case.task_root = _prepare_task_with_config_bytes(tmp_path, b'{"permissions": }\n')
+    calls = _no_launch(monkeypatch)
+    run_root = tmp_path / "run-root"
+    code, document, _err = _main(_run_arguments(cursor_case, run_root, execute=False), capsys)
+    assert code == 2 and document == {}
+    assert not calls
+    assert not run_root.exists()
+
+
+def test_valid_prepared_config_still_passes(cursor_case, capsys, monkeypatch, tmp_path):
+    """The strict-JSON refusal must not disturb the ordinary valid path."""
+    configured = _prepare_task_with_config_bytes(tmp_path, CONFIG_BYTES)
+    cursor_case.task_root = configured
+    monkeypatch.setattr(
+        runner, "spawn_suspended_in_job", lambda argv, cwd: _FakeProcess(stdout_chunks=[b"{}\n"])
+    )
+    run_root = tmp_path / "run-root"
+    code, document, err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
+    assert (code, err) == (0, "")
+    assert document["result"] == "lifecycle_complete_capture_sealed"
+    assert document["session"]["sealed"] is True
+    receipt = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+    assert receipt["cursor_config"]["sha256"] == runner._sha256_file(
+        configured / "work" / ".cursor" / "cli.json"
+    )
+
+
+def test_duplicate_key_manifest_that_verifies_is_a_controlled_refusal(
+    cursor_case, capsys, monkeypatch, tmp_path
+):
+    """A manifest that passes the slice parser but not the strict decoder refuses."""
+    manifest_path = cursor_case.task_root / "manifest.json"
+    good = manifest_path.read_bytes().decode("utf-8")
+    duplicated = good.replace('{"editable":', '{"manifest_version":1,"editable":', 1)
+    assert duplicated != good
+    manifest_path.write_bytes(duplicated.encode("utf-8"))
+    calls = _no_launch(monkeypatch)
+    run_root = tmp_path / "run-root"
+    code, document, err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
+    assert code == 2 and document == {}
+    assert "local-agent-bridge:" in err
+    assert "manifest_version" not in err
+    assert not calls
+    assert not run_root.exists()
