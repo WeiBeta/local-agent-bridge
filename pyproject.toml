@@ -44,12 +44,15 @@ only-include = [
   "tests/test_session_capture.py",
   "tests/test_session_retention.py",
   "tests/test_shadow_replay.py",
+  "tests/test_cursor_run.py",
   "tests/fixtures/ag_oneshot",
   "README.md",
   "docs/H3_USAGE.md",
   "docs/BRIDGE_USAGE.md",
   "docs/SESSION_STORAGE.md",
   "docs/SHADOW_USAGE.md",
+  "docs/CURSOR_USAGE.md",
+  "docs/CURSOR_EVIDENCE.md",
   "docs/RELEASE_CHECKLIST.md",
   "docs/LICENSE_PROVENANCE.md",
   "docs/LOCAL_AGENT_BRIDGE_MIGRATION_PLAN.md",
@@ -77,6 +80,7 @@ testpaths = [
   "tests/test_session_capture.py",
   "tests/test_session_retention.py",
   "tests/test_shadow_replay.py",
+  "tests/test_cursor_run.py",
 ]
 
 [tool.ruff]

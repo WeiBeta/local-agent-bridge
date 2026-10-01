@@ -34,6 +34,7 @@ EXPECTED_PACKAGE_FILES = {
     "bridge/slice_run.py",
     "bridge/slice_workspace.py",
     "bridge/winjob.py",
+    "bridge/cursor_run.py",
     "capture/__init__.py",
     "capture/keys.py",
     "capture/retention.py",
@@ -250,6 +251,8 @@ def test_source_archive_carries_the_new_product_documents_only() -> None:
         "docs/BRIDGE_USAGE.md",
         "docs/SESSION_STORAGE.md",
         "docs/SHADOW_USAGE.md",
+        "docs/CURSOR_USAGE.md",
+        "docs/CURSOR_EVIDENCE.md",
         "docs/RELEASE_CHECKLIST.md",
         "docs/LICENSE_PROVENANCE.md",
         "docs/LOCAL_AGENT_BRIDGE_MIGRATION_PLAN.md",
@@ -269,6 +272,8 @@ def test_source_archive_carries_the_new_product_documents_only() -> None:
         "docs/BRIDGE_USAGE.md",
         "docs/SESSION_STORAGE.md",
         "docs/SHADOW_USAGE.md",
+        "docs/CURSOR_USAGE.md",
+        "docs/CURSOR_EVIDENCE.md",
         "docs/RELEASE_CHECKLIST.md",
         "docs/LICENSE_PROVENANCE.md",
         "docs/LOCAL_AGENT_BRIDGE_MIGRATION_PLAN.md",
@@ -293,7 +298,7 @@ def test_every_bridge_subcommand_has_its_own_help(capsys) -> None:
     from local_agent_bridge import cli
 
     # Each Bridge command parses its own argv; argparse exits with status 0.
-    for command in ("prepare", "collect", "plan", "run"):
+    for command in ("prepare", "collect", "plan", "run", "cursor"):
         with pytest.raises(SystemExit) as exit_info:
             cli.main([command, "--help"])
         assert exit_info.value.code == 0

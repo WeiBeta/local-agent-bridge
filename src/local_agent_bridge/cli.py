@@ -1,9 +1,9 @@
 """Combined console entry for the bounded local source-slice bridge.
 
-Seven subcommands: ``prepare``, ``collect`` and ``plan`` come from the slice
-workspace module, ``run`` from the single-run module, and two fixed session
-commands from this entry. ``shadow`` routes to the offline replay module.
-The Bridge commands keep their own parsers; this entry
+Eight subcommands: ``prepare``, ``collect`` and ``plan`` come from the slice
+workspace module, ``run`` from the single-run module, two fixed session
+commands from this entry, ``shadow`` routes to the offline replay module and
+``cursor`` to the fixed Cursor call. The commands keep their own parsers; this entry
 only routes the first token. There is no pass
 through for arbitrary commands, models, URLs, paths or permission rules, and the
 tool is not an OS sandbox.
@@ -25,6 +25,7 @@ SUBCOMMANDS = (
     "session-status",
     "session-key-init",
     "shadow",
+    "cursor",
 )
 
 USAGE = """usage: local-agent-bridge <command> [options]
@@ -38,8 +39,9 @@ Bounded local source-slice bridge (Windows 11). Commands:
   session-status  read-only file-length use of sessions and shadow domains
   session-key-init  explicitly create this product's Windows session key
   shadow    offline fingerprint, snapshot, replay or comparison of sealed bundles
+  cursor    preflight (default) or execute one fixed Cursor CLI call
 
-The four Bridge commands and shadow have their own ``--help``; session commands take no options.
+The Bridge commands, shadow and cursor have their own ``--help``; session commands take no options.
 Current limits:
 
   * only existing text files can be prepared; added or deleted files are refused
@@ -65,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         from local_agent_bridge.shadow import replay
 
         return replay.main(arguments[1:])
+    if command == "cursor":
+        from local_agent_bridge.bridge import cursor_run
+
+        return cursor_run.main(arguments[1:])
     if command == "session-status" and len(arguments) == 1:
         try:
             print(

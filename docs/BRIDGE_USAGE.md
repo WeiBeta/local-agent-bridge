@@ -15,8 +15,9 @@
 | `local-agent-bridge session-status` | 只读查看 sessions / shadow 两域文件长度用量，不读取 key |
 | `local-agent-bridge session-key-init` | 显式初始化本产品独立 Windows 会话密钥 |
 | `local-agent-bridge shadow` | 离线验证、快照、回放或比较已封口会话；详见 [SHADOW_USAGE.md](SHADOW_USAGE.md) |
+| `local-agent-bridge cursor` | 对冻结任务根执行一次固定 Cursor CLI 调用（grok-4.7-high，非 Fast）；详见 [CURSOR_USAGE.md](CURSOR_USAGE.md) |
 
-`local-agent-bridge --help` 列出七条命令与当前限制；`local-agent-bridge-h3` 保持原四工具 H3 MCP 入口不变。
+`local-agent-bridge --help` 列出八条命令与当前限制；`cursor` 属独立固定 Cursor 入口，agy `run` 默认行为不变；`local-agent-bridge-h3` 保持原四工具 H3 MCP 入口不变。
 
 ## 2. 保留的原合同
 
@@ -35,6 +36,7 @@
 - `run --execute` 对 `work/TASK.md`、固定 CLI 请求参数及 stdout/stderr 原字节使用独立会话密钥加密；`capture/` 不再有永久原始管道副本。必须先显式运行 `session-key-init`；缺 key 会在启动前拒绝。容量、读取格式和宿主明文边界见 [SESSION_STORAGE.md](SESSION_STORAGE.md)。
 - 会话存储目录首次创建时施加仅属主 ACL；后续进程只读核验已有目录的精确 ACL，不重施 `Set-Acl`。不符合要求则在加密输入写入和 CLI 启动前拒绝。
 - `shadow` 只处理 sealed v2 证据，读取时必须提供明确 UID 与输入摘要；自包含快照另占 shadow 域预算，不调用本地 CLI、模型或 Docker。
+- `cursor` 只做一次固定调用与加密捕获，退出码 0 不表示模型任务成功；无工具包含或文件隔离承诺（见 CURSOR_USAGE.md）。
 - 任务工作副本与 `private/settings.*.bin` 仍可为 ACL 私有明文，旧材料不迁移；本包仍为内部候选，不应作为正式可部署版本发布。
 - 只覆盖既有文本文件的小切片；不支持新增/删除文件、跨根 diff、二进制内容、ignore 规则或并发运行。
 - 不是 OS 沙箱，不构成授权；`plan` 不是批准，也不证明当前 CLI 能力。

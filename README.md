@@ -36,10 +36,10 @@ wheel 内只包含 `local_agent_bridge` 包与两个打包资源：`resources/st
 
 | 入口 | 作用 |
 | --- | --- |
-| `local-agent-bridge` | 切片桥 CLI：`prepare`、`collect`、`plan`、`run`、`session-status`、`session-key-init`、`shadow` |
+| `local-agent-bridge` | 切片桥 CLI：`prepare`、`collect`、`plan`、`run`、`session-status`、`session-key-init`、`shadow`、`cursor` |
 | `local-agent-bridge-h3` | 只注册四个 H3 MCP 工具的标准输入输出 MCP 服务 |
 
-`local-agent-bridge --help` 列出七条子命令与当前限制。各子命令用各自 `--help` 查看参数；实际参数为：
+`local-agent-bridge --help` 列出八条子命令与当前限制。各子命令用各自 `--help` 查看参数；实际参数为：
 
 ```text
 local-agent-bridge prepare --commit <sha> --file <path> [--editable <path>] --task-note <path> --out <new dir> [--repository <root>]
@@ -49,6 +49,7 @@ local-agent-bridge run     --task-root <dir> --run-root <new dir> --exe <absolut
 local-agent-bridge session-status
 local-agent-bridge session-key-init
 local-agent-bridge shadow {fingerprint|snapshot|replay|compare} ...
+local-agent-bridge cursor  run --task-root <dir> --run-root <new dir> --exe <agent.ps1> --exe-sha256 <64 hex> [--execute]
 ```
 
 `run` 缺省只做预检：不写文件、不启动进程。`--execute` 是单独的一次性授权，执行一次固定本地 CLI 调用。
