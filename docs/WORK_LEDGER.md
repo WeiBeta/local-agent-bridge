@@ -19,6 +19,8 @@
 
 | L11 | LAB-CURSOR-PRODUCT-REFUSAL-DIAG-01（启动前拒绝根因诊断） | 已完成：当前状态父目录（%LOCALAPPDATA%\LocalAgentBridge，仅记此一次）为继承 ACL，固定 Verify 返回 DACL_NOT_PROTECTED；合成 SessionStore 复现了启动前拒绝；原一次 smoke 缺 setup 字段，唯一历史原因未证；登录用户已自行验证正常。真实产品 smoke 仍未验收；一次授权已使用，后续新调用需另得授权 | 报告 SHA-256 `874451B618AC04A589B7FF2557E1F382DDFF06D4D1A00A950DD12027330ADEC9` | `2026-10-01-LAB-CURSOR-PRODUCT-REFUSAL-DIAG-01/REPORT.md`（归档根） | —（诊断会话） | 2026-10-01 |
 
+| L12 | LAB-STATE-ROOT-ACL-REPAIR-02（状态根 ACL 修复） | 已完成（PASS）：仅批准的 root/shadow/锁三项 DACL 及继承改动；root/shadow 产品 Verify 均 rc 0；owner/group 与锁内容保全；无新增 session/CLI/provider/key。**存储权限通过不等于产品 smoke 验收** | 报告 SHA-256 `EFCB1B64DDFCAE3A8251315AE7355C96F86C58C8D278C6F7EDAF1F0E9AB08206` | `2026-10-01-LAB-STATE-ROOT-ACL-REPAIR-02/INDEX.md`（归档根） | —（修复会话） | 2026-10-01 |
+
 固定裁决（不再开待办）：Grok `grok-4.7-high` 非 Fast 已确认，不再安排 XHigh 对比；H3 通道按作者决定关闭，不派开启任务；Zcode 暂缓；后续其他 Bridge 仅记 backlog，不视为已启动。
 
 历史边界：旧 Ask AI MCP 仓库的完整任务史以归档根 `INDEX.md` 及该仓库自身记录为入口，本台账不复制、不重述其结论。
