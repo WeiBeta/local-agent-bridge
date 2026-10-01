@@ -1,5 +1,9 @@
 # 工作台账（WORK_LEDGER）
 
+## 当前补充结论（2026-10-01）
+
+PRODUCT-SMOKE-02 已结束，未通过业务验收：桥接器启动一次且四流加密封口完整，Cursor 子进程 exit 1，仅 system/user 事件，无工具调用或终态，OUTPUT 未变。provider 请求次数未知；尚不能归因订阅或模型。单次执行授权已使用，T06 销账；仅本次结果核验继续，不新增调用。证据：`2026-10-01-LAB-CURSOR-PRODUCT-SMOKE-02/REPORT.md`，SHA-256 `C947C99F01E5AE5EEE2BE68DBFC5401F392E598AACA0B8A2D3CBE0115E615465`。
+
 汇总时间：2026-10-01（本次更新同日）。定位：为管理会话**释放上下文**的精简可追溯记录——只记重要事实、限制与证据入口，不做派工流水账，不复制长回执。范围如实声明：仅覆盖**新仓库（Local Agent Bridge）交付及 Cursor 当前阶段**；旧 Ask AI MCP 的长期历史经本地归档索引链接（见下），不在此穷举。管理任务：`019fe10b-df55-7b82-a9ba-3702dc08c55f`。
 
 证据入口约定：本地归档根为 `C:/Users/user/Documents/Codex-Archive`（入口 `INDEX.md`）；证据列使用“任务 ID + 归档相对目录 + 关键哈希”。未核验项一律标“未核验”，不以推断补齐。
