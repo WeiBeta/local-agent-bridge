@@ -2,6 +2,8 @@
 
 ## 当前补充结论（2026-10-01）
 
+Grok 4.6 Medium 尝鲜配额隔离实测已收口，T08 销账：CLI 确认 ID `cursor-grok-4.6-medium`，单次启动仍返回 `ActionRequiredError` / Free plan 仅允许 Auto；无工具调用或终态，OUTPUT 未变。GUI 配额未转化为 CLI 可用证据，实际 provider 请求数及费用未知。原 wheel、安装及候选提交未变；不重试，按作者要求暂停，等充值后通知。报告哈希已核验：`2026-10-01-LAB-CURSOR-GROK46-MED-SMOKE-01/REPORT.md`，SHA-256 `648914701D5BBD473B01299BDBA8F1CD1D67F03603154E15E4121EC95C60C1DE`。临时材料按该任务 Scratch INDEX 登记保留，未删除。
+
 SMOKE-02 原因已确认：认证后的 CLI 错误为 `ActionRequiredError`，报告当前 Free plan 仅允许 Auto，具名模型不可用。账户后台订阅未核查；不推断 4.6 Medium 可绕开限制。init 的 `Grok 4.7 256K High` 是显示标签，不是执行成功证明，原标签规范化不匹配不能单独作为错路由证据。诊断无新增模型调用，T07 销账。证据：`2026-10-01-LAB-CURSOR-PRODUCT-SMOKE-02-RESULT-DIAG/REPORT.md`，SHA-256 `95D5ED23341CA5DF52AB47400062D4F615AFB122E1677F181FC5616AFEE2F7A3`。
 
 PRODUCT-SMOKE-02 已结束，未通过业务验收：桥接器启动一次且四流加密封口完整，Cursor 子进程 exit 1，仅 system/user 事件，无工具调用或终态，OUTPUT 未变。provider 请求次数未知；尚不能归因订阅或模型。单次执行授权已使用，T06 销账；仅本次结果核验继续，不新增调用。证据：`2026-10-01-LAB-CURSOR-PRODUCT-SMOKE-02/REPORT.md`，SHA-256 `C947C99F01E5AE5EEE2BE68DBFC5401F392E598AACA0B8A2D3CBE0115E615465`。
