@@ -17,6 +17,8 @@
 | L09 | 部署配置 Skill 方案登记 | 完成；**规划未实现**，未装 Skill、未改任何配置 | `ca63009dad4e541bb61baee4b4a86d39484c65c8` | 本仓库 `docs/DEPLOYMENT_CONFIGURATION_PLAN.md`；归档 `2026-10-01-LAB-DEPLOYMENT-SKILL-PLAN-01` | —（文档登记） | 2026-10-01 |
 | L10 | LAB-CURSOR-PRODUCT-SMOKE-01（产品入口真实 smoke，一次授权） | **已结束：REFUSED_BEFORE_LAUNCH，不成功。**Cursor/provider 调用 0；execute 尝试 1；运行根仅 `plan.json`，无 run/session 产物；`setup_stage` 未留存——拒绝根因未定，**不能归因订阅到期**。一次授权已使用，不得重试/换模型/生产部署 | 报告 SHA-256 `CC7630757ED322EB24EDA3D06E2E8E9DA53E56D24EEA0BC091065F6443740EE8` | `2026-10-01-LAB-CURSOR-PRODUCT-SMOKE-01/REPORT.md`（归档根） | —（终态已回收） | 2026-10-01 |
 
+| L11 | LAB-CURSOR-PRODUCT-REFUSAL-DIAG-01（启动前拒绝根因诊断） | 已完成：当前状态父目录（%LOCALAPPDATA%\LocalAgentBridge，仅记此一次）为继承 ACL，固定 Verify 返回 DACL_NOT_PROTECTED；合成 SessionStore 复现了启动前拒绝；原一次 smoke 缺 setup 字段，唯一历史原因未证；登录用户已自行验证正常。真实产品 smoke 仍未验收；一次授权已使用，后续新调用需另得授权 | 报告 SHA-256 `874451B618AC04A589B7FF2557E1F382DDFF06D4D1A00A950DD12027330ADEC9` | `2026-10-01-LAB-CURSOR-PRODUCT-REFUSAL-DIAG-01/REPORT.md`（归档根） | —（诊断会话） | 2026-10-01 |
+
 固定裁决（不再开待办）：Grok `grok-4.7-high` 非 Fast 已确认，不再安排 XHigh 对比；H3 通道按作者决定关闭，不派开启任务；Zcode 暂缓；后续其他 Bridge 仅记 backlog，不视为已启动。
 
 历史边界：旧 Ask AI MCP 仓库的完整任务史以归档根 `INDEX.md` 及该仓库自身记录为入口，本台账不复制、不重述其结论。
