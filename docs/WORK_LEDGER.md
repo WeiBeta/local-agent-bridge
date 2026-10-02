@@ -1,5 +1,11 @@
 # 工作台账（WORK_LEDGER）
 
+## 当前补充结论（2026-10-02）
+
+PRODUCT-SMOKE-03：充值后原产品固定 Grok 4.7 High 非 Fast 单次调用取得成功终态，OUTPUT 精确目标12字节，collect仅OUTPUT；但DENY_MARKER读取成功，权限拒绝样例失败，整体不接受部署。T09销账，转零模型调用诊断；根因未定。报告哈希已核验：`2026-10-02-LAB-CURSOR-PRODUCT-SMOKE-03/REPORT.md`，SHA-256 `53EC38463EF069FDFA01B27C83E8464A460FE4C12EA6B95C99D840A6954EDC1F`。费用与独立provider身份未知，原安装/候选未变。
+
+上游CLI允许自动更新、必要时手动更新；按需版本排障已补入仓库Skill参考并同步本机，Skill校验通过（无CLI升级）。产品版本变化适配测试仍在部署配置规划，未宣称实现。
+
 ## 当前补充结论（2026-10-01）
 
 Grok 4.6 Medium 尝鲜配额隔离实测已收口，T08 销账：CLI 确认 ID `cursor-grok-4.6-medium`，单次启动仍返回 `ActionRequiredError` / Free plan 仅允许 Auto；无工具调用或终态，OUTPUT 未变。GUI 配额未转化为 CLI 可用证据，实际 provider 请求数及费用未知。原 wheel、安装及候选提交未变；不重试，按作者要求暂停，等充值后通知。报告哈希已核验：`2026-10-01-LAB-CURSOR-GROK46-MED-SMOKE-01/REPORT.md`，SHA-256 `648914701D5BBD473B01299BDBA8F1CD1D67F03603154E15E4121EC95C60C1DE`。临时材料按该任务 Scratch INDEX 登记保留，未删除。
