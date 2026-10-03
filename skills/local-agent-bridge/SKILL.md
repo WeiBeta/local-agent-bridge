@@ -25,7 +25,7 @@ local-agent-bridge cursor  run --task-root <目录> --run-root <新目录> --exe
 
 `prepare` 只导出**既有文本文件**（新增/删除/重命名被拒）；`collect`、`plan` 只读。`run` 与 `cursor run` 缺省均为预检，不写不改不启动；**只有用户明确授权才加 `--execute`**，一次一个。`cursor run` 固定模型 `grok-4.7-high`（非 Fast），固定使用 `--force`（不等于目录隔离）。
 
-argv、模型、effort、权限规则都由代码固定，调用方不能传。`session-key-init` 会写 Windows Credential Manager——仅在用户明确要求时执行。Cursor 命令的 `--exe` 指向 Cursor 的 agent.ps1 启动器（非 agy 的 settings 文件）；任务根须经 `prepare --file .cursor/cli.json` 将项目权限配置作为冻结输入。
+argv、模型与 effort 由代码固定，调用方不能覆盖；agy 的权限增量由代码生成，Cursor 的项目权限来自冻结的 `.cursor/cli.json`。`session-key-init` 会写 Windows Credential Manager——仅在用户明确要求时执行。Cursor 命令的 `--exe` 指向 Cursor 的 agent.ps1 启动器；任务根须经 `prepare --file .cursor/cli.json` 将项目权限配置作为冻结输入。
 
 `run`/`cursor run` 退出码：0 表示生命周期完成且捕获完整（**不等于模型任务成功**）；2 表示未改配置、未启动的拒绝，但可能留下运行目录；3 表示生命周期未完成或证据无法落盘。
 
