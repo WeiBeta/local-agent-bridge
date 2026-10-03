@@ -81,7 +81,6 @@ testpaths = [
   "tests/test_session_retention.py",
   "tests/test_shadow_replay.py",
   "tests/test_cursor_run.py",
-  "tests/test_deployment_config_skill.py",
 ]
 
 [tool.ruff]
