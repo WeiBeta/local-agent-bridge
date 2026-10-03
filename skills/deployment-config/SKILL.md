@@ -10,7 +10,7 @@ description: "Configure Bridge host CLIs for auto-approval with explicit boundar
 ## 固定流程
 
 1. **询问启用哪些 Bridge**（Cursor / agy / 后续批准项）；未选者不写任何内容。
-2. **只读环境核验**：Windows 版本、`pwsh` 7 存在性与入口。缺 pwsh 7 时建议按官方渠道安装，不代装不改 `PATH`。Bridge CLI 的 `--version` / `--help` 等非生成子命令可经用户授权后执行以核验版本（可能触发厂商自更新，如实提示）；**禁止** `-p`/`--print` 等会调用模型的子命令、MCP 操作及任何可能误触发生成的入口。
+2. **只读环境核验**：Windows 版本、`pwsh` 7 存在性与入口。缺 pwsh 7 时建议按官方渠道安装，不代装不改 `PATH`。上游宿主（Cursor/agy）按其各自已核验的 `--version`/`--help` 接口核验版本（可能触发厂商自更新，如实提示）。本地 `local-agent-bridge` 无 `--version`，从其安装环境的包元数据读取版本，`--help` 仅核验命令入口。**禁止** `-p`/`--print` 等会调用模型的子命令、MCP 操作及任何可能误触发生成的入口。
 3. **生成改动预览**（文字 diff，含备份路径与回退说明）；展示后等用户确认。
 4. **确认后最小写入**：备份原文 → 写入 → 复验。
 

@@ -25,7 +25,7 @@
 ### 产品现状与建议
 
 - **Bridge 已固定 `--force`**（产品 `cursor run` 固定 argv），因此**不需要也不应在全局另设 `approvalMode: "unrestricted"`**——那等于把仅限 Bridge 会话的放行扩展为该用户所有 Cursor CLI 会话。
-- 文件边界由**项目级** `.cursor/cli.json` 的 `permissions.allow/deny` 承担（Bridge `prepare --file .cursor/cli.json` 将其作为冻结输入），目录约束在任务层而不在全局。
+- 任务目录与可编辑面是声明范围；`--force` 下未被显式 deny 的操作可放行。项目级 permissions 规则是许可增量而非天然完整目录边界；已测 marker 拒读不外推清单外项。
 - 如果需要非 Bridge 会话也有免交互：讨论 `auto-review`（服务器分类器自动放行安全操作），而非 `unrestricted`。
 
 ### 本机历史参考（非目标机事实）
@@ -52,7 +52,7 @@
 
 ### 两键候选（非安装要求）
 
-如下增量仅当用户明确选择时写入（保留既有键原值）：
+如下增量仅当用户明确选择时写入（保留未涉及键原值）：
 
 ```text
 %USERPROFILE%\.gemini\antigravity-cli\settings.json 新增：
@@ -66,7 +66,7 @@
 
 ### 产品兼容性硬约束
 
-- **`permissions` 持久键与现有 Bridge 不兼容**：Bridge `_read_settings` 检测到根 `permissions` 键即在启动前拒绝——**不得**向 CLI settings.json 添加持久 `permissions` 对象。因此本 Skill **不教持久 permissions 写法**，文件边界由 Bridge 的临时插入/恢复机制承担。
+- **`permissions` 持久键与现有 Bridge 不兼容**：Bridge `_read_settings` 检测到根 `permissions` 键即在启动前拒绝——**不得**向 CLI settings.json 添加持久 `permissions` 对象。因此本 Skill **不教持久 permissions 写法**。任务目录与可编辑面是声明范围；Bridge 临时插入的 permissions.allow 只是许可增量，不添加 deny/ask 规则，也不收窄共享 ALLOW。未命中 allow 的操作不等于被拒绝。
 - Bridge 会在执行期间临时插入任务级 `permissions.allow` 并在 `finally` 内原字节恢复；不覆盖 `toolPermission` 或 `allowNonWorkspaceAccess`。
 - `--settings` 是 Bridge 的文件修改目标（用户 CLI 设置文件），不是配置选择参数。
 
@@ -93,7 +93,7 @@
 <!-- bridge-deploy-config:v1 END -->
 ```
 
-重复运行整块替换（版本号递增），用户区块外原文逐字节保留。
+版本号代表块格式协议版本，仅在格式变更时更新。相同请求与现状应无 diff，不变则不重写或新增备份。发生实际内容更新时替换既有块，用户区块外原文逐字节保留。
 
 ### JSON 目标（CLI 配置文件）
 
