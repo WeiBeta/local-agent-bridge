@@ -46,23 +46,25 @@
 | CLI 用户级设置 | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | [官方 CLI reference](https://www.antigravity.google/docs/cli/reference/)，2026-10-03 |
 | 共享/IDE 层 | `%USERPROFILE%\.gemini\config\config.json` → `userSettings` | 同上 |
 | 审批键 | `toolPermission`：`always-proceed` / `request-review` / `strict` / `proceed-in-sandbox` | 同上 |
-| 工作区外开关 | CLI 层 `allowNonWorkspaceAccess`（bool）；共享层 `nonWorkspaceFileAccessPolicy` | 同上 |
+| 工作区外开关 | CLI 层 `allowNonWorkspaceAccess`（bool，官方默认 `false`）；共享层 `nonWorkspaceFileAccessPolicy` | [官方 CLI reference](https://www.antigravity.google/docs/cli/reference/)，默认值于 2026-10-04 再核验；共享层沿用 2026-10-03 记录 |
 | 权限规则 | `permissions.allow` / `permissions.deny`（`command()` / `read_file()` / `write_file()` 规则；`unsandboxed` 已废弃） | [官方 permissions](https://www.antigravity.google/docs/permissions?tab=cli)，2026-10-03 |
 | 全放行标志 | `--dangerously-skip-permissions`（覆盖会话级 always-deny，不推荐） | 本机 `--help`，2026-10-03 |
 
-### 两键候选（非安装要求）
+### 按用户选择生成配置增量
 
-如下增量仅当用户明确选择时写入（保留未涉及键原值）：
+用户明确选择自动审批时，预览相应增量，确认后才写入（保留未涉及键原值）：
 
 ```text
-%USERPROFILE%\.gemini\antigravity-cli\settings.json 新增：
+%USERPROFILE%\.gemini\antigravity-cli\settings.json 审批增量：
   "toolPermission": "always-proceed"
-  "allowNonWorkspaceAccess": false
 ```
+
+`allowNonWorkspaceAccess=false` 不是每次部署必须显式写入的第二键。官方默认已为 `false`，本机自然保存的缺键配置也完成过下述窄范围流程；仅为记录默认值时，建议保留自然保存形式，不反复补入该键。没有相关新授权时保留用户已有的显式 `true` / `false`；用户明确选择更改工作区外策略时，另行预览差异。缺键不证明目录外拒绝生效，CLI 与共享层 `ALLOW` 的优先级仍未知，不据此修改 GUI/共享配置。官方在线文档也不是 CLI 1.2.16 的固定版本合同。
 
 ### 本机历史参考（非目标机事实）
 
-- 2026-10-03 作者决策选择自动审批并保留目录约束后，主控已在本机写入上述两键；共享层 `nonWorkspaceFileAccessPolicy` 保持不动。此为本机历史操作记录，**不作为其他机器的已配置状态**。
+- 2026-10-03 作者决策选择自动审批并保留目录约束后，主控曾在本机显式写入 `toolPermission=always-proceed` 与 `allowNonWorkspaceAccess=false`；共享层 `nonWorkspaceFileAccessPolicy` 保持不动。此为本机历史操作记录，**不作为其他机器的已配置状态**。
+- 2026-10-04 SMOKE-02 使用自然保存的缺键基线，一次 agy 启动完成任务内合成读写，宿主无人输入，配置最终恢复原 93 字节。仅该流程通过；目录外访问、其他工具审批与一般目录隔离未验，键消失原因未证。归档报告 `2026-10-04-LAB-AGY-PERMISSION-SMOKE-02/REPORT.md`，SHA-256 `1648CA888DBC12CAA4E3D3C7377322F28C6D3066BBF22B0154EC86E0C0E79414`。
 
 ### 产品兼容性硬约束
 
@@ -72,7 +74,7 @@
 
 ### 未验证（如实告知用户）
 
-- **Windows 仍用旧权限系统**（官方 permissions 页 2026-10-03）；两键在 Windows 的实际审批行为与工作区外拒绝效果。
+- **Windows 仍用旧权限系统**（官方 permissions 页 2026-10-03）；本机仅观测到上述任务内读写无需人工输入，其他工具审批与工作区外拒绝效果未验。
 - `permissions.deny` 对 `always-proceed` 的优先级在 Windows 的实际表现（官方文档说 deny 优先，本机未测）。
 - CLI 层 `allowNonWorkspaceAccess=false` 与共享层 `ALLOW` 的合并顺序。
 
@@ -81,7 +83,7 @@
 | Bridge | 官方来源及核验日 | 启动 Shell | Worker Shell | 本机实测 | 指令文件与作用域 | 降级支持 |
 | --- | --- | --- | --- | --- | --- | --- |
 | Cursor | [configuration](https://cursor.com/docs/cli/reference/configuration) 2026-10-03 | pwsh 7（产品固定） | 未核验 | 合成 smoke 文件流程+deny 正常（2026-10-03，限该范围） | 项目 `.cursor/cli.json`（仅 permissions）+ 全局 `cli-config.json` | 无（pwsh 7 依赖） |
-| agy | [CLI reference](https://www.antigravity.google/docs/cli/reference/) 2026-10-03 | 直接 exe（Bridge argv） | 未核验 | 两键已写入未验效（本机历史，非目标机事实）；权限行为未知 | CLI `antigravity-cli/settings.json` + 共享 `config/config.json` | 无（pwsh 7 辅助依赖） |
+| agy | [CLI reference](https://www.antigravity.google/docs/cli/reference/) 默认值 2026-10-04，其余 2026-10-03 | 直接 exe（Bridge argv） | 未核验 | 合成任务内读写、无人输入、配置恢复通过（2026-10-04）；目录外及其他权限行为未验 | CLI `antigravity-cli/settings.json` + 共享 `config/config.json` | 无（pwsh 7 辅助依赖） |
 
 ## 管理区块格式
 

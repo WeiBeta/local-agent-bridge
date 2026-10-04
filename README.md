@@ -107,3 +107,4 @@ local-agent-bridge cursor  run --task-root <dir> --run-root <new dir> --exe <age
 产品名 `Local Agent Bridge` / `local-agent-bridge` 仍为候选名。
 
 开发协作与署名说明见 [CREDITS.md](CREDITS.md)。
+项目工作台账见 [WORK_LEDGER.md](WORK_LEDGER.md)；未完成事项见 [TODO.md](TODO.md)。
