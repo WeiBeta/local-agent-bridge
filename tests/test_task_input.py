@@ -1082,6 +1082,65 @@ def test_input_root_must_not_be_a_broad_user_root(
     assert manifest["entries"]
 
 
+def test_broad_root_aliases_are_rejected_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "profile"
+    (home / "Projects").mkdir(parents=True)
+    _write_tree(home / "Projects", TREE_FILES)
+    manifest_path = _manifest_file(home / "Projects", _tree_document(home / "Projects"))
+    monkeypatch.setattr(entry.Path, "home", staticmethod(lambda: home))
+    direct_root = str(home)
+    alias_root = str(home / "child" / "..")
+    assert alias_root != direct_root
+    for root in (
+        direct_root,
+        alias_root,
+        str(home) + "/./child/..",
+        str(home.parent),
+        str(home.parent / "sibling" / ".."),
+    ):
+        broad = _directory_source(home / "Projects", manifest_path)
+        broad["root"] = root
+        _expect_error(
+            "PathRejected",
+            import_snapshot,
+            source=broad,
+            policy=_policy(),
+            snapshot_root=tmp_path / "snapshot-alias",
+        )
+    manifest = import_snapshot(
+        source=_directory_source(home / "Projects", manifest_path),
+        policy=_policy(),
+        snapshot_root=tmp_path / "snapshot-narrow",
+    )
+    assert manifest["entries"]
+
+
+def test_snapshot_output_and_read_reject_parent_component_aliases(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, TREE_FILES)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    area = tmp_path / "snapshots"
+    area.mkdir()
+    manifest = _import_directory(tree, manifest_path, area / "one")
+    _expect_error(
+        "PathRejected",
+        import_snapshot,
+        source=_directory_source(tree, manifest_path),
+        policy=_policy(),
+        snapshot_root=tmp_path / "skip" / ".." / "snapshots" / "two",
+    )
+    assert [path.name for path in area.iterdir()] == ["one"]
+    _expect_error(
+        "PathRejected",
+        read_snapshot,
+        snapshot_root=tmp_path / "skip" / ".." / "snapshots" / "one",
+    )
+    assert read_snapshot(snapshot_root=area / "one") == manifest
+
+
 def test_directory_input_rejects_reparse_and_hard_links(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     tree.mkdir()

@@ -172,6 +172,30 @@ def _require_sha256(value: object, label: str, code: str) -> str:
     return text
 
 
+def _reject_dot_components(text: str, *, label: str) -> None:
+    """Reject raw dot and parent components before Path parsing touches them.
+
+    Path parsing folds "." away and keeps ".." as a literal component, so a
+    raw spelling such as home/child/.. would otherwise reach broad-root and
+    boundary comparisons as a different logical path while the file system
+    resolves it back to the broad root. The check is lexical on purpose: no
+    resolve() is used, so reparse evidence on the chain is preserved.
+    """
+
+    for component in re.split(r"[\\/]", text):
+        if component in {".", ".."}:
+            raise TaskInputError(
+                "PathRejected", f"{label} must not contain dot or parent components"
+            )
+
+
+def _reject_parent_components(path: Path, *, label: str) -> None:
+    """Reject parent components that survive Path parsing (dots are folded)."""
+
+    if ".." in path.parts:
+        raise TaskInputError("PathRejected", f"{label} must not contain parent components")
+
+
 def _validate_name_component(
     component: str, *, label: str, code: str, codepoints_limit: int
 ) -> None:
@@ -266,6 +290,7 @@ def _assert_plain_target(path: Path, *, label: str) -> None:
 
 def _validate_absolute_directory(value: object, *, label: str) -> Path:
     text = _require_text(value, label, "InvalidSource")
+    _reject_dot_components(text, label=label)
     root = Path(text)
     _reject_broad_root(root, label)
     _assert_plain_target(root, label=label)
@@ -276,6 +301,7 @@ def _validate_absolute_directory(value: object, *, label: str) -> Path:
 
 def _validate_absolute_file(value: object, *, label: str) -> Path:
     text = _require_text(value, label, "InvalidSource")
+    _reject_dot_components(text, label=label)
     path = Path(text)
     _reject_broad_root(path, label)
     _assert_plain_target(path, label=label)
@@ -1154,6 +1180,7 @@ def _import_snapshot(
 ) -> dict[str, object]:
     if not isinstance(snapshot_root, Path) or not snapshot_root.is_absolute():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root must be an absolute path")
+    _reject_parent_components(snapshot_root, label="snapshot_root")
     validated_policy = _validate_policy(policy)
     deadline = _Deadline.starting_now(validated_policy.deadline_seconds)
     source_kind = _source_kind(source)
@@ -1338,6 +1365,7 @@ def read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
 def _read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
     if not isinstance(snapshot_root, Path) or not snapshot_root.is_absolute():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root must be an absolute path")
+    _reject_parent_components(snapshot_root, label="snapshot_root")
     _assert_plain_target(snapshot_root, label="the sealed snapshot")
     if not snapshot_root.is_dir():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root does not hold a sealed snapshot")
