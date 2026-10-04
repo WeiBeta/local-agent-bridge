@@ -35,6 +35,7 @@ EXPECTED_PACKAGE_FILES = {
     "bridge/slice_workspace.py",
     "bridge/winjob.py",
     "bridge/cursor_run.py",
+    "bridge/task_input.py",
     "capture/__init__.py",
     "capture/keys.py",
     "capture/retention.py",
