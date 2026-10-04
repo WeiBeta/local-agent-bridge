@@ -498,6 +498,14 @@ def _mode_info(name: str, mode: int, *, dos_attributes: int = 0x20) -> zipfile.Z
     return info
 
 
+def _make_junction(link: Path, target: Path) -> None:
+    winapi = pytest.importorskip("_winapi")
+    try:
+        winapi.CreateJunction(str(target), str(link))
+    except OSError as error:
+        pytest.skip(f"junction fixture unavailable on this host: {error}")
+
+
 @pytest.mark.parametrize(
     "info",
     [
@@ -1108,3 +1116,77 @@ def test_directory_input_rejects_reparse_and_hard_links(tmp_path: Path) -> None:
         policy=_policy(),
         snapshot_root=tmp_path / "snapshot-two",
     )
+
+
+def test_snapshot_output_parent_junction_is_rejected_without_target_write(
+    tmp_path: Path,
+) -> None:
+    physical = tmp_path / "physical-target"
+    physical.mkdir()
+    package = tmp_path / "input.zip"
+    zip_sha = _write_zip(package, {"canary.txt": b"ordinary fixture only\n"})
+    link = tmp_path / "junction-parent"
+    _make_junction(link, physical)
+    try:
+        _expect_error(
+            "PathRejected",
+            import_snapshot,
+            source=_zip_source(package, zip_sha),
+            policy=_policy(),
+            snapshot_root=link / "snapshot",
+        )
+        assert not (link / "snapshot").exists()
+        assert not (link / "snapshot.staging").exists()
+        assert list(physical.iterdir()) == []
+    finally:
+        os.rmdir(link)
+
+
+def test_read_snapshot_rejects_ancestor_junction(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, TREE_FILES)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    real_area = tmp_path / "real-area"
+    real_area.mkdir()
+    snapshot_root = real_area / "snapshot"
+    manifest = _import_directory(tree, manifest_path, snapshot_root)
+    link = tmp_path / "mount"
+    _make_junction(link, real_area)
+    try:
+        _expect_error("PathRejected", read_snapshot, snapshot_root=link / "snapshot")
+        assert read_snapshot(snapshot_root=snapshot_root) == manifest
+        assert link.exists()
+    finally:
+        os.rmdir(link)
+
+
+def test_input_root_junction_target_is_rejected_and_plain_chains_still_import(
+    tmp_path: Path,
+) -> None:
+    area = tmp_path / "area"
+    tree = area / "tree"
+    tree.mkdir(parents=True)
+    _write_tree(tree, TREE_FILES)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    link = tmp_path / "tree-link"
+    _make_junction(link, tree)
+    try:
+        linked = _directory_source(tree, manifest_path)
+        linked["root"] = str(link)
+        _expect_error(
+            "PathRejected",
+            import_snapshot,
+            source=linked,
+            policy=_policy(),
+            snapshot_root=tmp_path / "snapshot-rejected",
+        )
+        assert not (tmp_path / "snapshot-rejected").exists()
+        manifest = import_snapshot(
+            source=_directory_source(tree, manifest_path),
+            policy=_policy(),
+            snapshot_root=tmp_path / "snapshot-plain",
+        )
+        assert manifest["entries"]
+    finally:
+        os.rmdir(link)

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from .contract import BridgeContractError, decode_strict_json_bytes
-from .paths import BridgePathError, _assert_no_reparse_escape, _is_reparse, _run_git
+from .paths import BridgePathError, _is_reparse, _run_git
 
 __all__ = ["TaskInputError", "import_snapshot", "read_snapshot"]
 
@@ -247,19 +247,28 @@ def _reject_broad_root(root: Path, label: str) -> None:
         raise TaskInputError("PathRejected", f"{label} is too broad to be a task input")
 
 
-def _assert_plain_chain(path: Path) -> None:
-    for parent in path.parents:
-        if _is_reparse(parent):
-            raise TaskInputError("PathRejected", "the input chain contains a reparse point")
+def _assert_plain_target(path: Path, *, label: str) -> None:
+    """Reject a reparse point at the target itself or anywhere in its chain.
+
+    Each call is a point-in-time check and does not close the race where the
+    chain is swapped right afterwards; writes and publishes therefore re-run
+    it at their own step instead of trusting an earlier verdict.
+    """
+
+    current = path
+    while True:
+        if _is_reparse(current):
+            raise TaskInputError("PathRejected", f"{label} or its chain contains a reparse point")
+        if current.parent == current:
+            break
+        current = current.parent
 
 
 def _validate_absolute_directory(value: object, *, label: str) -> Path:
     text = _require_text(value, label, "InvalidSource")
     root = Path(text)
     _reject_broad_root(root, label)
-    _assert_plain_chain(root)
-    if _is_reparse(root):
-        raise TaskInputError("PathRejected", f"{label} is a reparse point")
+    _assert_plain_target(root, label=label)
     if not root.is_dir():
         raise TaskInputError("InvalidSource", f"{label} is not an existing directory")
     return root
@@ -269,9 +278,7 @@ def _validate_absolute_file(value: object, *, label: str) -> Path:
     text = _require_text(value, label, "InvalidSource")
     path = Path(text)
     _reject_broad_root(path, label)
-    _assert_plain_chain(path)
-    if _is_reparse(path):
-        raise TaskInputError("PathRejected", f"{label} is a reparse point")
+    _assert_plain_target(path, label=label)
     if not path.is_file():
         raise TaskInputError("InvalidSource", f"{label} is not an existing file")
     return path
@@ -855,15 +862,13 @@ def _ensure_directory(source_root: Path, relative: str, created: set[str], polic
         _ensure_directory(source_root, parent, created, policy)
     target = source_root.joinpath(*relative.split("/"))
     _check_physical_budget(target, policy)
-    try:
-        _assert_no_reparse_escape(target.parent, source_root)
-    except BridgePathError as error:
-        raise TaskInputError("PathRejected", "the staging chain is no longer plain") from error
+    _assert_plain_target(target, label="a staging directory")
     os.mkdir(target)
     created.add(relative)
 
 
 def _file_chunks(path: Path, deadline: _Deadline) -> Iterator[bytes]:
+    _assert_plain_target(path, label="an adjudicated input file")
     information = path.lstat()
     if _is_reparse(path) or not stat.S_ISREG(information.st_mode):
         raise TaskInputError("InputChanged", "an adjudicated file changed shape before the copy")
@@ -940,6 +945,7 @@ def _write_stream(
 ) -> tuple[int, str]:
     digest = hashlib.sha256()
     total = 0
+    _assert_plain_target(target, label="a staged file")
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
     with os.fdopen(descriptor, "wb") as handle:
         for chunk in chunks:
@@ -967,8 +973,9 @@ def _write_exclusive(target: Path, raw: bytes) -> None:
 def _write_failure_label(staging_root: Path, code: str) -> None:
     if not staging_root.is_dir():
         return
-    with suppress(OSError):
+    with suppress(OSError, TaskInputError):
         target = staging_root / "IMPORT-FAILED"
+        _assert_plain_target(target, label="the failure label")
         if not target.exists():
             target.write_text(code + "\n", encoding="ascii")
 
@@ -1007,6 +1014,7 @@ def _stage_and_publish(
     source_root = staging_root / "source"
     for relative in (*(pending.path for pending in files), *directories):
         _check_physical_budget(source_root.joinpath(*relative.split("/")), policy)
+    _assert_plain_target(staging_root, label="the staging root")
     os.mkdir(staging_root)
     try:
         os.mkdir(source_root)
@@ -1096,6 +1104,8 @@ def _stage_and_publish(
         _write_exclusive(
             staging_root / "SEALED", hashlib.sha256(canonical).hexdigest().encode("ascii")
         )
+        _assert_plain_target(staging_root, label="the staging root")
+        _assert_plain_target(snapshot_root, label="the snapshot output")
         os.rename(staging_root, snapshot_root)
         return manifest
     except BaseException as error:
@@ -1152,7 +1162,7 @@ def _import_snapshot(
     parent = snapshot_root.parent
     if not parent.is_dir():
         raise TaskInputError("SnapshotRootInvalid", "the snapshot parent directory must exist")
-    _assert_plain_chain(parent)
+    _assert_plain_target(parent, label="the snapshot output parent")
     selection = _selection_sha256(validated_policy)
     with ExitStack() as stack:
         context = _ImportContext()
@@ -1328,8 +1338,7 @@ def read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
 def _read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
     if not isinstance(snapshot_root, Path) or not snapshot_root.is_absolute():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root must be an absolute path")
-    if _is_reparse(snapshot_root):
-        raise TaskInputError("PathRejected", "the snapshot root is a reparse point")
+    _assert_plain_target(snapshot_root, label="the sealed snapshot")
     if not snapshot_root.is_dir():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root does not hold a sealed snapshot")
     raw = (snapshot_root / "manifest.json").read_bytes()
