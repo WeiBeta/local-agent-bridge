@@ -45,6 +45,7 @@ only-include = [
   "tests/test_session_retention.py",
   "tests/test_shadow_replay.py",
   "tests/test_cursor_run.py",
+  "tests/test_task_input.py",
   "tests/fixtures/ag_oneshot",
   "README.md",
   "docs/H3_USAGE.md",
@@ -81,6 +82,7 @@ testpaths = [
   "tests/test_session_retention.py",
   "tests/test_shadow_replay.py",
   "tests/test_cursor_run.py",
+  "tests/test_task_input.py",
 ]
 
 [tool.ruff]
