@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -40,11 +41,6 @@ _STREAM_CHUNK_BYTES = 1024 * 1024
 _SHA256_TEXT = re.compile(r"[0-9a-f]{64}")
 _COMMIT_TEXT = re.compile(r"[0-9a-f]{40}")
 _FORBIDDEN_NAME_CHARS = frozenset('<>:"|?*')
-_RESERVED_DOS_NAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{number}" for number in range(1, 10)}
-    | {f"LPT{number}" for number in range(1, 10)}
-)
 _SOURCE_KEYS = {
     "git": frozenset({"kind", "root", "commit", "paths"}),
     "zip": frozenset({"kind", "path", "sha256", "strip_prefix"}),
@@ -172,28 +168,36 @@ def _require_sha256(value: object, label: str, code: str) -> str:
     return text
 
 
-def _reject_dot_components(text: str, *, label: str) -> None:
-    """Reject raw dot and parent components before Path parsing touches them.
+def _validate_absolute_path(value: str | Path, *, label: str) -> Path:
+    """Check the supplied spelling before Path can fold any components.
 
-    Path parsing folds "." away and keeps ".." as a literal component, so a
-    raw spelling such as home/child/.. would otherwise reach broad-root and
-    boundary comparisons as a different logical path while the file system
-    resolves it back to the broad root. The check is lexical on purpose: no
-    resolve() is used, so reparse evidence on the chain is preserved.
+    A supplied Path has already folded dot components; only its remaining
+    spelling is available. No resolve, abspath, trimming or renaming happens
+    here, so the original reparse chain remains available to the next check.
     """
 
-    for component in re.split(r"[\\/]", text):
-        if component in {".", ".."}:
-            raise TaskInputError(
-                "PathRejected", f"{label} must not contain dot or parent components"
-            )
-
-
-def _reject_parent_components(path: Path, *, label: str) -> None:
-    """Reject parent components that survive Path parsing (dots are folded)."""
-
-    if ".." in path.parts:
-        raise TaskInputError("PathRejected", f"{label} must not contain parent components")
+    text = str(value)
+    if text.startswith(("\\\\", "//")):
+        raise TaskInputError("PathRejected", f"{label} must use a local drive path")
+    if not re.match(r"^[A-Za-z]:[\\/]", text):
+        raise TaskInputError("InvalidSource", f"{label} must be drive-absolute")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise TaskInputError("PathRejected", f"{label} must be encodable as UTF-8") from error
+    # Empty parts are redundant separators, not names; Windows Path preserves
+    # their meaning. Check raw non-anchor names before constructing the Path.
+    components = [component for component in re.split(r"[\\/]", text[3:]) if component]
+    if not components:
+        raise TaskInputError("PathRejected", f"{label} must not be a drive root")
+    for component in components:
+        _validate_name_component(
+            component,
+            label=label,
+            code="PathRejected",
+            codepoints_limit=_DEFAULT_COMPONENT_CODEPOINTS,
+        )
+    return Path(text)
 
 
 def _validate_name_component(
@@ -206,8 +210,7 @@ def _validate_name_component(
     for char in component:
         if char in _FORBIDDEN_NAME_CHARS or ord(char) < 0x20 or ord(char) == 0x7F:
             raise TaskInputError(code, f"{label} has a character a Windows name cannot hold")
-    stem = component.split(".", 1)[0].upper()
-    if stem in _RESERVED_DOS_NAMES:
+    if ntpath.isreserved(component):
         raise TaskInputError(code, f"{label} uses a reserved Windows device name")
     if len(component) > codepoints_limit:
         raise TaskInputError(
@@ -261,14 +264,26 @@ def _broad_user_roots() -> set[Path]:
 
 
 def _reject_broad_root(root: Path, label: str) -> None:
-    if not root.is_absolute():
-        raise TaskInputError("InvalidSource", f"{label} must be an absolute path")
-    if str(root).startswith("\\\\"):
-        raise TaskInputError("PathRejected", f"{label} must not be a UNC path")
-    if root == Path(root.anchor):
-        raise TaskInputError("PathRejected", f"{label} must not be a drive root")
-    if root in _broad_user_roots():
+    """Reject exact forbidden roots after the caller checks the plain chain.
+
+    stat identity catches alternate spellings without enumerating root contents.
+    Only a missing forbidden root is skipped; permission and other I/O failures
+    must propagate rather than being treated as proof of a different identity.
+    """
+
+    forbidden_roots = {Path(root.anchor), *_broad_user_roots()}
+    if root in forbidden_roots:
         raise TaskInputError("PathRejected", f"{label} is too broad to be a task input")
+    root_information = root.stat()
+    if not stat.S_ISDIR(root_information.st_mode):
+        return
+    for forbidden in sorted(forbidden_roots, key=str):
+        try:
+            forbidden_information = forbidden.stat()
+        except FileNotFoundError:
+            continue
+        if os.path.samestat(root_information, forbidden_information):
+            raise TaskInputError("PathRejected", f"{label} has a forbidden root identity")
 
 
 def _assert_plain_target(path: Path, *, label: str) -> None:
@@ -279,7 +294,7 @@ def _assert_plain_target(path: Path, *, label: str) -> None:
     it at their own step instead of trusting an earlier verdict.
     """
 
-    current = path
+    current = _validate_absolute_path(path, label=label)
     while True:
         if _is_reparse(current):
             raise TaskInputError("PathRejected", f"{label} or its chain contains a reparse point")
@@ -290,23 +305,21 @@ def _assert_plain_target(path: Path, *, label: str) -> None:
 
 def _validate_absolute_directory(value: object, *, label: str) -> Path:
     text = _require_text(value, label, "InvalidSource")
-    _reject_dot_components(text, label=label)
-    root = Path(text)
-    _reject_broad_root(root, label)
+    root = _validate_absolute_path(text, label=label)
     _assert_plain_target(root, label=label)
     if not root.is_dir():
         raise TaskInputError("InvalidSource", f"{label} is not an existing directory")
+    _reject_broad_root(root, label)
     return root
 
 
 def _validate_absolute_file(value: object, *, label: str) -> Path:
     text = _require_text(value, label, "InvalidSource")
-    _reject_dot_components(text, label=label)
-    path = Path(text)
-    _reject_broad_root(path, label)
+    path = _validate_absolute_path(text, label=label)
     _assert_plain_target(path, label=label)
     if not path.is_file():
         raise TaskInputError("InvalidSource", f"{label} is not an existing file")
+    _reject_broad_root(path, label)
     return path
 
 
@@ -991,6 +1004,7 @@ def _write_stream(
 
 
 def _write_exclusive(target: Path, raw: bytes) -> None:
+    _assert_plain_target(target, label="snapshot metadata")
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(raw)
@@ -1043,6 +1057,7 @@ def _stage_and_publish(
     _assert_plain_target(staging_root, label="the staging root")
     os.mkdir(staging_root)
     try:
+        _assert_plain_target(source_root, label="the staging source root")
         os.mkdir(source_root)
         created_directories: set[str] = set()
         for relative in directories:
@@ -1180,7 +1195,7 @@ def _import_snapshot(
 ) -> dict[str, object]:
     if not isinstance(snapshot_root, Path) or not snapshot_root.is_absolute():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root must be an absolute path")
-    _reject_parent_components(snapshot_root, label="snapshot_root")
+    snapshot_root = _validate_absolute_path(snapshot_root, label="snapshot_root")
     validated_policy = _validate_policy(policy)
     deadline = _Deadline.starting_now(validated_policy.deadline_seconds)
     source_kind = _source_kind(source)
@@ -1365,11 +1380,14 @@ def read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
 def _read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
     if not isinstance(snapshot_root, Path) or not snapshot_root.is_absolute():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root must be an absolute path")
-    _reject_parent_components(snapshot_root, label="snapshot_root")
+    snapshot_root = _validate_absolute_path(snapshot_root, label="snapshot_root")
     _assert_plain_target(snapshot_root, label="the sealed snapshot")
     if not snapshot_root.is_dir():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root does not hold a sealed snapshot")
-    raw = (snapshot_root / "manifest.json").read_bytes()
+    _reject_broad_root(snapshot_root, "the sealed snapshot")
+    manifest_path = snapshot_root / "manifest.json"
+    _assert_plain_target(manifest_path, label="snapshot manifest")
+    raw = manifest_path.read_bytes()
     document = decode_strict_json_bytes(raw, label="snapshot manifest")
     files, directories = _validate_snapshot_manifest(document)
     canonical = _canonical_json_bytes(document)
@@ -1377,7 +1395,9 @@ def _read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
         raise TaskInputError(
             "ManifestNotCanonical", "manifest.json is not the canonical serialization"
         )
-    sealed = (snapshot_root / "SEALED").read_bytes()
+    seal_path = snapshot_root / "SEALED"
+    _assert_plain_target(seal_path, label="snapshot seal")
+    sealed = seal_path.read_bytes()
     if sealed != hashlib.sha256(canonical).hexdigest().encode("ascii"):
         raise TaskInputError("SealedMismatch", "SEALED does not match the manifest digest")
     identity_entries = [

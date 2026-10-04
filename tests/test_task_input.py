@@ -1249,3 +1249,320 @@ def test_input_root_junction_target_is_rejected_and_plain_chains_still_import(
         assert manifest["entries"]
     finally:
         os.rmdir(link)
+
+
+@pytest.fixture
+def absolute_path_case(
+    tmp_path: Path, entry_kind: str, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, object]:
+    """Freeze ordinary inputs for one public path field, with a synthetic home."""
+
+    home = tmp_path / "profile"
+    monkeypatch.setattr(entry.Path, "home", staticmethod(lambda: home))
+    tree = tmp_path / "输入" / "tree"
+    tree.mkdir(parents=True)
+    files = {"canary.txt": b"ordinary fixture\n", "src/说明.cs": b"// synthetic\r\n"}
+    _write_tree(tree, files)
+    inventory = _manifest_file(tree, _tree_document(tree))
+    source = _directory_source(tree, inventory)
+    package = tmp_path / "输入" / "ordinary.zip"
+    package_hash = _write_zip(package, files)
+    output = tmp_path / "result"
+    field = "root"
+    value = tree
+    if entry_kind == "git":
+        repository = tmp_path / "输入" / "repo"
+        repository.mkdir()
+        commit = _git_repository(repository, files)
+        source = _git_source(repository, commit, sorted(files))
+        value = repository
+    elif entry_kind == "zip":
+        source = _zip_source(package, package_hash)
+        field = "path"
+        value = package
+    elif entry_kind == "manifest":
+        field = "manifest_path"
+        value = inventory
+    elif entry_kind == "output":
+        value = output
+    elif entry_kind == "read":
+        value = tmp_path / "输入" / "sealed"
+        import_snapshot(source=source, policy=_policy(), snapshot_root=value)
+    return {"source": source, "field": field, "value": value, "output": output, "home": home}
+
+
+def _call_absolute_entry(entry_kind: str, case: dict[str, object], value: str) -> dict[str, object]:
+    if entry_kind == "read":
+        return read_snapshot(snapshot_root=Path(value))
+    source = dict(case["source"])
+    snapshot_root = case["output"]
+    if entry_kind == "output":
+        snapshot_root = Path(value)
+    else:
+        source[case["field"]] = value
+    return import_snapshot(source=source, policy=_policy(), snapshot_root=snapshot_root)
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "zip", "manifest", "output", "read"])
+@pytest.mark.parametrize("spelling", ["plain", "case_separators", "unicode"])
+def test_absolute_entries_preserve_ordinary_paths(
+    entry_kind: str, spelling: str, absolute_path_case: dict[str, object]
+) -> None:
+    value = str(absolute_path_case["value"])
+    if spelling == "case_separators":
+        value = value.swapcase().replace("\\", "/") + "/" * (entry_kind in {"git", "directory"})
+    elif spelling == "unicode":
+        assert "输入" in value or entry_kind == "output"
+        if entry_kind == "output":
+            value += "中文"
+    manifest = _call_absolute_entry(entry_kind, absolute_path_case, value)
+    assert {item["path"] for item in manifest["entries"] if item["kind"] == "file"} == {
+        "canary.txt",
+        "src/说明.cs",
+    }
+    snapshot = Path(value) if entry_kind in {"read", "output"} else absolute_path_case["output"]
+    assert (snapshot / "source" / "src" / "说明.cs").read_bytes() == b"// synthetic\r\n"
+
+
+def _invalid_absolute_spelling(path: Path, variant: str) -> str:
+    if variant == "tail_dot":
+        return str(path) + "."
+    if variant == "tail_space":
+        return str(path) + " "
+    if variant == "ancestor_dot":
+        return str(path.parent) + ".\\" + path.name
+    if variant == "ancestor_space":
+        return str(path.parent) + " \\" + path.name
+    if variant == "parent":
+        return str(path.parent / "child" / ".." / path.name)
+    if variant == "dot":
+        return str(path.parent) + "/./" + path.name
+    if variant == "ads":
+        return str(path) + ":stream"
+    if variant == "control":
+        return str(path) + "\x01"
+    if variant == "surrogate":
+        return str(path) + "\ud800"
+    if variant == "unc":
+        return r"\\server\share\ordinary"
+    if variant == "extended":
+        return "\\\\?\\" + str(path)
+    if variant == "device":
+        return "\\\\.\\" + str(path)
+    return str(path.parent / variant)
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "zip", "manifest", "output", "read"])
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "tail_dot",
+        "tail_space",
+        "ancestor_dot",
+        "ancestor_space",
+        "parent",
+        "ads",
+        "control",
+        "surrogate",
+        "unc",
+        "extended",
+        "device",
+        "NUL.txt",
+        "CONIN$",
+        "COM¹.txt",
+        "LPT³",
+        "bad?name",
+    ],
+)
+def test_absolute_entries_reject_ambiguous_names_before_content_io(
+    entry_kind: str,
+    variant: str,
+    absolute_path_case: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _invalid_absolute_spelling(absolute_path_case["value"], variant)
+
+    def no_content_read(*arguments, **keywords):
+        pytest.fail("an invalid path reached source content I/O")
+
+    # A manifest-field case validates its ordinary directory first, but must
+    # reject the manifest spelling before any file bytes/tree/Git are read.
+    monkeypatch.setattr(entry, "_hash_file", no_content_read)
+    monkeypatch.setattr(entry, "_scan_tree", no_content_read)
+    monkeypatch.setattr(entry, "_git_text", no_content_read)
+    monkeypatch.setattr(entry.Path, "read_bytes", no_content_read)
+    _expect_error("PathRejected", _call_absolute_entry, entry_kind, absolute_path_case, value)
+    assert not absolute_path_case["output"].exists()
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "zip", "manifest"])
+def test_string_absolute_entries_reject_raw_dot(
+    entry_kind: str, absolute_path_case: dict[str, object]
+) -> None:
+    value = _invalid_absolute_spelling(absolute_path_case["value"], "dot")
+    _expect_error("PathRejected", _call_absolute_entry, entry_kind, absolute_path_case, value)
+
+
+@pytest.mark.parametrize("entry_kind", ["output", "read"])
+def test_path_absolute_entries_acknowledge_folded_dot(
+    entry_kind: str, absolute_path_case: dict[str, object]
+) -> None:
+    ordinary = absolute_path_case["value"]
+    raw = _invalid_absolute_spelling(ordinary, "dot")
+    assert Path(raw) == ordinary
+    assert _call_absolute_entry(entry_kind, absolute_path_case, raw)["entries"]
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "zip", "manifest", "output", "read"])
+def test_absolute_entries_reject_original_junction_chain(
+    entry_kind: str,
+    absolute_path_case: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    ordinary = absolute_path_case["value"]
+    link = tmp_path / "parent-link"
+    _make_junction(link, ordinary.parent)
+    _expect_error(
+        "PathRejected",
+        _call_absolute_entry,
+        entry_kind,
+        absolute_path_case,
+        str(link / ordinary.name),
+    )
+    assert not absolute_path_case["output"].exists()
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "read"])
+def test_directory_identity_rejects_a_real_samefile_forbidden_root(
+    entry_kind: str,
+    absolute_path_case: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ordinary = absolute_path_case["value"]
+    forbidden_alias = Path(str(ordinary) + ".")
+    assert ordinary != forbidden_alias
+    assert os.path.samefile(ordinary, forbidden_alias)
+    # Only the trusted synthetic home spelling is substituted. Candidate path,
+    # stat and samestat use real ordinary Windows metadata, with no mapping.
+    monkeypatch.setattr(entry.Path, "home", staticmethod(lambda: forbidden_alias))
+    _expect_error(
+        "PathRejected", _call_absolute_entry, entry_kind, absolute_path_case, str(ordinary)
+    )
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "read"])
+@pytest.mark.parametrize("error_type", [PermissionError, OSError])
+def test_directory_identity_io_errors_fail_closed_with_cause(
+    entry_kind: str,
+    error_type,
+    absolute_path_case: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_stat = entry.Path.stat
+    synthetic_home = absolute_path_case["home"]
+    injected = error_type("synthetic metadata failure")
+
+    def checked_stat(path, *arguments, **keywords):
+        if path == synthetic_home:
+            raise injected
+        return original_stat(path, *arguments, **keywords)
+
+    monkeypatch.setattr(entry.Path, "stat", checked_stat)
+    error = _expect_error(
+        "IoFailed",
+        _call_absolute_entry,
+        entry_kind,
+        absolute_path_case,
+        str(absolute_path_case["value"]),
+    )
+    assert error.__cause__ is injected
+
+
+def test_plain_chain_is_checked_before_forbidden_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    link = tmp_path / "root-link"
+    _make_junction(link, tree)
+
+    def identity_not_reached(*arguments, **keywords):
+        pytest.fail("identity comparison ran before reparse refusal")
+
+    monkeypatch.setattr(entry, "_reject_broad_root", identity_not_reached)
+    _expect_error("PathRejected", entry._validate_absolute_directory, str(link), label="fixture")
+
+
+def test_generated_writes_reject_ambiguous_leafs_and_skip_failure_labels(tmp_path: Path) -> None:
+    ordinary = tmp_path / "area"
+    ordinary.mkdir()
+    alias = Path(str(ordinary) + ".")
+    _expect_error("PathRejected", entry._write_exclusive, alias / "metadata", b"ordinary")
+    entry._write_failure_label(alias, "SyntheticFailure")
+    assert list(ordinary.iterdir()) == []
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "zip", "manifest", "output", "read"])
+@pytest.mark.parametrize("value", ["relative", "C:relative", r"\rooted"])
+def test_absolute_entries_require_local_drive_absolute_form(
+    entry_kind: str, value: str, absolute_path_case: dict[str, object]
+) -> None:
+    expected = "SnapshotRootInvalid" if entry_kind in {"output", "read"} else "InvalidSource"
+    _expect_error(expected, _call_absolute_entry, entry_kind, absolute_path_case, value)
+
+
+@pytest.mark.parametrize("entry_kind", ["git", "directory", "read"])
+def test_missing_forbidden_roots_allow_an_ordinary_narrow_root(
+    entry_kind: str, absolute_path_case: dict[str, object]
+) -> None:
+    assert not absolute_path_case["home"].exists()
+    assert _call_absolute_entry(entry_kind, absolute_path_case, str(absolute_path_case["value"]))[
+        "entries"
+    ]
+
+
+def test_documents_scratch_descendants_remain_usable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "profile"
+    scratch = home / "Documents" / "Scratch"
+    tree = scratch / "project"
+    tree.mkdir(parents=True)
+    _write_tree(tree, {"ordinary.cs": b"// ordinary\n"})
+    inventory = _manifest_file(tree, _tree_document(tree))
+    monkeypatch.setattr(entry.Path, "home", staticmethod(lambda: home))
+    snapshot = scratch / "result"
+    manifest = _import_directory(tree, inventory, snapshot)
+    assert read_snapshot(snapshot_root=snapshot) == manifest
+
+
+def test_publish_rechecks_output_before_rename_and_labels_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "input.zip"
+    digest = _write_zip(package, {"ordinary.txt": b"ordinary"})
+    snapshot = tmp_path / "snapshot"
+    staging = tmp_path / "snapshot.staging"
+    original_reparse = entry._is_reparse
+
+    def injected_late_reparse(path):
+        # Inject only the final output observation after staging metadata is
+        # complete. This tests guard order, not a real concurrent OS mutation.
+        if path == snapshot and (staging / "SEALED").exists():
+            return True
+        return original_reparse(path)
+
+    def rename_not_reached(*arguments, **keywords):
+        pytest.fail("publish rename ran after the output became unsafe")
+
+    monkeypatch.setattr(entry, "_is_reparse", injected_late_reparse)
+    monkeypatch.setattr(entry.os, "rename", rename_not_reached)
+    _expect_error(
+        "PathRejected",
+        import_snapshot,
+        source=_zip_source(package, digest),
+        policy=_policy(),
+        snapshot_root=snapshot,
+    )
+    assert not snapshot.exists()
+    assert (staging / "IMPORT-FAILED").read_bytes() == ("PathRejected" + os.linesep).encode("ascii")
