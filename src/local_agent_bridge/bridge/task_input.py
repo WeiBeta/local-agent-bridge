@@ -538,14 +538,23 @@ def _check_collection_conflicts(
 
 def _zip_entry_name(info: zipfile.ZipInfo, policy: _Policy) -> tuple[str, bool]:
     original = getattr(info, "orig_filename", info.filename)
-    if original != info.filename or "\x00" in original:
+    # CPython truncates a raw name at its first NUL and, where the host
+    # separator is a backslash, rewrites that backslash as a slash. A real
+    # NUL, or a difference beyond that separator rewrite, means the parsed
+    # filename hides part of the original spelling.
+    if "\x00" in original or original.replace("\\", "/") != info.filename.replace("\\", "/"):
         raise TaskInputError("ZipEntryRejected", "an archive name hides text after a NUL")
+    # Judge the complete original name before a trailing separator, a strip
+    # prefix or an empty-output step can reduce it: an empty or root-anchored
+    # original is rejected as an input instead of silently dropping the entry.
+    if not original:
+        raise TaskInputError("ZipEntryRejected", "an archive entry name must not be empty")
+    if original.startswith(("/", "\\")):
+        raise TaskInputError("ZipEntryRejected", "an archive entry name must not start at a root")
     name = info.filename
     trailing_directory = name.endswith("/")
     if trailing_directory:
         name = name[:-1]
-    if not name:
-        return "", trailing_directory
     normalized = _validate_relative_path(
         name,
         label="archive entry",
@@ -734,7 +743,7 @@ def _plan_zip_members(
     for info in infos:
         deadline.check()
         name, trailing_directory = _zip_entry_name(info, policy)
-        kind = "directory" if not name else _zip_entry_kind(info, trailing_directory)
+        kind = _zip_entry_kind(info, trailing_directory)
         _check_zip_local_record(archive, info, deadline)
         if kind == "directory":
             # Directory entries have no staged file, so validate their empty
@@ -751,6 +760,8 @@ def _plan_zip_members(
                     raise TaskInputError(
                         "StripPrefixMismatch", "the strip prefix entry is not a directory"
                     )
+                # The strip-prefix root passed the same name, kind and record
+                # checks as every entry above; only its output row is omitted.
                 continue
             if not name.startswith(strip_prefix + "/"):
                 raise TaskInputError(

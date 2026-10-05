@@ -3817,3 +3817,278 @@ def test_zip_directory_stream_precheck_uses_the_import_deadline(
     assert observed
     assert not snapshot.exists()
     assert not (tmp_path / "snapshot.staging").exists()
+
+
+# LAB-TASK-ZIP-NAME-REPAIR-01: raw local/central name records. The standard
+# library writer rewrites separator spellings, so these members are assembled
+# from real header bytes with the original names kept in both records.
+
+
+_UNIX_FILE_ATTRS = (0o100644 << 16) | 0x20
+_UNIX_DIRECTORY_ATTRS = (0o40755 << 16) | 0x10
+
+
+def _zip_raw_name_member(
+    name: bytes,
+    *,
+    payload: bytes = b"",
+    flags: int = 0,
+    method: int = zipfile.ZIP_STORED,
+    external_attr: int = _UNIX_FILE_ATTRS,
+    local_name: bytes | None = None,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "local_name": name if local_name is None else local_name,
+        "payload": payload,
+        "flags": flags,
+        "method": method,
+        "external_attr": external_attr,
+    }
+
+
+def _zip_raw_name_package(members: list[dict[str, object]]) -> bytes:
+    """Real stored-member records with explicit raw names, flags and attributes."""
+
+    prefix_parts: list[bytes] = []
+    central_parts: list[bytes] = []
+    offset = 0
+    for member in members:
+        name = member["name"]
+        local_name = member["local_name"]
+        payload = member["payload"]
+        flags = member["flags"]
+        method = member["method"]
+        attrs = member["external_attr"]
+        size = len(payload)
+        crc = zlib.crc32(payload)
+        local = (
+            struct.pack(
+                "<4s5H3I2H",
+                b"PK\x03\x04",
+                20,
+                flags,
+                method,
+                0,
+                0,
+                crc,
+                size,
+                size,
+                len(local_name),
+                0,
+            )
+            + local_name
+            + payload
+        )
+        central = (
+            struct.pack(
+                "<4s6H3I5H2I",
+                b"PK\x01\x02",
+                20,
+                20,
+                flags,
+                method,
+                0,
+                0,
+                crc,
+                size,
+                size,
+                len(name),
+                0,
+                0,
+                0,
+                0,
+                attrs,
+                offset,
+            )
+            + name
+        )
+        prefix_parts.append(local)
+        central_parts.append(central)
+        offset += len(local)
+    central_directory = b"".join(central_parts)
+    end = struct.pack(
+        "<4s4H2IH",
+        b"PK\x05\x06",
+        0,
+        0,
+        len(members),
+        len(members),
+        len(central_directory),
+        offset,
+        0,
+    )
+    return b"".join(prefix_parts) + central_directory + end
+
+
+def test_zip_r12_root_absolute_entry_is_rejected_before_any_output(tmp_path: Path) -> None:
+    # Mirrors the independent R12 fixture: one stored directory entry whose
+    # local and central raw name is exactly one slash.
+    raw = _zip_raw_name_package([_zip_raw_name_member(b"/", external_attr=_UNIX_DIRECTORY_ATTRS)])
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        info = archive.infolist()[0]
+        assert info.orig_filename == "/"
+        assert info.filename == "/"
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+def test_zip_r12_backslash_root_entry_is_rejected(tmp_path: Path) -> None:
+    raw = _zip_raw_name_package([_zip_raw_name_member(b"\\", external_attr=_UNIX_DIRECTORY_ATTRS)])
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        assert "\\" in archive.infolist()[0].orig_filename
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+def test_zip_r12_empty_raw_entry_name_is_rejected(tmp_path: Path) -> None:
+    raw = _zip_raw_name_package([_zip_raw_name_member(b"")])
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        assert archive.infolist()[0].orig_filename == ""
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+def test_zip_r12_raw_nul_entry_name_is_rejected(tmp_path: Path) -> None:
+    raw = _zip_raw_name_package(
+        [_zip_raw_name_member(b"pkg/visible.txt\x00hidden.txt", payload=b"payload\n")]
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+def test_zip_r12_separator_rewrite_is_not_treated_as_a_hidden_nul() -> None:
+    info = zipfile.ZipInfo("folder/ordinary.cs")
+    info.orig_filename = "folder\\ordinary.cs"
+    name, trailing_directory = entry._zip_entry_name(info, entry._default_verification_policy())
+    assert name == "folder/ordinary.cs"
+    assert trailing_directory is False
+
+
+@pytest.mark.parametrize(
+    ("raw_name", "flags"),
+    [
+        (b"folder\\ordinary.cs", 0),
+        ("中文\\说明.md".encode(), 0x800),
+    ],
+)
+def test_zip_r12_raw_backslash_names_import_normalized(
+    tmp_path: Path, raw_name: bytes, flags: int
+) -> None:
+    payload = b"payload\n"
+    raw = _zip_raw_name_package([_zip_raw_name_member(raw_name, payload=payload, flags=flags)])
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        info = archive.infolist()[0]
+        assert "\\" in info.orig_filename
+        assert "\\" not in info.filename
+    snapshot, manifest = _import_zip_length_fixture(tmp_path, raw)
+    expected = info.orig_filename.replace("\\", "/")
+    assert (snapshot / "source" / expected).read_bytes() == payload
+    assert _entry_map(manifest)[expected]["sha256"] == _sha256(payload)
+
+
+def test_zip_r12_mixed_separator_names_collide(tmp_path: Path) -> None:
+    raw = _zip_raw_name_package(
+        [
+            _zip_raw_name_member(b"pkg/a/b.cs", payload=b"first\n"),
+            _zip_raw_name_member(b"pkg/a\\b.cs", payload=b"second\n"),
+        ]
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "PathConflict", staged=False)
+
+
+def test_zip_r12_ordinary_empty_directory_and_empty_package_are_accepted(
+    tmp_path: Path,
+) -> None:
+    raw = _zip_raw_name_package(
+        [_zip_raw_name_member(b"empty/", external_attr=_UNIX_DIRECTORY_ATTRS)]
+    )
+    snapshot, manifest = _import_zip_length_fixture(tmp_path, raw)
+    assert (snapshot / "source/empty").is_dir()
+    assert _entry_map(manifest)["empty"]["kind"] == "directory"
+
+    empty_raw = _zip_raw_name_package([])
+    package = tmp_path / "empty-package.zip"
+    package.write_bytes(empty_raw)
+    empty_manifest = import_snapshot(
+        source=_zip_source(package, _sha256(empty_raw), strip=None),
+        policy=_policy(),
+        snapshot_root=tmp_path / "empty-package-snapshot",
+    )
+    assert empty_manifest["entries"] == []
+    assert read_snapshot(snapshot_root=tmp_path / "empty-package-snapshot") == empty_manifest
+
+
+def test_zip_r12_multi_level_empty_directories_are_accepted(tmp_path: Path) -> None:
+    raw = _zip_raw_name_package(
+        [
+            _zip_raw_name_member(name, external_attr=_UNIX_DIRECTORY_ATTRS)
+            for name in (b"pkg/", b"pkg/outer/", b"pkg/outer/inner/")
+        ]
+    )
+    snapshot, manifest = _import_zip_length_fixture(tmp_path, raw)
+    assert set(_entry_map(manifest)) == {"pkg", "pkg/outer", "pkg/outer/inner"}
+    assert (snapshot / "source/pkg/outer/inner").is_dir()
+
+
+def test_zip_r12_strip_prefix_root_is_not_registered(tmp_path: Path) -> None:
+    raw = _zip_raw_name_package(
+        [
+            _zip_raw_name_member(b"pkg/", external_attr=_UNIX_DIRECTORY_ATTRS),
+            _zip_raw_name_member(b"pkg/data.cs", payload=b"payload\n"),
+        ]
+    )
+    package = tmp_path / "strip-root.zip"
+    package.write_bytes(raw)
+    manifest = import_snapshot(
+        source=_zip_source(package, _sha256(raw), strip="pkg"),
+        policy=_policy(),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert set(_entry_map(manifest)) == {"data.cs"}
+    assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        pytest.param(
+            _zip_raw_name_member(b"pkg/", flags=0x1, external_attr=_UNIX_DIRECTORY_ATTRS),
+            id="encrypted",
+        ),
+        pytest.param(
+            _zip_raw_name_member(b"pkg/", method=99, external_attr=_UNIX_DIRECTORY_ATTRS),
+            id="unsupported-method",
+        ),
+        pytest.param(
+            _zip_raw_name_member(b"pkg/", external_attr=(0o120777 << 16) | 0x20),
+            id="symbolic-link",
+        ),
+        pytest.param(
+            _zip_raw_name_member(b"pkg/", external_attr=_UNIX_DIRECTORY_ATTRS | 0x400),
+            id="reparse-attribute",
+        ),
+    ],
+)
+def test_zip_r12_strip_prefix_root_illegal_entries_are_still_rejected(
+    tmp_path: Path, member: dict[str, object]
+) -> None:
+    raw = _zip_raw_name_package([member])
+    package = tmp_path / "strip-root.zip"
+    package.write_bytes(raw)
+    _expect_error(
+        "ZipEntryRejected",
+        import_snapshot,
+        source=_zip_source(package, _sha256(raw), strip="pkg"),
+        policy=_policy(),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert not (tmp_path / "snapshot").exists()
+    assert not (tmp_path / "snapshot.staging").exists()
+
+
+def test_zip_r12_local_central_name_disagreement_is_rejected_by_reading(
+    tmp_path: Path,
+) -> None:
+    # Raw name bytes are not compared by the planner itself; the standard
+    # library rejects the mismatch when the member is opened for the copy.
+    raw = _zip_raw_name_package(
+        [_zip_raw_name_member(b"a.cs", payload=b"payload\n", local_name=b"b.cs")]
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "InputChanged", staged=True)
