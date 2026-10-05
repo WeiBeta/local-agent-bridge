@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import json
 import os
 import stat
+import struct
 import subprocess
 import time
 import warnings
 import zipfile
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2202,7 +2205,8 @@ def test_blocking_io_is_checked_after_return_including_eof_and_close(
         def zip_read(handle, *arguments):
             raw = original_read(handle, *arguments)
             if not injected and (
-                operation == "zip-read" or (handle.name.endswith("empty.dat") and not raw)
+                (operation == "zip-read" and not handle.name.endswith("/"))
+                or (handle.name.endswith("empty.dat") and not raw)
             ):
                 expire_once()
             return raw
@@ -3157,3 +3161,414 @@ def test_read_snapshot_rejects_malformed_manifest_types_before_membership(
     (snapshot_root / "manifest.json").write_bytes(raw)
     (snapshot_root / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
     _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)
+
+
+def _zip_length_fixture(
+    payload: bytes,
+    *,
+    method: int = zipfile.ZIP_STORED,
+    descriptor: str | None = None,
+    zip64: bool = False,
+    local_changes: dict[str, int] | None = None,
+    central_changes: dict[str, int] | None = None,
+    descriptor_changes: dict[str, int] | None = None,
+    compressed_data: bytes | None = None,
+) -> bytes:
+    """Real single-member ZIP records; no importer/stdlib replacement.
+
+    ZIP64 includes local and central size extras plus ZIP64 EOCD/locator.
+    Changes are explicit raw-format corruptions of this new synthetic input.
+    """
+
+    if compressed_data is None:
+        if method == zipfile.ZIP_DEFLATED:
+            compressor = zlib.compressobj(wbits=-15)
+            compressed_data = compressor.compress(payload) + compressor.flush()
+        else:
+            compressed_data = payload
+    values = {
+        "flags": 8 if descriptor else 0,
+        "method": method,
+        "crc": zlib.crc32(payload),
+        "compressed": len(compressed_data),
+        "expanded": len(payload),
+    }
+    local = dict(values)
+    if descriptor:
+        local.update(crc=0, compressed=0, expanded=0)
+    local.update(local_changes or {})
+    central = values | (central_changes or {})
+    name = b"a.cs"
+    local_extra = (
+        struct.pack("<HHQQ", 1, 16, local["expanded"], local["compressed"]) if zip64 else b""
+    )
+    local_header = struct.pack(
+        "<4s5H3I2H",
+        b"PK\x03\x04",
+        45 if zip64 else 20,
+        local["flags"],
+        local["method"],
+        0,
+        0,
+        local["crc"],
+        0xFFFFFFFF if zip64 else local["compressed"],
+        0xFFFFFFFF if zip64 else local["expanded"],
+        len(name),
+        len(local_extra),
+    )
+    data_descriptor = b""
+    if descriptor:
+        declared = values | (descriptor_changes or {})
+        data_descriptor = struct.pack(
+            "<IQQ" if zip64 else "<III",
+            declared["crc"],
+            declared["compressed"],
+            declared["expanded"],
+        )
+        if descriptor == "signed":
+            data_descriptor = b"PK\x07\x08" + data_descriptor
+    prefix = local_header + name + local_extra + compressed_data + data_descriptor
+    central_extra = (
+        struct.pack("<HHQQ", 1, 16, central["expanded"], central["compressed"]) if zip64 else b""
+    )
+    central_header = (
+        struct.pack(
+            "<4s6H3I5H2I",
+            b"PK\x01\x02",
+            45 if zip64 else 20,
+            45 if zip64 else 20,
+            central["flags"],
+            central["method"],
+            0,
+            0,
+            central["crc"],
+            0xFFFFFFFF if zip64 else central["compressed"],
+            0xFFFFFFFF if zip64 else central["expanded"],
+            len(name),
+            len(central_extra),
+            0,
+            0,
+            0,
+            0x20,
+            0,
+        )
+        + name
+        + central_extra
+    )
+    end64 = b""
+    if zip64:
+        end64 = struct.pack(
+            "<4sQ2H2I4Q",
+            b"PK\x06\x06",
+            44,
+            45,
+            45,
+            0,
+            0,
+            1,
+            1,
+            len(central_header),
+            len(prefix),
+        ) + struct.pack("<4sIQI", b"PK\x06\x07", 0, len(prefix) + len(central_header), 1)
+    end = struct.pack(
+        "<4s4H2IH",
+        b"PK\x05\x06",
+        0,
+        0,
+        0xFFFF if zip64 else 1,
+        0xFFFF if zip64 else 1,
+        0xFFFFFFFF if zip64 else len(central_header),
+        0xFFFFFFFF if zip64 else len(prefix),
+        0,
+    )
+    return prefix + central_header + end64 + end
+
+
+def _import_zip_length_fixture(tmp_path: Path, raw: bytes) -> tuple[Path, dict[str, object]]:
+    package = tmp_path / "length.zip"
+    package.write_bytes(raw)
+    snapshot = tmp_path / "snapshot"
+    manifest = import_snapshot(
+        source=_zip_source(package, _sha256(raw), strip=None),
+        policy=_policy(),
+        snapshot_root=snapshot,
+    )
+    assert manifest["source"]["identity"] == _sha256(raw)
+    assert read_snapshot(snapshot_root=snapshot) == manifest
+    return snapshot, manifest
+
+
+def _reject_zip_length_fixture(tmp_path: Path, raw: bytes, code: str, *, staged: bool) -> None:
+    package = tmp_path / "length.zip"
+    package.write_bytes(raw)
+    snapshot = tmp_path / "snapshot"
+    _expect_error(
+        code,
+        import_snapshot,
+        source=_zip_source(package, _sha256(raw), strip=None),
+        policy=_policy(),
+        snapshot_root=snapshot,
+    )
+    assert package.read_bytes() == raw
+    assert not snapshot.exists()
+    staging = tmp_path / "snapshot.staging"
+    assert staging.exists() is staged
+    if staged:
+        assert (staging / "IMPORT-FAILED").read_text().strip() == code
+        assert not (staging / "manifest.json").exists()
+        assert not (staging / "SEALED").exists()
+
+
+def test_zip_r10_stored_central_prefix_length_is_rejected(tmp_path: Path) -> None:
+    # Fresh real stored ZIP: local/payload=15, central compressed=15,
+    # expanded=5 and CRC=first five bytes. Never reuse the R10 failed package.
+    payload = b"original-source"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("a.cs", payload)
+    raw = bytearray(buffer.getvalue())
+    central = raw.index(b"PK\x01\x02")
+    struct.pack_into("<I", raw, central + 16, zlib.crc32(payload[:5]))
+    struct.pack_into("<I", raw, central + 24, 5)
+    _reject_zip_length_fixture(tmp_path, bytes(raw), "ZipEntryRejected", staged=False)
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("descriptor", [None, "unsigned", "signed"])
+@pytest.mark.parametrize("zip64", [False, True])
+@pytest.mark.parametrize("payload", [b"", b"original-source"])
+def test_zip_real_record_lengths_preserve_legal_formats(
+    tmp_path: Path, method: int, descriptor: str | None, zip64: bool, payload: bytes
+) -> None:
+    raw = _zip_length_fixture(payload, method=method, descriptor=descriptor, zip64=zip64)
+    # Independently confirm stdlib understands these real record layouts.
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        assert archive.read("a.cs") == payload
+    snapshot, manifest = _import_zip_length_fixture(tmp_path, raw)
+    assert (snapshot / "source/a.cs").read_bytes() == payload
+    row = _entry_map(manifest)["a.cs"]
+    assert row["bytes"] == len(payload)
+    assert row["sha256"] == _sha256(payload)
+
+
+class _StreamingZipBuffer(io.BytesIO):
+    def seek(self, *arguments: object) -> int:
+        raise io.UnsupportedOperation("synthetic non-seekable ZIP output")
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("force_zip64", [False, True])
+@pytest.mark.parametrize("payload", [b"", b"original-source"])
+def test_zip_stdlib_writer_descriptor_and_local_zip64_are_preserved(
+    tmp_path: Path, method: int, streaming: bool, force_zip64: bool, payload: bytes
+) -> None:
+    buffer = _StreamingZipBuffer() if streaming else io.BytesIO()
+    with (
+        zipfile.ZipFile(buffer, "w", compression=method) as archive,
+        archive.open("a.cs", "w", force_zip64=force_zip64) as writer,
+    ):
+        writer.write(payload)
+    snapshot, _manifest = _import_zip_length_fixture(tmp_path, buffer.getvalue())
+    assert (snapshot / "source/a.cs").read_bytes() == payload
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("variant", ["ordinary", "descriptor", "zip64", "zip64-descriptor"])
+@pytest.mark.parametrize("field", ["crc", "compressed", "expanded", "method", "flags"])
+def test_zip_local_central_metadata_disagreement_is_rejected(
+    tmp_path: Path, method: int, variant: str, field: str
+) -> None:
+    raw = _zip_length_fixture(
+        b"original-source",
+        method=method,
+        descriptor="signed" if "descriptor" in variant else None,
+        zip64="zip64" in variant,
+        local_changes={field: 99 if field != "method" else (8 if method == 0 else 0)},
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("descriptor", ["unsigned", "signed"])
+@pytest.mark.parametrize("zip64", [False, True])
+@pytest.mark.parametrize("field", ["crc", "compressed", "expanded"])
+def test_zip_descriptor_disagreement_is_rejected(
+    tmp_path: Path, method: int, descriptor: str, zip64: bool, field: str
+) -> None:
+    raw = _zip_length_fixture(
+        b"original-source",
+        method=method,
+        descriptor=descriptor,
+        zip64=zip64,
+        descriptor_changes={field: 99},
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+@pytest.mark.parametrize("zip64", [False, True])
+def test_zip_stored_equal_local_central_but_unequal_sizes_is_rejected(
+    tmp_path: Path, zip64: bool
+) -> None:
+    changes = {"expanded": 5, "crc": zlib.crc32(b"origi")}
+    raw = _zip_length_fixture(
+        b"original-source", zip64=zip64, local_changes=changes, central_changes=changes
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+@pytest.mark.parametrize("declared_size", [0, 5, 16])
+@pytest.mark.parametrize("descriptor", [None, "signed"])
+@pytest.mark.parametrize("zip64", [False, True])
+def test_zip_deflate_actual_length_is_checked_beyond_matching_metadata(
+    tmp_path: Path, declared_size: int, descriptor: str | None, zip64: bool
+) -> None:
+    payload = b"original-source"
+    changes = {"expanded": declared_size, "crc": zlib.crc32(payload[:declared_size])}
+    raw = _zip_length_fixture(
+        payload,
+        method=zipfile.ZIP_DEFLATED,
+        descriptor=descriptor,
+        zip64=zip64,
+        local_changes={} if descriptor else changes,
+        central_changes=changes,
+        descriptor_changes=changes,
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "InputChanged", staged=True)
+
+
+@pytest.mark.parametrize("defect", ["unfinished", "truncated-end", "trailing", "second-stream"])
+@pytest.mark.parametrize("descriptor", [None, "unsigned", "signed"])
+@pytest.mark.parametrize("zip64", [False, True])
+def test_zip_deflate_real_stream_end_and_compressed_length_are_checked(
+    tmp_path: Path, defect: str, descriptor: str | None, zip64: bool
+) -> None:
+    payload = b"original-source"
+    compressor = zlib.compressobj(wbits=-15)
+    data = compressor.compress(payload)
+    data += compressor.flush(zlib.Z_SYNC_FLUSH if defect == "unfinished" else zlib.Z_FINISH)
+    if defect == "truncated-end":
+        data = data[:-1]
+    elif defect == "trailing":
+        data += b"trailing bytes"
+    elif defect == "second-stream":
+        other = zlib.compressobj(wbits=-15)
+        data += other.compress(b"extra") + other.flush()
+    raw = _zip_length_fixture(
+        payload,
+        method=zipfile.ZIP_DEFLATED,
+        descriptor=descriptor,
+        zip64=zip64,
+        compressed_data=data,
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "InputChanged", staged=True)
+
+
+@pytest.mark.parametrize("chunk_bytes", [1, 257, 1024 * 1024])
+def test_zip_deflate_valid_stream_across_read_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chunk_bytes: int
+) -> None:
+    # Real format with only reader chunk size injected; not an EOF/CRC mock.
+    monkeypatch.setattr(entry, "_STREAM_CHUNK_BYTES", chunk_bytes)
+    payload = bytes(range(256)) * 33
+    raw = _zip_length_fixture(payload, method=zipfile.ZIP_DEFLATED, descriptor="signed", zip64=True)
+    snapshot, _manifest = _import_zip_length_fixture(tmp_path, raw)
+    assert (snapshot / "source/a.cs").read_bytes() == payload
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("zip64", [False, True])
+def test_zip_descriptor_can_repeat_known_local_values(
+    tmp_path: Path, method: int, zip64: bool
+) -> None:
+    payload = b"original-source"
+    plain = _zip_length_fixture(payload, method=method)
+    with zipfile.ZipFile(io.BytesIO(plain)) as archive:
+        info = archive.getinfo("a.cs")
+        known = {"crc": info.CRC, "compressed": info.compress_size, "expanded": info.file_size}
+    raw = _zip_length_fixture(
+        payload, method=method, descriptor="unsigned", zip64=zip64, local_changes=known
+    )
+    snapshot, _manifest = _import_zip_length_fixture(tmp_path, raw)
+    assert (snapshot / "source/a.cs").read_bytes() == payload
+
+
+@pytest.mark.parametrize("zip64", [False, True])
+def test_zip_missing_descriptor_is_rejected(tmp_path: Path, zip64: bool) -> None:
+    raw = _zip_length_fixture(
+        b"original-source",
+        zip64=zip64,
+        local_changes={"flags": 8, "crc": 0, "compressed": 0, "expanded": 0},
+        central_changes={"flags": 8},
+    )
+    _reject_zip_length_fixture(tmp_path, raw, "ZipEntryRejected", staged=False)
+
+
+@pytest.mark.parametrize("defect", ["missing-extra", "truncated-extra", "truncated-local"])
+def test_zip_local_zip64_required_fields_are_checked(tmp_path: Path, defect: str) -> None:
+    raw = bytearray(_zip_length_fixture(b"original-source", zip64=True))
+    if defect == "missing-extra":
+        # Keep the sentinel but replace local ZIP64 extra ID with an unknown ID.
+        struct.pack_into("<H", raw, 34, 0xFFFF)
+    elif defect == "truncated-extra":
+        struct.pack_into("<H", raw, 36, 17)  # only sixteen field bytes exist
+    else:
+        # Point the central record at the last nine bytes before the directory.
+        central = raw.index(b"PK\x01\x02")
+        struct.pack_into("<I", raw, central + 42, central - 9)
+    _reject_zip_length_fixture(tmp_path, bytes(raw), "ZipEntryRejected", staged=False)
+
+
+@pytest.mark.parametrize("defect", [None, "unfinished", "hidden-content"])
+def test_zip_explicit_deflate_directory_checks_its_empty_stream(
+    tmp_path: Path, defect: str | None
+) -> None:
+    compressor = zlib.compressobj(wbits=-15)
+    payload = b"hidden" if defect == "hidden-content" else b""
+    data = compressor.compress(payload)
+    data += compressor.flush(zlib.Z_SYNC_FLUSH if defect == "unfinished" else zlib.Z_FINISH)
+    # Replace both four-byte filenames with a directory spelling; only bytes
+    # and directory attributes are changed, not any runtime API.
+    raw = bytearray(_zip_length_fixture(b"", method=zipfile.ZIP_DEFLATED, compressed_data=data))
+    raw[30:34] = b"dir/"
+    central = raw.index(b"PK\x01\x02")
+    raw[central + 46 : central + 50] = b"dir/"
+    struct.pack_into("<I", raw, central + 38, 0x10)
+    if defect:
+        _reject_zip_length_fixture(tmp_path, bytes(raw), "InputChanged", staged=False)
+    else:
+        snapshot, manifest = _import_zip_length_fixture(tmp_path, bytes(raw))
+        assert (snapshot / "source/dir").is_dir()
+        assert _entry_map(manifest)["dir"]["bytes"] == 0
+
+
+def test_zip_directory_stream_precheck_uses_the_import_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Actual ZIP bytes/reader, with only the clock expiry after directory read
+    # injected. This is preflight, unlike the existing staged file-read test.
+    source = _deadline_source(tmp_path, "zip")
+    snapshot = tmp_path / "snapshot"
+    clock = _ImportClock()
+    monkeypatch.setattr(entry, "time", clock)
+    original_read = zipfile.ZipExtFile.read
+    observed = []
+
+    def directory_read(reader, *arguments):
+        raw = original_read(reader, *arguments)
+        if reader.name.endswith("/"):
+            observed.append(reader.name)
+            clock.expire()
+        return raw
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", directory_read)
+    _expect_error(
+        "DeadlineExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(deadline_seconds=1),
+        snapshot_root=snapshot,
+    )
+    assert observed
+    assert not snapshot.exists()
+    assert not (tmp_path / "snapshot.staging").exists()

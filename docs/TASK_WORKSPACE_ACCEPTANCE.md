@@ -31,7 +31,7 @@
 | ZIP-01 / O | `../`、混合分隔符、绝对/UNC、C:foo/C:/foo、设备路径、ADS、NUL、保留名、尾点/空格 | 写入前拒绝；没有目标根外文件，拒绝不会“清理路径再接受”；检查原始名而非只检查截断后的 filename |
 | ZIP-02 / O | 同名重复、A.cs/a.cs、NFC/NFD 冲突、a 文件+a/b、目录/文件同名 | 集合预检拒绝；正常 a/ 目录项+a/b.cs 可接受；不覆盖/去重 |
 | ZIP-03 / O | UNIX symlink/mode、设备/FIFO、DOS reparse 属性、目录 junction、目录输入硬链接 | 类型拒绝；不跟随/创建；没有访问目标文件内容；缺 Windows 权限无法创建 fixture 时标 Skip/Unverified，不能算 Pass |
-| ZIP-04 / O | stored/deflate 普通 ZIP；加密、不支持压缩、CRC 错、截断、伪报 size | 正常通过；异常拒绝并保留专用失败 staging；不发布 sealed manifest，不重新下载或运行模型解压 |
+| ZIP-04 / O | stored/deflate 普通与零字节文件；local/central CRC、size、method、flags 组合；stored 压缩/展开等长；合法有/无签名 descriptor 与限额内 ZIP64；deflate 实际长度、真实流结束、尾随字节/第二流；加密、不支持压缩、CRC 错、截断、伪报 size | 合法包原字节保留，不因 descriptor 零占位或 ZIP64 sentinel 误拒；记录不一致 staging 前拒绝，复制中的实际流/CRC 失败保留专用 staging；无有效最终根，不重新下载或运行模型解压。新小型真实格式 fixture 与读取粒度等定向注入分列；自检不关闭独立 A 或其余矩阵 |
 | ZIP-05 / O | 越过各资源上限；中文/非BMP路径、255码点分量、完整物理路径240 UTF-16码元边界 | 计数单位准确：原规定是255字符而非字节，物理根/分隔符/非BMP字符按UTF-16计；原Unicode身份/UTF-8输出保留，NFC/casefold冲突拒绝而非改名；超限不换目录 |
 | ZIP-06 / O | staging 写入中断、磁盘不足、父路径在检查后变 reparse、已存在目标 | staging 保留且未 sealed；最终清单不可信；不覆盖原目录，竞态防护未闭合时明确阻断 |
 | INPUT-07 / O | 真实 ZIP close 完成后注入异常、关闭入口读最终根、关闭耗时/异常与失败标签 I/O 失败 | 来源关闭在最终根可读前完成；关闭失败或返回后到期保留 staging，不产生有效最终根。标签写入失败不影响此拒绝资格；原始来源/失败现场不删除、不覆盖 |

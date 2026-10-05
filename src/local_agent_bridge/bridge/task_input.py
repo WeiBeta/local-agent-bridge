@@ -22,12 +22,14 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import time
 import unicodedata
 import zipfile
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, suppress
+from copy import copy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -75,6 +77,13 @@ _GIT_MODES = frozenset({"100644", "100755"})
 _NO_REPLACE_OBJECTS = "--no-replace-objects"
 _DEFAULT_DEPTH_LIMIT = _LIMIT_CEILINGS["depth_limit"]
 _DEFAULT_COMPONENT_CODEPOINTS = _LIMIT_CEILINGS["component_codepoints_limit"]
+# APPNOTE 4.3.7/4.3.9/4.5.3. Only the missing local/descriptor checks
+# live here; zipfile still parses the directory and reads/decompresses data.
+_ZIP_LOCAL_HEADER = struct.Struct("<4s5H3I2H")
+_ZIP_DESCRIPTOR_FLAG = 0x8
+_ZIP64_SIZE_SENTINEL = 0xFFFFFFFF
+_ZIP64_EXTRA_ID = 0x1
+_ZIP_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
 
 
 class TaskInputError(RuntimeError):
@@ -561,6 +570,120 @@ def _check_zip_file_declared(info: zipfile.ZipInfo, policy: _Policy, name: str) 
         )
 
 
+def _zip_record_bytes(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, offset: int, size: int, deadline: _Deadline
+) -> bytes:
+    deadline.check()
+    # CPython has already computed each member's next-header/directory bound.
+    # Use that bound instead of inventing another central-directory parser.
+    if offset < info.header_offset or offset + size > info._end_offset:
+        raise TaskInputError("ZipEntryRejected", "an archive record crosses its member boundary")
+    archive.fp.seek(offset)
+    deadline.check()
+    raw = archive.fp.read(size)
+    deadline.check()
+    if len(raw) != size:
+        raise TaskInputError("ZipEntryRejected", "an archive record is truncated")
+    return raw
+
+
+def _zip_local_sizes(
+    extra: bytes, compressed: int, expanded: int, deadline: _Deadline
+) -> tuple[int, int, bool]:
+    """Resolve the two local ZIP64 sizes; leave unrelated extra fields alone."""
+
+    zip64_sizes: tuple[int, int] | None = None
+    position = 0
+    while position < len(extra):
+        deadline.check()
+        if len(extra) - position < 4:
+            raise TaskInputError("ZipEntryRejected", "a local extra field is truncated")
+        field_id, size = struct.unpack_from("<HH", extra, position)
+        position += 4
+        if position + size > len(extra):
+            raise TaskInputError("ZipEntryRejected", "a local extra field is truncated")
+        if field_id == _ZIP64_EXTRA_ID:
+            if zip64_sizes is not None or size < 16:
+                raise TaskInputError(
+                    "ZipEntryRejected", "local ZIP64 sizes are missing or repeated"
+                )
+            # Local ZIP64 includes both sizes, in expanded/compressed order.
+            zip64_sizes = struct.unpack_from("<QQ", extra, position)
+        position += size
+    needs_zip64 = _ZIP64_SIZE_SENTINEL in (compressed, expanded)
+    if needs_zip64 and zip64_sizes is None:
+        raise TaskInputError("ZipEntryRejected", "a local ZIP64 size has no extended value")
+    if expanded == _ZIP64_SIZE_SENTINEL:
+        expanded = zip64_sizes[0]
+    if compressed == _ZIP64_SIZE_SENTINEL:
+        compressed = zip64_sizes[1]
+    return compressed, expanded, zip64_sizes is not None
+
+
+def _check_zip_descriptor(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    offset: int,
+    zip64: bool,
+    deadline: _Deadline,
+) -> None:
+    layout = struct.Struct("<IQQ" if zip64 else "<III")
+    available = info._end_offset - offset
+    raw = _zip_record_bytes(archive, info, offset, min(layout.size + 4, available), deadline)
+    # A descriptor can omit its signature. Try the unsigned interpretation
+    # first, including the valid case where the CRC equals the signature.
+    starts = (0, 4) if raw.startswith(_ZIP_DESCRIPTOR_SIGNATURE) else (0,)
+    expected = (info.CRC, info.compress_size, info.file_size)
+    for start in starts:
+        if len(raw) >= start + layout.size and layout.unpack_from(raw, start) == expected:
+            return
+    raise TaskInputError("ZipEntryRejected", "the data descriptor differs from the directory")
+
+
+def _check_zip_local_record(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, deadline: _Deadline
+) -> None:
+    raw = _zip_record_bytes(archive, info, info.header_offset, _ZIP_LOCAL_HEADER.size, deadline)
+    (
+        signature,
+        _version,
+        flags,
+        method,
+        _time,
+        _date,
+        crc,
+        compressed,
+        expanded,
+        name_size,
+        extra_size,
+    ) = _ZIP_LOCAL_HEADER.unpack(raw)
+    if signature != b"PK\x03\x04" or flags != info.flag_bits or method != info.compress_type:
+        raise TaskInputError("ZipEntryRejected", "local and directory entry metadata differ")
+    extra_offset = info.header_offset + _ZIP_LOCAL_HEADER.size + name_size
+    extra = _zip_record_bytes(archive, info, extra_offset, extra_size, deadline)
+    compressed, expanded, zip64 = _zip_local_sizes(extra, compressed, expanded, deadline)
+    if flags & _ZIP_DESCRIPTOR_FLAG:
+        # Streaming writers use zero placeholders (also inside ZIP64 extra).
+        # Writers that know the values may repeat the directory values.
+        matching = (
+            crc in (0, info.CRC)
+            and compressed in (0, info.compress_size)
+            and expanded in (0, info.file_size)
+        )
+    else:
+        matching = (crc, compressed, expanded) == (info.CRC, info.compress_size, info.file_size)
+    if not matching:
+        raise TaskInputError("ZipEntryRejected", "local and directory CRC or sizes differ")
+    if method == zipfile.ZIP_STORED and info.compress_size != info.file_size:
+        raise TaskInputError("ZipEntryRejected", "a stored entry declares unequal byte lengths")
+    data_end = extra_offset + extra_size + info.compress_size
+    if data_end > info._end_offset:
+        raise TaskInputError("ZipEntryRejected", "archive data crosses its member boundary")
+    if flags & _ZIP_DESCRIPTOR_FLAG:
+        _check_zip_descriptor(archive, info, data_end, zip64, deadline)
+    deadline.check()
+
+
 def _plan_zip_members(
     archive: zipfile.ZipFile, source: dict[str, object], policy: _Policy, deadline: _Deadline
 ) -> tuple[dict[str, _PendingFile], set[str]]:
@@ -584,6 +707,13 @@ def _plan_zip_members(
         deadline.check()
         name, trailing_directory = _zip_entry_name(info, policy)
         kind = "directory" if not name else _zip_entry_kind(info, trailing_directory)
+        _check_zip_local_record(archive, info, deadline)
+        if kind == "directory":
+            # Directory entries have no staged file, so validate their empty
+            # stream here rather than bypassing real deflate EOF/CRC checks.
+            for chunk in _zip_chunks(archive, info.filename, deadline):
+                if chunk:
+                    raise TaskInputError("ZipEntryRejected", "an archive directory has content")
         deadline.check()
         if not name:
             continue
@@ -1035,7 +1165,14 @@ def _file_chunks(path: Path, deadline: _Deadline) -> Iterator[bytes]:
 
 def _zip_chunks(archive: zipfile.ZipFile, member: str, deadline: _Deadline) -> Iterator[bytes]:
     deadline.check()
-    with archive.open(member, "r") as reader:
+    info = archive.getinfo(member)
+    reading_info = copy(info)
+    # ZipExtFile clips output to file_size and can mark EOF before zlib EOF.
+    # One extra byte detects an understated declaration without unbounded
+    # expansion; keep the original directory record and CRC unchanged.
+    reading_info.file_size += 1
+    total = 0
+    with archive.open(reading_info, "r") as reader:
         deadline.check()
         while True:
             deadline.check()
@@ -1043,7 +1180,18 @@ def _zip_chunks(archive: zipfile.ZipFile, member: str, deadline: _Deadline) -> I
             deadline.check()
             if not chunk:
                 break
+            total += len(chunk)
+            if total > info.file_size:
+                raise TaskInputError("InputChanged", "an archive stream exceeds its declared size")
             yield chunk
+        if total != info.file_size or reader._compress_left != 0:
+            raise TaskInputError(
+                "InputChanged", "an archive stream differs from its declared sizes"
+            )
+        if info.compress_type == zipfile.ZIP_DEFLATED:
+            decompressor = reader._decompressor
+            if not decompressor.eof or decompressor.unused_data or decompressor.unconsumed_tail:
+                raise TaskInputError("InputChanged", "the declared deflate stream is not complete")
     deadline.check()
 
 
