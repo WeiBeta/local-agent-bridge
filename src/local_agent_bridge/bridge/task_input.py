@@ -1804,7 +1804,6 @@ def _validate_snapshot_manifest(
                     "InvalidManifest", "a manifest entry is missing an explicit parent"
                 )
             parent = _parent_path(parent)
-    _check_collection_conflicts(files, directories, code="InvalidManifest")
     source_paths = document["source_paths"]
     if type(source_paths) is not list:
         raise TaskInputError("InvalidManifest", "source_paths must be a list of unique paths")
@@ -1850,6 +1849,14 @@ def _validate_snapshot_manifest(
     for prefix in excluded_paths:
         if any(_covers(prefix, path) for path in entry_paths):
             raise TaskInputError("InvalidManifest", "an excluded path covers a kept manifest entry")
+    # Exclusions have no kind. Their paths and parents enter only the directory
+    # validation view, allowing explicit parent/child exclusions while rejecting
+    # aliases and known kept-file parents. This view never changes the inventory.
+    _check_collection_conflicts(
+        files,
+        _completed_directories(files, directories | excluded_set),
+        code="InvalidManifest",
+    )
     for declared in source_paths:
         if declared in files or declared in excluded_set:
             continue

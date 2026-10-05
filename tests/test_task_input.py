@@ -1276,6 +1276,159 @@ def test_read_snapshot_rejects_manifest_folding_conflicts(
     _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)
 
 
+def _read_collection_fixture(
+    root: Path,
+    kept_paths: list[str],
+    excluded_paths: list[str],
+    *,
+    source_paths: list[str] | None = None,
+    empty_directories: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Write a fresh sealed reader fixture without calling the importer."""
+
+    source_root = root / "source"
+    source_root.mkdir(parents=True)
+    _write_tree(source_root, dict.fromkeys(kept_paths, b"synthetic\r\n\x00\xff"))
+    for path in empty_directories:
+        source_root.joinpath(*path.split("/")).mkdir(parents=True, exist_ok=True)
+    inventory = _tree_document(source_root)
+    entries = [{**item, "git_mode": None} for item in inventory["entries"]]
+    declared = kept_paths if source_paths is None else source_paths
+    selection = {
+        "source_paths": sorted(declared, key=lambda path: path.encode("utf-8")),
+        "excluded_paths": [
+            {"path": path, "reason": "synthetic exclusion"}
+            for path in sorted(excluded_paths, key=lambda path: path.encode("utf-8"))
+        ],
+    }
+    document = {
+        "contract_version": 1,
+        "snapshot_id": _sha256(_canonical(inventory)),
+        "source": {
+            "kind": "zip",
+            "identity": "1" * 64,
+            "selection_sha256": _sha256(_canonical(selection)),
+        },
+        "entries": entries,
+        **selection,
+    }
+    raw = _canonical(document)
+    (root / "manifest.json").write_bytes(raw)
+    (root / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
+    return document
+
+
+def test_read_collection_rejects_kept_excluded_samefile(tmp_path: Path) -> None:
+    snapshot = tmp_path / "sealed"
+    document = _read_collection_fixture(snapshot, ["a.cs", "z.cs"], ["A.cs"])
+    assert os.path.samefile(snapshot / "source/a.cs", snapshot / "source/A.cs")
+    before = (snapshot / "manifest.json").read_bytes()
+    error = _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot)
+    assert error.__cause__ is None
+    assert before == _canonical(document) == (snapshot / "manifest.json").read_bytes()
+    assert (snapshot / "source/a.cs").read_bytes() == b"synthetic\r\n\x00\xff"
+
+
+@pytest.mark.parametrize(
+    ("kept", "excluded"),
+    [
+        pytest.param(["caf\u00e9.cs"], ["cafe\u0301.cs"], id="cross-leaf-nfc"),
+        pytest.param(["Top/a.cs"], ["top"], id="excluded-folded-kept-directory"),
+        pytest.param(["caf\u00e9/a.cs"], ["cafe\u0301"], id="excluded-nfc-kept-directory"),
+        pytest.param(["Top/deep/a.cs"], ["top/deep"], id="cross-deep-prefix-case"),
+        pytest.param(["caf\u00e9/deep/a.cs"], ["cafe\u0301/deep"], id="cross-deep-prefix-nfc"),
+        pytest.param(["a.cs"], ["a.cs/child"], id="kept-file-excluded-parent"),
+        pytest.param(["a.cs"], ["A.cs/child"], id="kept-file-folded-excluded-parent"),
+        pytest.param(["caf\u00e9.cs"], ["cafe\u0301.cs/child"], id="kept-file-nfc-excluded-parent"),
+        pytest.param(["Top/a.cs"], ["top/b.cs"], id="cross-implicit-parent-case"),
+        pytest.param(["caf\u00e9/a.cs"], ["cafe\u0301/b.cs"], id="cross-implicit-parent-nfc"),
+        pytest.param(["Top/deep/a.cs"], ["top/deep/b.cs"], id="cross-deep-parent-case"),
+        pytest.param(["caf\u00e9/deep/a.cs"], ["cafe\u0301/deep/b.cs"], id="cross-deep-parent-nfc"),
+        pytest.param([], ["A.cs", "a.cs"], id="excluded-leaf-case"),
+        pytest.param([], ["caf\u00e9.cs", "cafe\u0301.cs"], id="excluded-leaf-nfc"),
+        pytest.param([], ["Top", "top/a.cs"], id="excluded-explicit-implicit-parent-case"),
+        pytest.param(
+            [], ["caf\u00e9", "cafe\u0301/a.cs"], id="excluded-explicit-implicit-parent-nfc"
+        ),
+        pytest.param([], ["Top/a.cs", "top/b.cs"], id="excluded-implicit-parent-case"),
+        pytest.param([], ["caf\u00e9/a.cs", "cafe\u0301/b.cs"], id="excluded-implicit-parent-nfc"),
+        pytest.param([], ["Top/deep/a.cs", "top/deep/b.cs"], id="excluded-deep-parent-case"),
+        pytest.param(
+            [], ["root/Caf\u00e9/a.cs", "root/Cafe\u0301/b.cs"], id="excluded-inner-parent-nfc"
+        ),
+    ],
+)
+def test_read_collection_rejects_conflicting_path_identities(
+    tmp_path: Path, kept: list[str], excluded: list[str]
+) -> None:
+    snapshot = tmp_path / "sealed"
+    document = _read_collection_fixture(snapshot, kept, excluded)
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot)
+    assert (snapshot / "manifest.json").read_bytes() == _canonical(document)
+    assert (snapshot / "SEALED").read_bytes() == _sha256(_canonical(document)).encode("ascii")
+
+
+@pytest.mark.parametrize(
+    ("kept", "excluded", "empty_directories"),
+    [
+        pytest.param([], ["omit", "omit/a.cs"], (), id="explicit-excluded-parent-child"),
+        pytest.param(
+            [], ["omit", "omit/deep", "omit/deep/a.cs"], (), id="nested-excluded-directories"
+        ),
+        pytest.param([], ["omit/a.cs", "omit/b.cs"], (), id="shared-implicit-excluded-parent"),
+        pytest.param(["src/a.cs"], ["src/b.cs"], (), id="kept-directory-excluded-child"),
+        pytest.param(
+            ["src/a.cs"], ["src/deep", "src/deep/b.cs"], (), id="kept-parent-excluded-subtree"
+        ),
+        pytest.param(["Top/a.cs"], ["Other/b.cs"], (), id="different-parent-paths"),
+        pytest.param([], ["a", "ab/child"], (), id="component-boundary"),
+        pytest.param(["cafe\u0301/a.cs"], ["cafe\u0301/b.cs"], (), id="preserved-original-nfd"),
+        pytest.param(["\U0001f600/a.cs"], ["\U0001f600/b.cs"], (), id="preserved-non-bmp"),
+        pytest.param([], ["omit"], ("kept",), id="empty-directory-and-exclusion"),
+        pytest.param([], ["kept/child"], ("kept",), id="empty-kept-parent-excluded-child"),
+        pytest.param(["a.cs"], ["omit", "omit/a.cs"], (), id="excluded-child-kind-unknown"),
+        pytest.param([], [], (), id="empty-collection"),
+    ],
+)
+def test_read_collection_preserves_valid_exclusion_combinations(
+    tmp_path: Path, kept: list[str], excluded: list[str], empty_directories: tuple[str, ...]
+) -> None:
+    snapshot = tmp_path / "sealed"
+    # Explicitly declare excluded leaves too: they stay in the source denominator.
+    declared = kept + [path for path in excluded if path.endswith(".cs")]
+    document = _read_collection_fixture(
+        snapshot, kept, excluded, source_paths=declared, empty_directories=empty_directories
+    )
+    before = (snapshot / "manifest.json").read_bytes()
+    actual = read_snapshot(snapshot_root=snapshot)
+    assert actual == document
+    assert actual["source_paths"] == sorted(declared, key=lambda path: path.encode("utf-8"))
+    assert len(actual["excluded_paths"]) == len(excluded)
+    assert len({item["path"] for item in actual["entries"] + actual["excluded_paths"]}) == (
+        len(actual["entries"]) + len(excluded)
+    )
+    assert before == _canonical(actual) == (snapshot / "manifest.json").read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("kept", "excluded", "declared"),
+    [
+        pytest.param(["a.cs"], [], "A.cs", id="kept-case-alias"),
+        pytest.param(["caf\u00e9.cs"], [], "cafe\u0301.cs", id="kept-nfc-alias"),
+        pytest.param([], ["a.cs"], "A.cs", id="excluded-case-alias"),
+        pytest.param([], ["caf\u00e9.cs"], "cafe\u0301.cs", id="excluded-nfc-alias"),
+        pytest.param([], ["omit"], "omit/a.cs", id="excluded-prefix-is-not-exact-leaf"),
+    ],
+)
+def test_read_collection_source_declarations_require_exact_membership(
+    tmp_path: Path, kept: list[str], excluded: list[str], declared: str
+) -> None:
+    snapshot = tmp_path / "sealed"
+    document = _read_collection_fixture(snapshot, kept, excluded, source_paths=[declared])
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot)
+    assert (snapshot / "manifest.json").read_bytes() == _canonical(document)
+
+
 def test_trusted_control_files_are_hash_bound(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     tree.mkdir()
