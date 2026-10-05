@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import subprocess
+import time
 import warnings
 import zipfile
 from pathlib import Path
@@ -1763,7 +1764,13 @@ def test_generated_writes_reject_ambiguous_leafs_and_skip_failure_labels(tmp_pat
     ordinary = tmp_path / "area"
     ordinary.mkdir()
     alias = Path(str(ordinary) + ".")
-    _expect_error("PathRejected", entry._write_exclusive, alias / "metadata", b"ordinary")
+    _expect_error(
+        "PathRejected",
+        entry._write_exclusive,
+        alias / "metadata",
+        b"ordinary",
+        entry._Deadline.starting_now(60),
+    )
     entry._write_failure_label(alias, "SyntheticFailure")
     assert list(ordinary.iterdir()) == []
 
@@ -1832,3 +1839,473 @@ def test_publish_rechecks_output_before_rename_and_labels_failure(
     )
     assert not snapshot.exists()
     assert (staging / "IMPORT-FAILED").read_bytes() == ("PathRejected" + os.linesep).encode("ascii")
+
+
+def _deadline_source(tmp_path: Path, kind: str) -> dict[str, object]:
+    files = {"src/a.cs": b"a", "empty.dat": b""}
+    if kind == "zip":
+        package = tmp_path / "input.zip"
+        return _zip_source(package, _write_zip(package, files))
+    root = tmp_path / "input"
+    root.mkdir()
+    if kind == "git":
+        commit = _git_repository(root, files)
+        return _git_source(root, commit, sorted(files))
+    _write_tree(root, files)
+    inventory = _manifest_file(root, _tree_document(root))
+    return _directory_source(root, inventory)
+
+
+class _ImportClock:
+    """A controlled importer clock; subprocess and pytest keep real time."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def expire(self) -> None:
+        self.now += 1.0
+
+
+@pytest.mark.parametrize("delay_seconds", [0.0, 1.2], ids=["no-delay", "bounded-real-delay"])
+def test_metadata_deadline_uses_real_elapsed_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delay_seconds: float
+) -> None:
+    source = _deadline_source(tmp_path, "directory")
+    snapshot = tmp_path / "snapshot"
+    staging = tmp_path / "snapshot.staging"
+    original_write = entry._write_exclusive
+    original_rename = entry.os.rename
+    observation: dict[str, object] = {"injected_delay_seconds": delay_seconds}
+
+    def delayed_metadata(target, raw, deadline):
+        if target.name == "manifest.json":
+            observation["expires_at"] = deadline.expires_at
+            observation["delay_started_at"] = time.monotonic()
+            # This is a deliberate bounded delay, not a naturally slow disk.
+            time.sleep(delay_seconds)
+            observation["delay_finished_at"] = time.monotonic()
+        return original_write(target, raw, deadline)
+
+    def observed_rename(old, new):
+        observation["rename_started_at"] = time.monotonic()
+        return original_rename(old, new)
+
+    monkeypatch.setattr(entry, "_write_exclusive", delayed_metadata)
+    monkeypatch.setattr(entry.os, "rename", observed_rename)
+    started = time.monotonic()
+    if delay_seconds:
+        _expect_error(
+            "DeadlineExceeded",
+            import_snapshot,
+            source=source,
+            policy=_policy(deadline_seconds=1),
+            snapshot_root=snapshot,
+        )
+        observation["error"] = "DeadlineExceeded"
+        assert not snapshot.exists()
+        assert not (staging / "manifest.json").exists()
+        assert not (staging / "SEALED").exists()
+        assert (staging / "source/src/a.cs").read_bytes() == b"a"
+        assert (staging / "IMPORT-FAILED").read_text() == "DeadlineExceeded\n"
+        assert "rename_started_at" not in observation
+        assert observation["delay_started_at"] < observation["expires_at"]
+        assert observation["delay_finished_at"] >= observation["expires_at"]
+    else:
+        manifest = import_snapshot(
+            source=source, policy=_policy(deadline_seconds=1), snapshot_root=snapshot
+        )
+        observation["error"] = None
+        assert read_snapshot(snapshot_root=snapshot) == manifest
+        assert observation["rename_started_at"] < observation["expires_at"]
+        assert not staging.exists()
+    observation["elapsed_seconds"] = time.monotonic() - started
+    (tmp_path / "metadata-deadline-observation.json").write_bytes(_canonical(observation))
+
+
+@pytest.mark.parametrize(
+    ("stage", "kind", "failure_root"),
+    [
+        ("root-validation", "directory", None),
+        ("git-type", "git", None),
+        ("git-tree", "git", None),
+        ("git-listing-parse", "git", None),
+        ("git-size", "git", "staging"),
+        ("git-blob", "git", "staging"),
+        ("zip-hash", "zip", None),
+        ("zip-open", "zip", None),
+        ("zip-member-scan", "zip", None),
+        ("manifest-read", "directory", None),
+        ("manifest-hash", "directory", None),
+        ("manifest-parse", "directory", None),
+        ("manifest-entries", "directory", None),
+        ("selection", "directory", None),
+        ("selection-digest", "directory", None),
+        ("staging-create", "directory", "staging"),
+        ("source-create", "directory", "staging"),
+        ("directory-create", "directory", "staging"),
+        ("snapshot-identity", "directory", "staging"),
+        ("manifest-serialize", "directory", "staging"),
+        ("manifest-after-write", "directory", "staging"),
+        ("seal-after-write", "directory", "staging"),
+        ("rename-precheck", "directory", "staging"),
+        ("rename-return", "directory", "snapshot"),
+        ("zip-close", "zip", "snapshot"),
+    ],
+)
+def test_import_stages_share_one_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, kind: str, failure_root: str | None
+) -> None:
+    source = _deadline_source(tmp_path, kind)
+    snapshot = tmp_path / "snapshot"
+    staging = tmp_path / "snapshot.staging"
+    clock = _ImportClock()
+    monkeypatch.setattr(entry, "time", clock)
+    injected = False
+
+    def expire_once() -> None:
+        nonlocal injected
+        assert not injected, f"stage injection repeated: {stage}"
+        injected = True
+        clock.expire()
+
+    def delay_result(owner, name, matches):
+        original = getattr(owner, name)
+
+        def delayed(*arguments, **keywords):
+            result = original(*arguments, **keywords)
+            if not injected and matches(arguments, keywords):
+                expire_once()
+            return result
+
+        monkeypatch.setattr(owner, name, delayed)
+
+    if stage.startswith("git-") and stage != "git-listing-parse":
+        operation = {
+            "git-type": ["cat-file", "-t"],
+            "git-tree": ["ls-tree", "-rz"],
+            "git-size": ["cat-file", "-s"],
+            "git-blob": ["cat-file", "blob"],
+        }[stage]
+        delay_result(entry.subprocess, "run", lambda args, kw: args[0][4:6] == operation)
+    elif stage == "git-listing-parse":
+        delay_result(entry, "_parse_git_listing", lambda args, kw: True)
+    elif stage == "root-validation":
+        delay_result(entry, "_validate_absolute_directory", lambda args, kw: True)
+    elif stage == "zip-hash":
+        delay_result(entry, "_hash_file", lambda args, kw: args[0] == Path(source["path"]))
+    elif stage == "zip-open":
+        delay_result(entry.zipfile.ZipFile, "__init__", lambda args, kw: True)
+    elif stage == "zip-member-scan":
+        delay_result(entry, "_zip_entry_name", lambda args, kw: True)
+    elif stage == "manifest-read":
+        delay_result(
+            entry.Path, "read_bytes", lambda args, kw: args[0] == Path(source["manifest_path"])
+        )
+    elif stage == "manifest-hash":
+        delay_result(entry, "_sha256_bytes", lambda args, kw: True)
+    elif stage == "manifest-parse":
+        delay_result(
+            entry,
+            "decode_strict_json_bytes",
+            lambda args, kw: kw.get("label") == "directory manifest",
+        )
+    elif stage == "manifest-entries":
+        delay_result(
+            entry, "_validate_relative_path", lambda args, kw: kw.get("label") == "manifest entry"
+        )
+    elif stage == "selection":
+        delay_result(entry, "_most_specific_exclusion", lambda args, kw: True)
+    elif stage == "selection-digest":
+        delay_result(entry, "_selection_digest", lambda args, kw: True)
+    elif stage.endswith("-create"):
+        target = {
+            "staging-create": staging,
+            "source-create": staging / "source",
+            "directory-create": staging / "source/src",
+        }[stage]
+        delay_result(entry.os, "mkdir", lambda args, kw: args[0] == target)
+    elif stage in {"snapshot-identity", "manifest-serialize"}:
+        expected_key = "entries" if stage == "snapshot-identity" else "snapshot_id"
+        delay_result(
+            entry,
+            "_canonical_json_bytes",
+            lambda args, kw: (
+                isinstance(args[0], dict)
+                and expected_key in args[0]
+                and ("snapshot_id" in args[0]) == (stage == "manifest-serialize")
+            ),
+        )
+    elif stage in {"manifest-after-write", "seal-after-write"}:
+        name = "manifest.json" if stage == "manifest-after-write" else "SEALED"
+        delay_result(entry, "_write_exclusive", lambda args, kw: args[0].name == name)
+    elif stage == "rename-precheck":
+        delay_result(
+            entry,
+            "_assert_plain_target",
+            lambda args, kw: args[0] == snapshot and (staging / "SEALED").exists(),
+        )
+    elif stage == "rename-return":
+        delay_result(entry.os, "rename", lambda args, kw: args[0] == staging)
+    elif stage == "zip-close":
+        delay_result(entry.zipfile.ZipFile, "close", lambda args, kw: snapshot.exists())
+    else:
+        pytest.fail(f"missing stage injection: {stage}")
+
+    _expect_error(
+        "DeadlineExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(deadline_seconds=1),
+        snapshot_root=snapshot,
+    )
+    assert injected, f"stage was not reached: {stage}"
+    if failure_root is None:
+        assert not staging.exists()
+        assert not snapshot.exists()
+    else:
+        failed = staging if failure_root == "staging" else snapshot
+        assert failed.is_dir()
+        assert (failed / "IMPORT-FAILED").read_text() == "DeadlineExceeded\n"
+        assert not (snapshot if failed == staging else staging).exists()
+        if failure_root == "snapshot":
+            # Preserve the rename/close evidence; never erase SEALED to hide it.
+            assert (failed / "manifest.json").is_file()
+            assert (failed / "SEALED").is_file()
+            assert (failed / "source/src/a.cs").read_bytes() == b"a"
+            _expect_error("InvalidManifest", read_snapshot, snapshot_root=failed)
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+def test_one_second_import_without_delay_preserves_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    source = _deadline_source(tmp_path, kind)
+    monkeypatch.setattr(entry, "time", _ImportClock())
+    snapshot = tmp_path / "snapshot"
+    manifest = import_snapshot(
+        source=source, policy=_policy(deadline_seconds=1), snapshot_root=snapshot
+    )
+    assert read_snapshot(snapshot_root=snapshot) == manifest
+    assert (snapshot / "source/src/a.cs").read_bytes() == b"a"
+    assert (snapshot / "source/empty.dat").read_bytes() == b""
+    assert not (snapshot / "IMPORT-FAILED").exists()
+
+
+def test_git_timeout_is_remaining_budget_without_a_minimum_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _ImportClock()
+    monkeypatch.setattr(entry, "time", clock)
+    timeout_values: list[float] = []
+
+    def completed_git(arguments, **keywords):
+        timeout_values.append(keywords["timeout"])
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"original", stderr=b"")
+
+    monkeypatch.setattr(entry.shutil, "which", lambda name: "synthetic-git")
+    monkeypatch.setattr(entry.subprocess, "run", completed_git)
+    deadline = entry._Deadline(100.025)
+    assert entry._git_bytes(tmp_path, ["cat-file", "-t", "synthetic"], deadline) == b"original"
+    assert len(timeout_values) == 1
+    assert timeout_values[0] == pytest.approx(0.025)
+    clock.now = deadline.expires_at
+    _expect_error("DeadlineExceeded", entry._git_bytes, tmp_path, ["unused"], deadline)
+    assert len(timeout_values) == 1, "expired Git operation was launched"
+
+
+def test_git_subprocess_timeout_keeps_the_public_deadline_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _deadline_source(tmp_path, "git")
+
+    def timeout_git(arguments, **keywords):
+        raise subprocess.TimeoutExpired(arguments, keywords["timeout"])
+
+    monkeypatch.setattr(entry.subprocess, "run", timeout_git)
+    _expect_error(
+        "DeadlineExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert not (tmp_path / "snapshot.staging").exists()
+
+
+@pytest.mark.parametrize(
+    ("operation", "kind", "failure_root"),
+    [
+        ("package-read", "zip", None),
+        ("directory-hash-read", "directory", None),
+        ("copy-read", "directory", "staging"),
+        ("copy-empty-eof", "directory", "staging"),
+        ("zip-read", "zip", "staging"),
+        ("zip-empty-eof", "zip", "staging"),
+        ("final-hash-read", "directory", "staging"),
+        ("file-write", "directory", "staging"),
+        ("file-close", "directory", "staging"),
+        ("metadata-write", "directory", "staging"),
+        ("metadata-close", "directory", "staging"),
+        ("seal-write", "directory", "staging"),
+        ("seal-close", "directory", "staging"),
+    ],
+)
+def test_blocking_io_is_checked_after_return_including_eof_and_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    kind: str,
+    failure_root: str | None,
+) -> None:
+    source = _deadline_source(tmp_path, kind)
+    snapshot = tmp_path / "snapshot"
+    staging = tmp_path / "snapshot.staging"
+    clock = _ImportClock()
+    monkeypatch.setattr(entry, "time", clock)
+    injected = False
+
+    def expire_once() -> None:
+        nonlocal injected
+        assert not injected
+        injected = True
+        clock.expire()
+
+    class TimedHandle:
+        def __init__(self, handle, action: str) -> None:
+            self.handle = handle
+            self.action = action
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *arguments):
+            result = self.handle.__exit__(*arguments)
+            if self.action == "close" and not injected:
+                expire_once()
+            return result
+
+        def read(self, *arguments):
+            raw = self.handle.read(*arguments)
+            if not injected and (self.action == "read" or (self.action == "empty-eof" and not raw)):
+                expire_once()
+            return raw
+
+        def write(self, raw):
+            result = self.handle.write(raw)
+            if self.action == "write" and not injected:
+                expire_once()
+            return result
+
+    if operation in {"zip-read", "zip-empty-eof"}:
+        original_read = entry.zipfile.ZipExtFile.read
+
+        def zip_read(handle, *arguments):
+            raw = original_read(handle, *arguments)
+            if not injected and (
+                operation == "zip-read" or (handle.name.endswith("empty.dat") and not raw)
+            ):
+                expire_once()
+            return raw
+
+        monkeypatch.setattr(entry.zipfile.ZipExtFile, "read", zip_read)
+    elif operation.endswith("-read") or operation == "copy-empty-eof":
+        original_open = entry.Path.open
+        root = Path(source["root"]) if kind == "directory" else None
+        target = {
+            "package-read": Path(source.get("path", "unused")),
+            "directory-hash-read": root / "src/a.cs" if root else None,
+            "copy-read": root / "src/a.cs" if root else None,
+            "copy-empty-eof": root / "empty.dat" if root else None,
+            "final-hash-read": staging / "source/src/a.cs",
+        }[operation]
+        open_count = 0
+        expected_open = 2 if operation in {"copy-read", "copy-empty-eof"} else 1
+
+        def path_open(path, mode="r", *arguments, **keywords):
+            nonlocal open_count
+            handle = original_open(path, mode, *arguments, **keywords)
+            if path == target and mode == "rb" and not injected:
+                open_count += 1
+                if open_count == expected_open:
+                    return TimedHandle(
+                        handle, "empty-eof" if operation == "copy-empty-eof" else "read"
+                    )
+            return handle
+
+        monkeypatch.setattr(entry.Path, "open", path_open)
+    else:
+        original_fdopen = entry.os.fdopen
+        write_count = 0
+        expected_write = {
+            "file-write": 2,
+            "file-close": 1,
+            "metadata-write": 3,
+            "metadata-close": 3,
+            "seal-write": 4,
+            "seal-close": 4,
+        }[operation]
+
+        def fdopen(descriptor, mode, *arguments, **keywords):
+            nonlocal write_count
+            handle = original_fdopen(descriptor, mode, *arguments, **keywords)
+            if mode == "wb":
+                write_count += 1
+                if write_count == expected_write:
+                    return TimedHandle(handle, "close" if operation.endswith("close") else "write")
+            return handle
+
+        monkeypatch.setattr(entry.os, "fdopen", fdopen)
+
+    _expect_error(
+        "DeadlineExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(deadline_seconds=1),
+        snapshot_root=snapshot,
+    )
+    assert injected, f"I/O injection was not reached: {operation}"
+    assert not snapshot.exists()
+    if failure_root is None:
+        assert not staging.exists()
+    else:
+        assert (staging / "IMPORT-FAILED").read_text() == "DeadlineExceeded\n"
+
+
+def test_elapsed_work_is_not_reset_between_selection_and_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _deadline_source(tmp_path, "directory")
+    clock = _ImportClock()
+    monkeypatch.setattr(entry, "time", clock)
+    original_selection = entry._selection_digest
+    original_write = entry._write_exclusive
+    observed_deadlines: list[float] = []
+
+    def elapsed_selection(*arguments):
+        result = original_selection(*arguments)
+        clock.now += 0.6
+        return result
+
+    def elapsed_metadata(target, raw, deadline):
+        observed_deadlines.append(deadline.expires_at)
+        assert clock.now == pytest.approx(100.6)
+        result = original_write(target, raw, deadline)
+        clock.now += 0.6
+        return result
+
+    monkeypatch.setattr(entry, "_selection_digest", elapsed_selection)
+    monkeypatch.setattr(entry, "_write_exclusive", elapsed_metadata)
+    _expect_error(
+        "DeadlineExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(deadline_seconds=1),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert observed_deadlines == [101.0]
+    assert (tmp_path / "snapshot.staging/manifest.json").exists()
+    assert not (tmp_path / "snapshot.staging/SEALED").exists()

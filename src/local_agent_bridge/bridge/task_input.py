@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .contract import BridgeContractError, decode_strict_json_bytes
-from .paths import BridgePathError, _is_reparse, _run_git
+from .paths import BridgePathError, _is_reparse
 
 __all__ = ["TaskInputError", "import_snapshot", "read_snapshot"]
 
@@ -94,11 +94,14 @@ class _Deadline:
         return cls(time.monotonic() + seconds)
 
     def check(self) -> None:
-        if time.monotonic() > self.expires_at:
+        if time.monotonic() >= self.expires_at:
             raise TaskInputError("DeadlineExceeded", "the import exceeded its deadline")
 
     def remaining_seconds(self) -> float:
-        return max(0.1, self.expires_at - time.monotonic())
+        remaining = self.expires_at - time.monotonic()
+        if remaining <= 0:
+            raise TaskInputError("DeadlineExceeded", "the import exceeded its deadline")
+        return remaining
 
 
 @dataclass(frozen=True)
@@ -450,7 +453,7 @@ def _covers(prefix: str, path: str) -> bool:
 
 
 def _most_specific_exclusion(
-    path: str, excluded: tuple[tuple[str, str], ...]
+    path: str, excluded: tuple[tuple[str, str], ...], deadline: _Deadline
 ) -> tuple[str, str] | None:
     """Return the covering exclusion with the longest prefix for one path.
 
@@ -461,17 +464,22 @@ def _most_specific_exclusion(
     best: tuple[str, str] | None = None
     best_length = -1
     for prefix, reason in excluded:
+        deadline.check()
         if len(prefix) > best_length and _covers(prefix, path):
             best_length = len(prefix)
             best = (prefix, reason)
     return best
 
 
-def _check_collection_conflicts(files: dict[str, _PendingFile], directories: set[str]) -> None:
+def _check_collection_conflicts(
+    files: dict[str, _PendingFile], directories: set[str], deadline: _Deadline
+) -> None:
+    deadline.check()
     if set(files) & directories:
         raise TaskInputError("PathConflict", "a path is declared as both a file and a directory")
     folded: dict[str, str] = {}
     for path in (*files, *directories):
+        deadline.check()
         key = unicodedata.normalize("NFC", path).casefold()
         previous = folded.get(key)
         if previous is not None and previous != path:
@@ -480,6 +488,7 @@ def _check_collection_conflicts(files: dict[str, _PendingFile], directories: set
             )
         folded[key] = path
     for path in files:
+        deadline.check()
         parent = _parent_path(path)
         while parent is not None:
             if parent in files:
@@ -487,6 +496,7 @@ def _check_collection_conflicts(files: dict[str, _PendingFile], directories: set
                     "PathConflict", "a file entry is also a parent of another entry"
                 )
             parent = _parent_path(parent)
+    deadline.check()
 
 
 def _zip_entry_name(info: zipfile.ZipInfo, policy: _Policy) -> tuple[str, bool]:
@@ -552,8 +562,9 @@ def _check_zip_file_declared(info: zipfile.ZipInfo, policy: _Policy, name: str) 
 
 
 def _plan_zip_members(
-    archive: zipfile.ZipFile, source: dict[str, object], policy: _Policy
+    archive: zipfile.ZipFile, source: dict[str, object], policy: _Policy, deadline: _Deadline
 ) -> tuple[dict[str, _PendingFile], set[str]]:
+    deadline.check()
     strip_prefix = source["strip_prefix"]
     if strip_prefix is not None:
         strip_prefix = _validate_relative_path(
@@ -564,13 +575,16 @@ def _plan_zip_members(
             component_codepoints_limit=policy.component_codepoints_limit,
         )
     infos = archive.infolist()
+    deadline.check()
     if len(infos) > policy.entry_count_limit:
         raise TaskInputError("ResourceLimitExceeded", "the package exceeds the entry count limit")
     files: dict[str, _PendingFile] = {}
     directories: set[str] = set()
     for info in infos:
+        deadline.check()
         name, trailing_directory = _zip_entry_name(info, policy)
         kind = "directory" if not name else _zip_entry_kind(info, trailing_directory)
+        deadline.check()
         if not name:
             continue
         if strip_prefix is not None:
@@ -600,30 +614,42 @@ def _plan_zip_members(
             zip_name=info.filename,
             disk_path=None,
         )
-    _check_collection_conflicts(files, directories)
+    _check_collection_conflicts(files, directories, deadline)
     return files, directories
 
 
-def _verify_zip_package(source: dict[str, object], policy: _Policy) -> Path:
+def _verify_zip_package(source: dict[str, object], policy: _Policy, deadline: _Deadline) -> Path:
+    deadline.check()
     package_path = _validate_absolute_file(source["path"], label="zip package path")
     declared_sha256 = _require_sha256(source["sha256"], "zip sha256", "InvalidSource")
     if package_path.stat().st_size > policy.package_bytes_limit:
         raise TaskInputError("ResourceLimitExceeded", "the package exceeds the package bytes limit")
-    if _hash_file(package_path) != declared_sha256:
+    deadline.check()
+    if _hash_file(package_path, deadline) != declared_sha256:
         raise TaskInputError("InputChanged", "the package hash differs from the declared value")
     return package_path
 
 
-def _git_text(root: Path, *arguments: str) -> str:
+def _git_text(root: Path, deadline: _Deadline, *arguments: str) -> str:
     try:
-        return _run_git(root, _NO_REPLACE_OBJECTS, *arguments)
-    except BridgePathError as error:
+        raw = _git_bytes(root, list(arguments), deadline)
+    except TaskInputError as error:
+        if error.code != "GitUnavailable":
+            raise
         raise TaskInputError("GitCommandFailed", "the bounded Git listing failed") from error
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise TaskInputError("GitCommandFailed", "the bounded Git listing failed") from error
+    deadline.check()
+    return text
 
 
-def _parse_git_listing(listing: str) -> dict[str, tuple[str, str, str]]:
+def _parse_git_listing(listing: str, deadline: _Deadline) -> dict[str, tuple[str, str, str]]:
+    deadline.check()
     objects: dict[str, tuple[str, str, str]] = {}
     for record in listing.split("\x00"):
+        deadline.check()
         if not record:
             continue
         header, separator, path = record.partition("\t")
@@ -633,13 +659,16 @@ def _parse_git_listing(listing: str) -> dict[str, tuple[str, str, str]]:
                 "GitCommandFailed", "the Git listing was not in the expected shape"
             )
         objects[path] = (fields[0], fields[1], fields[2])
+    deadline.check()
     return objects
 
 
 def _plan_git_selection(
-    source: dict[str, object], policy: _Policy
+    source: dict[str, object], policy: _Policy, deadline: _Deadline
 ) -> tuple[dict[str, _PendingFile], set[str], Path]:
+    deadline.check()
     root = _validate_absolute_directory(source["root"], label="git root")
+    deadline.check()
     commit = _require_text(source["commit"], "git commit", "InvalidSource")
     if not _COMMIT_TEXT.fullmatch(commit):
         raise TaskInputError("InvalidSource", "git commit must be an exact 40 character object id")
@@ -649,6 +678,7 @@ def _plan_git_selection(
     selected: list[str] = []
     seen_paths: set[str] = set()
     for item in raw_paths:
+        deadline.check()
         path = _validate_relative_path(
             item,
             label="git path",
@@ -660,12 +690,15 @@ def _plan_git_selection(
             raise TaskInputError("InvalidSource", "git paths contains a duplicate path")
         seen_paths.add(path)
         selected.append(path)
-    object_type = _git_text(root, "cat-file", "-t", commit).strip()
+    object_type = _git_text(root, deadline, "cat-file", "-t", commit).strip()
     if object_type != "commit":
         raise TaskInputError("GitSelectionInvalid", "the declared Git object is not a commit")
-    objects = _parse_git_listing(_git_text(root, "ls-tree", "-rz", "--full-tree", commit))
+    objects = _parse_git_listing(
+        _git_text(root, deadline, "ls-tree", "-rz", "--full-tree", commit), deadline
+    )
     files: dict[str, _PendingFile] = {}
     for path in selected:
+        deadline.check()
         record = objects.get(path)
         if record is None:
             raise TaskInputError(
@@ -689,13 +722,14 @@ def _plan_git_selection(
             zip_name=None,
             disk_path=None,
         )
-    _check_collection_conflicts(files, set())
+    _check_collection_conflicts(files, set(), deadline)
     return files, set(), root
 
 
 def _validate_directory_manifest(
-    document: object,
+    document: object, deadline: _Deadline
 ) -> tuple[dict[str, tuple[int, str]], set[str]]:
+    deadline.check()
     if type(document) is not dict or set(document) != {"contract_version", "entries"}:
         raise TaskInputError(
             "InputManifestMismatch", "the directory manifest fields are not frozen"
@@ -711,6 +745,7 @@ def _validate_directory_manifest(
     files: dict[str, tuple[int, str]] = {}
     directories: set[str] = set()
     for item in raw_entries:
+        deadline.check()
         if type(item) is not dict or set(item) != {"path", "kind", "bytes", "sha256"}:
             raise TaskInputError("InputManifestMismatch", "a manifest entry has unknown fields")
         path = _validate_relative_path(
@@ -746,6 +781,7 @@ def _validate_directory_manifest(
                 "InputManifestMismatch", "a manifest entry kind must be file or directory"
             )
     for path in (*files, *directories):
+        deadline.check()
         parent = _parent_path(path)
         while parent is not None:
             if parent not in directories:
@@ -753,12 +789,14 @@ def _validate_directory_manifest(
                     "InputManifestMismatch", "a manifest entry is missing an explicit parent"
                 )
             parent = _parent_path(parent)
+    deadline.check()
     return files, directories
 
 
 def _scan_tree(
     root: Path, policy: _Policy, deadline: _Deadline
 ) -> tuple[dict[str, tuple[int, str]], set[str]]:
+    deadline.check()
     if _is_reparse(root):
         raise TaskInputError("PathRejected", "the tree root is a reparse point")
 
@@ -771,6 +809,7 @@ def _scan_tree(
         deadline.check()
         current = Path(directory)
         for name in subdirectories:
+            deadline.check()
             child = current / name
             if _is_reparse(child):
                 raise TaskInputError("PathRejected", "a tree directory is a reparse point")
@@ -783,7 +822,9 @@ def _scan_tree(
                 component_codepoints_limit=policy.component_codepoints_limit,
             )
             directories.add(relative)
+            deadline.check()
         for name in filenames:
+            deadline.check()
             child = current / name
             information = child.lstat()
             if _is_reparse(child):
@@ -804,33 +845,50 @@ def _scan_tree(
                 raise TaskInputError(
                     "ResourceLimitExceeded", "a tree file exceeds the file bytes limit"
                 )
-            files[relative] = (information.st_size, _hash_file(child))
+            deadline.check()
+            files[relative] = (information.st_size, _hash_file(child, deadline))
+    deadline.check()
     return files, directories
 
 
-def _hash_file(path: Path) -> str:
+def _hash_file(path: Path, deadline: _Deadline) -> str:
+    deadline.check()
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(_STREAM_CHUNK_BYTES), b""):
+        deadline.check()
+        while True:
+            deadline.check()
+            chunk = handle.read(_STREAM_CHUNK_BYTES)
+            deadline.check()
+            if not chunk:
+                break
             digest.update(chunk)
+            deadline.check()
+    deadline.check()
     return digest.hexdigest()
 
 
 def _plan_directory_tree(
     source: dict[str, object], policy: _Policy, deadline: _Deadline
 ) -> tuple[dict[str, _PendingFile], set[str]]:
+    deadline.check()
     root = _validate_absolute_directory(source["root"], label="directory root")
     manifest_path = _validate_absolute_file(
         source["manifest_path"], label="directory manifest path"
     )
     declared_sha256 = _require_sha256(source["manifest_sha256"], "manifest sha256", "InvalidSource")
+    deadline.check()
     raw = manifest_path.read_bytes()
-    if _sha256_bytes(raw) != declared_sha256:
+    deadline.check()
+    actual_sha256 = _sha256_bytes(raw)
+    deadline.check()
+    if actual_sha256 != declared_sha256:
         raise TaskInputError(
             "InputManifestMismatch", "the directory manifest hash differs from the declared value"
         )
     document = decode_strict_json_bytes(raw, label="directory manifest")
-    declared_files, declared_directories = _validate_directory_manifest(document)
+    deadline.check()
+    declared_files, declared_directories = _validate_directory_manifest(document, deadline)
     actual_files, actual_directories = _scan_tree(root, policy, deadline)
     if actual_directories != declared_directories or actual_files != declared_files:
         raise TaskInputError("InputChanged", "the directory tree differs from its manifest")
@@ -846,12 +904,12 @@ def _plan_directory_tree(
         )
         for path, (size, digest) in actual_files.items()
     }
-    _check_collection_conflicts(files, set(actual_directories))
+    _check_collection_conflicts(files, set(actual_directories), deadline)
     return files, actual_directories
 
 
 def _apply_selection(
-    files: dict[str, _PendingFile], directories: set[str], policy: _Policy
+    files: dict[str, _PendingFile], directories: set[str], policy: _Policy, deadline: _Deadline
 ) -> tuple[list[_PendingFile], list[str], list[tuple[str, str]]]:
     """Split the planned input into kept entries and explicit exclusions.
 
@@ -861,30 +919,34 @@ def _apply_selection(
     subtrees into a single prefix record.
     """
 
+    deadline.check()
     excluded = policy.excluded_paths
     all_paths = (*files, *directories)
     for prefix, _reason in excluded:
+        deadline.check()
         if not any(_covers(prefix, path) for path in all_paths):
             raise TaskInputError(
                 "ExcludedPathUnknown", "an excluded path is not present in the input"
             )
     excluded_records: list[tuple[str, str]] = []
     for path in sorted(all_paths, key=_path_key):
-        covering = _most_specific_exclusion(path, excluded)
+        deadline.check()
+        covering = _most_specific_exclusion(path, excluded, deadline)
         if covering is not None:
             excluded_records.append((path, covering[1]))
     excluded_path_set = {path for path, _reason in excluded_records}
-    kept_files = {
-        path: pending
-        for path, pending in files.items()
-        if not any(_covers(prefix, path) for prefix, _reason in excluded)
-    }
-    kept_directories = {
-        path
-        for path in directories
-        if not any(_covers(prefix, path) for prefix, _reason in excluded)
-    }
+    kept_files: dict[str, _PendingFile] = {}
+    kept_directories: set[str] = set()
+    for path, pending in files.items():
+        deadline.check()
+        if path not in excluded_path_set:
+            kept_files[path] = pending
+    for path in directories:
+        deadline.check()
+        if path not in excluded_path_set:
+            kept_directories.add(path)
     for path in kept_files:
+        deadline.check()
         parent = _parent_path(path)
         while parent is not None:
             if parent in files:
@@ -892,12 +954,15 @@ def _apply_selection(
             kept_directories.add(parent)
             parent = _parent_path(parent)
     for prefix in policy.sensitive_paths:
+        deadline.check()
         for path in kept_files:
+            deadline.check()
             if _covers(prefix, path):
                 raise TaskInputError(
                     "SensitivePathImported", "a declared sensitive path would enter the snapshot"
                 )
     for declared in policy.source_paths:
+        deadline.check()
         if declared in kept_files or declared in excluded_path_set:
             continue
         raise TaskInputError(
@@ -911,11 +976,13 @@ def _apply_selection(
     )
     if declared_total > policy.expanded_bytes_limit:
         raise TaskInputError("ResourceLimitExceeded", "the input exceeds the expanded bytes limit")
-    return (
+    result = (
         sorted(kept_files.values(), key=lambda pending: _path_key(pending.path)),
         sorted(kept_directories, key=_path_key),
         excluded_records,
     )
+    deadline.check()
+    return result
 
 
 def _utf16_length(value: str) -> int:
@@ -929,45 +996,61 @@ def _check_physical_budget(path: Path, policy: _Policy) -> None:
         )
 
 
-def _ensure_directory(source_root: Path, relative: str, created: set[str], policy: _Policy) -> None:
+def _ensure_directory(
+    source_root: Path, relative: str, created: set[str], policy: _Policy, deadline: _Deadline
+) -> None:
+    deadline.check()
     if relative in created:
         return
     parent = _parent_path(relative)
     if parent is not None:
-        _ensure_directory(source_root, parent, created, policy)
+        _ensure_directory(source_root, parent, created, policy, deadline)
     target = source_root.joinpath(*relative.split("/"))
     _check_physical_budget(target, policy)
     _assert_plain_target(target, label="a staging directory")
+    deadline.check()
     os.mkdir(target)
+    deadline.check()
     created.add(relative)
 
 
 def _file_chunks(path: Path, deadline: _Deadline) -> Iterator[bytes]:
+    deadline.check()
     _assert_plain_target(path, label="an adjudicated input file")
     information = path.lstat()
     if _is_reparse(path) or not stat.S_ISREG(information.st_mode):
         raise TaskInputError("InputChanged", "an adjudicated file changed shape before the copy")
+    deadline.check()
     with path.open("rb") as handle:
+        deadline.check()
         while True:
+            deadline.check()
             chunk = handle.read(_STREAM_CHUNK_BYTES)
+            deadline.check()
             if not chunk:
                 break
-            deadline.check()
             yield chunk
+    deadline.check()
 
 
 def _zip_chunks(archive: zipfile.ZipFile, member: str, deadline: _Deadline) -> Iterator[bytes]:
+    deadline.check()
     with archive.open(member, "r") as reader:
+        deadline.check()
         while True:
+            deadline.check()
             chunk = reader.read(_STREAM_CHUNK_BYTES)
+            deadline.check()
             if not chunk:
                 break
-            deadline.check()
             yield chunk
+    deadline.check()
 
 
 def _git_bytes(root: Path, arguments: list[str], deadline: _Deadline) -> bytes:
+    deadline.check()
     executable = shutil.which("git")
+    deadline.check()
     if executable is None:
         raise TaskInputError("GitUnavailable", "git is not available on this host")
     try:
@@ -983,6 +1066,7 @@ def _git_bytes(root: Path, arguments: list[str], deadline: _Deadline) -> bytes:
         raise TaskInputError(
             "DeadlineExceeded", "a bounded Git read exceeded the import deadline"
         ) from error
+    deadline.check()
     if completed.returncode != 0:
         raise TaskInputError("GitCommandFailed", "a bounded Git read failed")
     return completed.stdout
@@ -990,12 +1074,14 @@ def _git_bytes(root: Path, arguments: list[str], deadline: _Deadline) -> bytes:
 
 def _git_chunks(root: Path, blob_ref: str, policy: _Policy, deadline: _Deadline) -> Iterator[bytes]:
     size_text = _git_bytes(root, ["cat-file", "-s", blob_ref], deadline).decode("ascii").strip()
+    deadline.check()
     if not size_text.isdigit() or int(size_text) > policy.file_bytes_limit:
         raise TaskInputError("ResourceLimitExceeded", "a Git blob exceeds the file bytes limit")
     raw = _git_bytes(root, ["cat-file", "blob", blob_ref], deadline)
     for start in range(0, len(raw), _STREAM_CHUNK_BYTES):
         deadline.check()
         yield raw[start : start + _STREAM_CHUNK_BYTES]
+    deadline.check()
 
 
 def _pending_chunks(
@@ -1018,11 +1104,14 @@ def _write_stream(
     deadline: _Deadline,
     expanded_before: int,
 ) -> tuple[int, str]:
+    deadline.check()
     digest = hashlib.sha256()
     total = 0
     _assert_plain_target(target, label="a staged file")
+    deadline.check()
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
     with os.fdopen(descriptor, "wb") as handle:
+        deadline.check()
         for chunk in chunks:
             deadline.check()
             total += len(chunk)
@@ -1035,15 +1124,23 @@ def _write_stream(
                     "ResourceLimitExceeded", "the staged tree exceeds the expanded bytes limit"
                 )
             digest.update(chunk)
+            deadline.check()
             handle.write(chunk)
+            deadline.check()
+    deadline.check()
     return total, digest.hexdigest()
 
 
-def _write_exclusive(target: Path, raw: bytes) -> None:
+def _write_exclusive(target: Path, raw: bytes, deadline: _Deadline) -> None:
+    deadline.check()
     _assert_plain_target(target, label="snapshot metadata")
+    deadline.check()
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
     with os.fdopen(descriptor, "wb") as handle:
+        deadline.check()
         handle.write(raw)
+        deadline.check()
+    deadline.check()
 
 
 def _write_failure_label(staging_root: Path, code: str) -> None:
@@ -1085,25 +1182,33 @@ def _stage_and_publish(
     identity: str,
     selection_sha256: str,
 ) -> dict[str, object]:
+    deadline.check()
     staging_root = snapshot_root.with_name(snapshot_root.name + ".staging")
     if os.path.lexists(staging_root):
         raise TaskInputError("SnapshotRootNotFresh", "a staging root already exists")
     source_root = staging_root / "source"
     for relative in (*(pending.path for pending in files), *directories):
+        deadline.check()
         _check_physical_budget(source_root.joinpath(*relative.split("/")), policy)
     _assert_plain_target(staging_root, label="the staging root")
-    os.mkdir(staging_root)
+    deadline.check()
+    renamed = False
     try:
+        os.mkdir(staging_root)
+        deadline.check()
         _assert_plain_target(source_root, label="the staging source root")
+        deadline.check()
         os.mkdir(source_root)
+        deadline.check()
         created_directories: set[str] = set()
         for relative in directories:
-            _ensure_directory(source_root, relative, created_directories, policy)
+            _ensure_directory(source_root, relative, created_directories, policy, deadline)
         expanded_total = 0
         for pending in files:
+            deadline.check()
             parent = _parent_path(pending.path)
             if parent is not None:
-                _ensure_directory(source_root, parent, created_directories, policy)
+                _ensure_directory(source_root, parent, created_directories, policy, deadline)
             target = source_root.joinpath(*pending.path.split("/"))
             _check_physical_budget(target, policy)
             total, digest = _write_stream(
@@ -1121,6 +1226,7 @@ def _stage_and_publish(
                     "InputChanged", "a staged file differs from its manifest digest"
                 )
         actual_files, actual_directories = _scan_tree(source_root, policy, deadline)
+        deadline.check()
         if actual_directories != set(directories):
             raise TaskInputError(
                 "TreeMismatch", "the staged tree does not match the planned entries"
@@ -1134,6 +1240,7 @@ def _stage_and_publish(
             for path in directories
         ]
         for pending in files:
+            deadline.check()
             size, digest = actual_files[pending.path]
             entries.append(
                 {
@@ -1145,7 +1252,9 @@ def _stage_and_publish(
                 }
             )
         entries.sort(key=lambda entry: _path_key(entry["path"]))
+        deadline.check()
         for control_path, expected_digest in policy.trusted_control_files:
+            deadline.check()
             actual = actual_files.get(control_path)
             if actual is None or actual[1] != expected_digest:
                 raise TaskInputError(
@@ -1163,6 +1272,7 @@ def _stage_and_publish(
         snapshot_id = _sha256_bytes(
             _canonical_json_bytes({"contract_version": 1, "entries": identity_entries})
         )
+        deadline.check()
         manifest: dict[str, object] = {
             "contract_version": 1,
             "snapshot_id": snapshot_id,
@@ -1178,16 +1288,25 @@ def _stage_and_publish(
             ],
         }
         canonical = _canonical_json_bytes(manifest)
-        _write_exclusive(staging_root / "manifest.json", canonical)
+        deadline.check()
+        _write_exclusive(staging_root / "manifest.json", canonical, deadline)
+        deadline.check()
         _write_exclusive(
-            staging_root / "SEALED", hashlib.sha256(canonical).hexdigest().encode("ascii")
+            staging_root / "SEALED", hashlib.sha256(canonical).hexdigest().encode("ascii"), deadline
         )
+        deadline.check()
         _assert_plain_target(staging_root, label="the staging root")
         _assert_plain_target(snapshot_root, label="the snapshot output")
+        deadline.check()
+        # The OS rename is the visibility linearization point. It cannot be
+        # preempted here. If it returns late, retain the moved evidence with a
+        # failure label; readers must reject it even if SEALED already exists.
         os.rename(staging_root, snapshot_root)
+        renamed = True
+        deadline.check()
         return manifest
     except BaseException as error:
-        _write_failure_label(staging_root, _failure_code(error))
+        _write_failure_label(snapshot_root if renamed else staging_root, _failure_code(error))
         raise
 
 
@@ -1207,8 +1326,9 @@ def import_snapshot(
     """Import one frozen input into a fresh, sealed snapshot root.
 
     Returns the sealed SnapshotManifest. The snapshot root must not exist;
-    on failure the dedicated staging root is kept with a failure label and no
-    manifest is published.
+    Pre-publication failures keep the dedicated staging root with a failure
+    label. A rename that returns after the deadline keeps the moved evidence
+    at snapshot_root with the same label; read_snapshot rejects failed roots.
     """
 
     try:
@@ -1230,11 +1350,13 @@ def import_snapshot(
 def _import_snapshot(
     *, source: dict[str, object], policy: dict[str, object], snapshot_root: Path
 ) -> dict[str, object]:
+    started_at = time.monotonic()
     if not isinstance(snapshot_root, Path) or not snapshot_root.is_absolute():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root must be an absolute path")
     snapshot_root = _validate_absolute_path(snapshot_root, label="snapshot_root")
     validated_policy = _validate_policy(policy)
-    deadline = _Deadline.starting_now(validated_policy.deadline_seconds)
+    deadline = _Deadline(started_at + validated_policy.deadline_seconds)
+    deadline.check()
     source_kind = _source_kind(source)
     if os.path.lexists(snapshot_root):
         raise TaskInputError("SnapshotRootNotFresh", "snapshot_root must not exist yet")
@@ -1242,39 +1364,55 @@ def _import_snapshot(
     if not parent.is_dir():
         raise TaskInputError("SnapshotRootInvalid", "the snapshot parent directory must exist")
     _assert_plain_target(parent, label="the snapshot output parent")
-    with ExitStack() as stack:
-        context = _ImportContext()
-        if source_kind == "git":
-            files, directories, git_root = _plan_git_selection(source, validated_policy)
-            context = _ImportContext(git_root=git_root)
-            identity = _require_text(source["commit"], "git commit", "InvalidSource")
-        elif source_kind == "zip":
-            package_path = _verify_zip_package(source, validated_policy)
-            archive = stack.enter_context(zipfile.ZipFile(package_path))
-            context = _ImportContext(archive=archive)
-            files, directories = _plan_zip_members(archive, source, validated_policy)
-            identity = _require_sha256(source["sha256"], "zip sha256", "InvalidSource")
-        else:
-            files, directories = _plan_directory_tree(source, validated_policy, deadline)
-            identity = _require_sha256(
-                source["manifest_sha256"], "manifest sha256", "InvalidSource"
+    deadline.check()
+    published = False
+    try:
+        with ExitStack() as stack:
+            context = _ImportContext()
+            if source_kind == "git":
+                files, directories, git_root = _plan_git_selection(
+                    source, validated_policy, deadline
+                )
+                context = _ImportContext(git_root=git_root)
+                identity = _require_text(source["commit"], "git commit", "InvalidSource")
+            elif source_kind == "zip":
+                package_path = _verify_zip_package(source, validated_policy, deadline)
+                deadline.check()
+                archive = stack.enter_context(zipfile.ZipFile(package_path))
+                deadline.check()
+                context = _ImportContext(archive=archive)
+                files, directories = _plan_zip_members(archive, source, validated_policy, deadline)
+                identity = _require_sha256(source["sha256"], "zip sha256", "InvalidSource")
+            else:
+                files, directories = _plan_directory_tree(source, validated_policy, deadline)
+                identity = _require_sha256(
+                    source["manifest_sha256"], "manifest sha256", "InvalidSource"
+                )
+            kept_files, kept_directories, excluded_records = _apply_selection(
+                files, directories, validated_policy, deadline
             )
-        kept_files, kept_directories, excluded_records = _apply_selection(
-            files, directories, validated_policy
-        )
-        selection = _selection_digest(validated_policy.source_paths, excluded_records)
-        return _stage_and_publish(
-            files=kept_files,
-            directories=kept_directories,
-            excluded_records=excluded_records,
-            policy=validated_policy,
-            deadline=deadline,
-            snapshot_root=snapshot_root,
-            context=context,
-            source_kind=source_kind,
-            identity=identity,
-            selection_sha256=selection,
-        )
+            selection = _selection_digest(validated_policy.source_paths, excluded_records)
+            deadline.check()
+            manifest = _stage_and_publish(
+                files=kept_files,
+                directories=kept_directories,
+                excluded_records=excluded_records,
+                policy=validated_policy,
+                deadline=deadline,
+                snapshot_root=snapshot_root,
+                context=context,
+                source_kind=source_kind,
+                identity=identity,
+                selection_sha256=selection,
+            )
+            published = True
+        # Closing an origin handle is part of the same import, not a new budget.
+        deadline.check()
+        return manifest
+    except BaseException as error:
+        if published:
+            _write_failure_label(snapshot_root, _failure_code(error))
+        raise
 
 
 def _validate_snapshot_manifest(
@@ -1432,6 +1570,8 @@ def _read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
     if not snapshot_root.is_dir():
         raise TaskInputError("SnapshotRootInvalid", "snapshot_root does not hold a sealed snapshot")
     _reject_broad_root(snapshot_root, "the sealed snapshot")
+    if os.path.lexists(snapshot_root / "IMPORT-FAILED"):
+        raise TaskInputError("InvalidManifest", "the snapshot records a failed import")
     manifest_path = snapshot_root / "manifest.json"
     _assert_plain_target(manifest_path, label="snapshot manifest")
     raw = manifest_path.read_bytes()
