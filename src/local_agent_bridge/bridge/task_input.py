@@ -26,7 +26,7 @@ import subprocess
 import time
 import unicodedata
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -428,12 +428,12 @@ def _source_kind(source: object) -> str:
     return kind
 
 
-def _selection_sha256(policy: _Policy) -> str:
+def _selection_digest(
+    source_paths: Sequence[str], excluded_paths: Sequence[tuple[str, str]]
+) -> str:
     payload = {
-        "source_paths": list(policy.source_paths),
-        "excluded_paths": [
-            {"path": path, "reason": reason} for path, reason in policy.excluded_paths
-        ],
+        "source_paths": list(source_paths),
+        "excluded_paths": [{"path": path, "reason": reason} for path, reason in excluded_paths],
     }
     return _sha256_bytes(_canonical_json_bytes(payload))
 
@@ -447,6 +447,24 @@ def _parent_path(path: str) -> str | None:
 
 def _covers(prefix: str, path: str) -> bool:
     return prefix == path or path.startswith(prefix + "/")
+
+
+def _most_specific_exclusion(
+    path: str, excluded: tuple[tuple[str, str], ...]
+) -> tuple[str, str] | None:
+    """Return the covering exclusion with the longest prefix for one path.
+
+    Distinct exclusions that cover one path are prefixes of each other, so the
+    longest match is unique and does not depend on declaration order.
+    """
+
+    best: tuple[str, str] | None = None
+    best_length = -1
+    for prefix, reason in excluded:
+        if len(prefix) > best_length and _covers(prefix, path):
+            best_length = len(prefix)
+            best = (prefix, reason)
+    return best
 
 
 def _check_collection_conflicts(files: dict[str, _PendingFile], directories: set[str]) -> None:
@@ -834,7 +852,15 @@ def _plan_directory_tree(
 
 def _apply_selection(
     files: dict[str, _PendingFile], directories: set[str], policy: _Policy
-) -> tuple[list[_PendingFile], list[str]]:
+) -> tuple[list[_PendingFile], list[str], list[tuple[str, str]]]:
+    """Split the planned input into kept entries and explicit exclusions.
+
+    Every planned input path that an exclusion removes is recorded with the
+    reason of its most specific covering exclusion, so the manifest keeps one
+    denominator row per logical input path instead of collapsing whole
+    subtrees into a single prefix record.
+    """
+
     excluded = policy.excluded_paths
     all_paths = (*files, *directories)
     for prefix, _reason in excluded:
@@ -842,6 +868,12 @@ def _apply_selection(
             raise TaskInputError(
                 "ExcludedPathUnknown", "an excluded path is not present in the input"
             )
+    excluded_records: list[tuple[str, str]] = []
+    for path in sorted(all_paths, key=_path_key):
+        covering = _most_specific_exclusion(path, excluded)
+        if covering is not None:
+            excluded_records.append((path, covering[1]))
+    excluded_path_set = {path for path, _reason in excluded_records}
     kept_files = {
         path: pending
         for path, pending in files.items()
@@ -866,14 +898,12 @@ def _apply_selection(
                     "SensitivePathImported", "a declared sensitive path would enter the snapshot"
                 )
     for declared in policy.source_paths:
-        if declared in kept_files:
-            continue
-        if any(_covers(prefix, declared) for prefix, _reason in excluded):
+        if declared in kept_files or declared in excluded_path_set:
             continue
         raise TaskInputError(
             "SourcePathUnaccounted", "a declared source path is neither imported nor excluded"
         )
-    if len(kept_files) + len(kept_directories) > policy.entry_count_limit:
+    if len(kept_files) + len(kept_directories) + len(excluded_records) > policy.entry_count_limit:
         raise TaskInputError("ResourceLimitExceeded", "the input exceeds the entry count limit")
     declared_total = sum(
         pending.declared_bytes if pending.declared_bytes is not None else 0
@@ -884,6 +914,7 @@ def _apply_selection(
     return (
         sorted(kept_files.values(), key=lambda pending: _path_key(pending.path)),
         sorted(kept_directories, key=_path_key),
+        excluded_records,
     )
 
 
@@ -1045,6 +1076,7 @@ def _stage_and_publish(
     *,
     files: list[_PendingFile],
     directories: list[str],
+    excluded_records: list[tuple[str, str]],
     policy: _Policy,
     deadline: _Deadline,
     snapshot_root: Path,
@@ -1142,7 +1174,7 @@ def _stage_and_publish(
             "entries": entries,
             "source_paths": list(policy.source_paths),
             "excluded_paths": [
-                {"path": path, "reason": reason} for path, reason in policy.excluded_paths
+                {"path": path, "reason": reason} for path, reason in excluded_records
             ],
         }
         canonical = _canonical_json_bytes(manifest)
@@ -1210,7 +1242,6 @@ def _import_snapshot(
     if not parent.is_dir():
         raise TaskInputError("SnapshotRootInvalid", "the snapshot parent directory must exist")
     _assert_plain_target(parent, label="the snapshot output parent")
-    selection = _selection_sha256(validated_policy)
     with ExitStack() as stack:
         context = _ImportContext()
         if source_kind == "git":
@@ -1228,10 +1259,14 @@ def _import_snapshot(
             identity = _require_sha256(
                 source["manifest_sha256"], "manifest sha256", "InvalidSource"
             )
-        kept_files, kept_directories = _apply_selection(files, directories, validated_policy)
+        kept_files, kept_directories, excluded_records = _apply_selection(
+            files, directories, validated_policy
+        )
+        selection = _selection_digest(validated_policy.source_paths, excluded_records)
         return _stage_and_publish(
             files=kept_files,
             directories=kept_directories,
+            excluded_records=excluded_records,
             policy=validated_policy,
             deadline=deadline,
             snapshot_root=snapshot_root,
@@ -1244,7 +1279,7 @@ def _import_snapshot(
 
 def _validate_snapshot_manifest(
     document: object,
-) -> tuple[dict[str, tuple[int, str]], set[str]]:
+) -> tuple[dict[str, tuple[int, str]], set[str], list[tuple[str, str]]]:
     if type(document) is not dict or set(document) != _MANIFEST_KEYS:
         raise TaskInputError("InvalidManifest", "the snapshot manifest fields are not frozen")
     version = document["contract_version"]
@@ -1327,6 +1362,7 @@ def _validate_snapshot_manifest(
     if type(excluded_entries) is not list:
         raise TaskInputError("InvalidManifest", "excluded_paths must be a list")
     excluded_paths: list[str] = []
+    excluded_records: list[tuple[str, str]] = []
     previous_excluded: bytes | None = None
     for item in excluded_entries:
         if type(item) is not dict or set(item) != {"path", "reason"}:
@@ -1344,15 +1380,21 @@ def _validate_snapshot_manifest(
             raise TaskInputError("InvalidManifest", "excluded_paths must be sorted and unique")
         previous_excluded = current_excluded
         excluded_paths.append(path)
+        excluded_records.append((path, item["reason"]))
+    excluded_set = set(excluded_paths)
+    entry_paths = set(files) | directories
+    if excluded_set & entry_paths:
+        raise TaskInputError("InvalidManifest", "an excluded path is also a manifest entry")
+    for prefix in excluded_paths:
+        if any(_covers(prefix, path) for path in entry_paths):
+            raise TaskInputError("InvalidManifest", "an excluded path covers a kept manifest entry")
     for declared in source_paths:
-        if declared in files:
-            continue
-        if any(_covers(prefix, declared) for prefix in excluded_paths):
+        if declared in files or declared in excluded_set:
             continue
         raise TaskInputError(
             "InvalidManifest", "a source path is neither a file entry nor excluded"
         )
-    return files, directories
+    return files, directories, excluded_records
 
 
 def _verify_tree_against_manifest(
@@ -1394,7 +1436,7 @@ def _read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
     _assert_plain_target(manifest_path, label="snapshot manifest")
     raw = manifest_path.read_bytes()
     document = decode_strict_json_bytes(raw, label="snapshot manifest")
-    files, directories = _validate_snapshot_manifest(document)
+    files, directories, excluded_records = _validate_snapshot_manifest(document)
     canonical = _canonical_json_bytes(document)
     if raw != canonical:
         raise TaskInputError(
@@ -1419,5 +1461,10 @@ def _read_snapshot(*, snapshot_root: Path) -> dict[str, object]:
     )
     if recomputed != document["snapshot_id"]:
         raise TaskInputError("IdentityMismatch", "snapshot_id does not match the canonical entries")
+    recomputed_selection = _selection_digest(document["source_paths"], excluded_records)
+    if recomputed_selection != document["source"]["selection_sha256"]:
+        raise TaskInputError(
+            "InvalidManifest", "selection_sha256 does not match the recorded selection"
+        )
     _verify_tree_against_manifest(snapshot_root / "source", files, directories)
     return document

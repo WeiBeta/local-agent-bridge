@@ -841,6 +841,218 @@ def test_sensitive_excluded_and_source_path_accounting(tmp_path: Path) -> None:
     assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
 
 
+def test_directory_exclusion_records_every_excluded_path(tmp_path: Path) -> None:
+    files = {
+        "keep.cs": b"kept input\n",
+        "omit/a.cs": b"omitted source\n",
+        "omit/deep/b.cs": b"omitted nested source\n",
+        "omit/deep/notes.txt": b"omitted non-source\n",
+    }
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, files)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    source = _directory_source(tree, manifest_path)
+    exclusion = {"path": "omit", "reason": "explicit subtree"}
+
+    _expect_error(
+        "SourcePathUnaccounted",
+        import_snapshot,
+        source=source,
+        policy=_policy(
+            source_paths=["omit/ghost.cs"],
+            excluded_paths=[exclusion],
+        ),
+        snapshot_root=tmp_path / "snapshot-ghost",
+    )
+
+    policy = _policy(
+        source_paths=["keep.cs", "omit/a.cs", "omit/deep/b.cs"],
+        excluded_paths=[exclusion],
+    )
+    manifest = import_snapshot(source=source, policy=policy, snapshot_root=tmp_path / "snapshot")
+
+    assert [entry["path"] for entry in manifest["entries"]] == ["keep.cs"]
+    assert manifest["excluded_paths"] == [
+        {"path": "omit", "reason": "explicit subtree"},
+        {"path": "omit/a.cs", "reason": "explicit subtree"},
+        {"path": "omit/deep", "reason": "explicit subtree"},
+        {"path": "omit/deep/b.cs", "reason": "explicit subtree"},
+        {"path": "omit/deep/notes.txt", "reason": "explicit subtree"},
+    ]
+    denominator = {entry["path"] for entry in manifest["entries"]} | {
+        item["path"] for item in manifest["excluded_paths"]
+    }
+    assert denominator == set(files) | {"omit", "omit/deep"}
+    expected_selection = _sha256(
+        _canonical(
+            {
+                "source_paths": manifest["source_paths"],
+                "excluded_paths": manifest["excluded_paths"],
+            }
+        )
+    )
+    assert manifest["source"]["selection_sha256"] == expected_selection
+    assert not (tmp_path / "snapshot" / "source" / "omit").exists()
+    assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
+
+
+def test_nested_exclusions_use_the_most_specific_reason(tmp_path: Path) -> None:
+    files = {"b/e.cs": b"outer\n", "b/c/d.cs": b"inner\n", "keep.txt": b"keep\n"}
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, files)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    outer = {"path": "b", "reason": "whole subtree"}
+    nested = {"path": "b/c", "reason": "nested subtree"}
+
+    for index, order in enumerate(([outer, nested], [nested, outer])):
+        manifest = import_snapshot(
+            source=_directory_source(tree, manifest_path),
+            policy=_policy(excluded_paths=list(order)),
+            snapshot_root=tmp_path / f"snapshot-{index}",
+        )
+        assert manifest["excluded_paths"] == [
+            {"path": "b", "reason": "whole subtree"},
+            {"path": "b/c", "reason": "nested subtree"},
+            {"path": "b/c/d.cs", "reason": "nested subtree"},
+            {"path": "b/e.cs", "reason": "whole subtree"},
+        ]
+        assert [entry["path"] for entry in manifest["entries"]] == ["keep.txt"]
+
+
+def test_exclusions_stay_within_the_entry_count_ceiling(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, TREE_FILES)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    source = _directory_source(tree, manifest_path)
+    excluded = [{"path": "src", "reason": "generated sources"}]
+
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(excluded_paths=excluded, entry_count_limit=7),
+        snapshot_root=tmp_path / "snapshot-tight",
+    )
+    manifest = import_snapshot(
+        source=source,
+        policy=_policy(excluded_paths=excluded, entry_count_limit=8),
+        snapshot_root=tmp_path / "snapshot-exact",
+    )
+    assert {entry["path"] for entry in manifest["entries"]} == {
+        "AGENTS.md",
+        "assets",
+        "assets/blob.bin",
+    }
+    assert [item["path"] for item in manifest["excluded_paths"]] == [
+        "src",
+        "src/AuthToken.cs",
+        "src/main.cs",
+        "src/nested",
+        "src/nested/util.py",
+    ]
+
+
+def test_zip_exclusion_does_not_invent_implicit_directories(tmp_path: Path) -> None:
+    package = tmp_path / "input.zip"
+    sha = _write_zip(package, {"keep.cs": b"keep\n", "x/y.txt": b"omit\n"})
+    manifest = import_snapshot(
+        source=_zip_source(package, sha),
+        policy=_policy(excluded_paths=[{"path": "x", "reason": "dropped folder"}]),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert [entry["path"] for entry in manifest["entries"]] == ["keep.cs"]
+    assert manifest["excluded_paths"] == [{"path": "x/y.txt", "reason": "dropped folder"}]
+    assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
+
+
+def test_git_exclusion_keeps_exact_file_accounting(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    commit = _git_repository(repository, {"keep.cs": b"keep\n", "omit.cs": b"omit\n"})
+    _expect_error(
+        "ExcludedPathUnknown",
+        import_snapshot,
+        source=_git_source(repository, commit, ["keep.cs", "omit.cs"]),
+        policy=_policy(excluded_paths=[{"path": "absent.cs", "reason": "not selected"}]),
+        snapshot_root=tmp_path / "snapshot-unknown",
+    )
+    manifest = import_snapshot(
+        source=_git_source(repository, commit, ["keep.cs", "omit.cs"]),
+        policy=_policy(
+            source_paths=["keep.cs", "omit.cs"],
+            excluded_paths=[{"path": "omit.cs", "reason": "reviewed separately"}],
+        ),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert [entry["path"] for entry in manifest["entries"]] == ["keep.cs"]
+    assert manifest["excluded_paths"] == [{"path": "omit.cs", "reason": "reviewed separately"}]
+    assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
+
+
+def test_read_snapshot_rejects_selection_denominator_drift(tmp_path: Path) -> None:
+    files = {"keep.cs": b"kept input\n", "omit/a.cs": b"omitted\n"}
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, files)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    snapshot_root = tmp_path / "snapshot"
+    import_snapshot(
+        source=_directory_source(tree, manifest_path),
+        policy=_policy(
+            source_paths=["keep.cs", "omit/a.cs"],
+            excluded_paths=[{"path": "omit", "reason": "explicit subtree"}],
+        ),
+        snapshot_root=snapshot_root,
+    )
+    original = (snapshot_root / "manifest.json").read_bytes()
+    sealed = (snapshot_root / "SEALED").read_bytes()
+
+    def reseal(document: dict[str, object]) -> None:
+        document["source"]["selection_sha256"] = _sha256(
+            _canonical(
+                {
+                    "source_paths": document["source_paths"],
+                    "excluded_paths": document["excluded_paths"],
+                }
+            )
+        )
+        raw = _canonical(document)
+        (snapshot_root / "manifest.json").write_bytes(raw)
+        (snapshot_root / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
+
+    prefix_only = json.loads(original)
+    prefix_only["excluded_paths"] = [{"path": "omit", "reason": "explicit subtree"}]
+    reseal(prefix_only)
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)
+
+    overlapped = json.loads(original)
+    overlapped["excluded_paths"] = [
+        *overlapped["excluded_paths"],
+        {"path": "keep.cs", "reason": "late exclusion"},
+    ]
+    reseal(overlapped)
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)
+
+    covering = json.loads(original)
+    covering["excluded_paths"] = [{"path": "keep", "reason": "prefix exclusion"}]
+    reseal(covering)
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)
+
+    digest_drift = json.loads(original)
+    digest_drift["source"]["selection_sha256"] = "0" * 64
+    raw = _canonical(digest_drift)
+    (snapshot_root / "manifest.json").write_bytes(raw)
+    (snapshot_root / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)
+
+    (snapshot_root / "manifest.json").write_bytes(original)
+    (snapshot_root / "SEALED").write_bytes(sealed)
+    assert read_snapshot(snapshot_root=snapshot_root)
+
+
 def test_trusted_control_files_are_hash_bound(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     tree.mkdir()
