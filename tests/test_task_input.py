@@ -1429,6 +1429,88 @@ def test_read_collection_source_declarations_require_exact_membership(
     assert (snapshot / "manifest.json").read_bytes() == _canonical(document)
 
 
+READ_IDENTITY_KINDS = ("git", "zip", "directory")
+
+
+def _identity_fixture(root: Path, kind: str, identity: object) -> dict[str, object]:
+    """Write a fresh sealed reader fixture with a chosen source identity."""
+
+    source_root = root / "source"
+    source_root.mkdir(parents=True)
+    _write_tree(source_root, {"a.cs": b"kept input\r\n\x00", "z.cs": b"\xff binary\r\n"})
+    inventory = _tree_document(source_root)
+    entries = [{**item, "git_mode": None} for item in inventory["entries"]]
+    selection = {"source_paths": ["a.cs", "z.cs"], "excluded_paths": []}
+    document = {
+        "contract_version": 1,
+        "snapshot_id": _sha256(_canonical(inventory)),
+        "source": {
+            "kind": kind,
+            "identity": identity,
+            "selection_sha256": _sha256(_canonical(selection)),
+        },
+        "entries": entries,
+        **selection,
+    }
+    raw = _canonical(document)
+    (root / "manifest.json").write_bytes(raw)
+    (root / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
+    return document
+
+
+@pytest.mark.parametrize("kind", READ_IDENTITY_KINDS)
+def test_read_snapshot_accepts_kind_specific_source_identities(tmp_path: Path, kind: str) -> None:
+    snapshot = tmp_path / "sealed"
+    identity = "1c0ffee7" * 5 if kind == "git" else "0f9a" * 16
+    document = _identity_fixture(snapshot, kind, identity)
+    before = (snapshot / "manifest.json").read_bytes()
+    actual = read_snapshot(snapshot_root=snapshot)
+    assert actual == document
+    assert actual["source"]["kind"] == kind
+    assert actual["source"]["identity"] == identity
+    assert actual["source_paths"] == ["a.cs", "z.cs"]
+    assert before == _canonical(actual) == (snapshot / "manifest.json").read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("kind", "identity"),
+    [
+        pytest.param("zip", "1" * 40, id="zip-40-characters"),
+        pytest.param("directory", "1" * 40, id="directory-40-characters"),
+        pytest.param("git", "0" * 64, id="git-64-characters"),
+        pytest.param("zip", "0" * 63, id="zip-63-characters"),
+        pytest.param("directory", "0" * 65, id="directory-65-characters"),
+        pytest.param("git", "0" * 39, id="git-39-characters"),
+        pytest.param("git", "0" * 41, id="git-41-characters"),
+        pytest.param("zip", "g" * 64, id="zip-non-hex"),
+        pytest.param("directory", "z" * 64, id="directory-non-hex"),
+        pytest.param("git", "z" * 40, id="git-non-hex"),
+        pytest.param("zip", "A" * 64, id="zip-uppercase"),
+        pytest.param("directory", "F" * 64, id="directory-uppercase"),
+        pytest.param("git", "F" * 40, id="git-uppercase"),
+        pytest.param("zip", "0" * 63 + " ", id="zip-trailing-space"),
+        pytest.param("git", " " + "0" * 39, id="git-leading-space"),
+        pytest.param("zip", "", id="zip-empty"),
+        pytest.param("git", "", id="git-empty"),
+        pytest.param("directory", None, id="directory-null"),
+        pytest.param("zip", 1, id="zip-integer"),
+        pytest.param("git", ["0" * 40], id="git-list"),
+        pytest.param("directory", {"sha256": "0" * 64}, id="directory-dict"),
+        pytest.param("zip", True, id="zip-boolean"),
+        pytest.param("git", 4.5, id="git-float"),
+    ],
+)
+def test_read_snapshot_rejects_kind_mismatched_source_identities(
+    tmp_path: Path, kind: str, identity: object
+) -> None:
+    snapshot = tmp_path / "sealed"
+    document = _identity_fixture(snapshot, kind, identity)
+    error = _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot)
+    assert error.__cause__ is None
+    assert (snapshot / "manifest.json").read_bytes() == _canonical(document)
+    assert (snapshot / "SEALED").read_bytes() == _sha256(_canonical(document)).encode("ascii")
+
+
 def test_trusted_control_files_are_hash_bound(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     tree.mkdir()

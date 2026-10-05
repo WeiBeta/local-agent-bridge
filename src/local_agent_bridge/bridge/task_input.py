@@ -189,6 +189,26 @@ def _require_sha256(value: object, label: str, code: str) -> str:
     return text
 
 
+def _require_source_identity(value: object, kind: str) -> str:
+    """Check a recorded source identity against its own source kind.
+
+    The frozen contract fixes the recorded identity form per kind: an exact 40
+    character lowercase Git object id, or a lowercase SHA-256 digest for a ZIP
+    package or an adjudicated directory manifest. Only the recorded spelling is
+    verified here; the origin is never re-read and the value is never rewritten.
+    """
+
+    if kind == "git":
+        text = _require_text(value, "git source identity", "InvalidManifest")
+        if not _COMMIT_TEXT.fullmatch(text):
+            raise TaskInputError(
+                "InvalidManifest",
+                "a git source identity must be an exact 40 character object id",
+            )
+        return text
+    return _require_sha256(value, f"{kind} source identity", "InvalidManifest")
+
+
 def _validate_absolute_path(value: str | Path, *, label: str) -> Path:
     """Check the supplied spelling before Path can fold any components.
 
@@ -1748,7 +1768,8 @@ def _validate_snapshot_manifest(
     source_kind = source["kind"]
     if type(source_kind) is not str or source_kind not in _SOURCE_KEYS:
         raise TaskInputError("InvalidManifest", "the snapshot source kind is unknown")
-    _require_text(source["identity"], "source identity", "InvalidManifest")
+    # The recorded identity is kind-checked here and returned unchanged below.
+    _require_source_identity(source["identity"], source_kind)
     _require_sha256(source["selection_sha256"], "selection_sha256", "InvalidManifest")
     entries = document["entries"]
     if type(entries) is not list:
