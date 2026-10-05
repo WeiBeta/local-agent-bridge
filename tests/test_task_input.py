@@ -3045,3 +3045,115 @@ def test_capacity_git_declared_total_and_file_limits_precede_staging(
             snapshot_root=snapshot,
         )
         assert not snapshot.exists() and not snapshot.with_name(name + ".staging").exists()
+
+
+def _drift_at_final_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot_root: Path,
+    relative: str,
+    expected_before: bytes,
+    replacement: bytes,
+) -> None:
+    """Rewrite one staged file at the real final verification boundary only."""
+
+    original_scan = entry._scan_tree
+    staging_source = snapshot_root.with_name(snapshot_root.name + ".staging") / "source"
+
+    def scan_tree(root, policy, deadline):
+        if Path(root) == staging_source:
+            staged = staging_source.joinpath(*relative.split("/"))
+            assert staged.read_bytes() == expected_before
+            staged.write_bytes(replacement)
+        return original_scan(root, policy, deadline)
+
+    monkeypatch.setattr(entry, "_scan_tree", scan_tree)
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize(
+    "replacement",
+    [b"changed--source", b"changed-source-longer"],
+    ids=["same-length", "variable-length"],
+)
+def test_final_verification_rejects_post_copy_content_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, replacement: bytes
+) -> None:
+    original = b"original-source"
+    source = _capacity_source(tmp_path, kind, {"a.cs": original})
+    snapshot = tmp_path / "snapshot"
+    _drift_at_final_scan(monkeypatch, snapshot, "a.cs", original, replacement)
+    _expect_error(
+        "InputChanged",
+        import_snapshot,
+        source=source,
+        policy=_policy(),
+        snapshot_root=snapshot,
+    )
+    staging = snapshot.with_name("snapshot.staging")
+    assert not snapshot.exists()
+    assert (staging / "source/a.cs").read_bytes() == replacement
+    assert (staging / "IMPORT-FAILED").read_text(encoding="ascii").strip() == "InputChanged"
+    assert not (staging / "manifest.json").exists()
+    assert not (staging / "SEALED").exists()
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+def test_final_verification_seals_the_copied_original_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    original = b"original-source"
+    source = _capacity_source(tmp_path, kind, {"a.cs": original})
+    snapshot = tmp_path / "snapshot"
+    _drift_at_final_scan(monkeypatch, snapshot, "a.cs", original, original)
+    manifest = import_snapshot(source=source, policy=_policy(), snapshot_root=snapshot)
+    row = _entry_map(manifest)["a.cs"]
+    assert row["bytes"] == len(original)
+    assert row["sha256"] == _sha256(original)
+    assert (snapshot / "source/a.cs").read_bytes() == original
+    assert read_snapshot(snapshot_root=snapshot) == manifest
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("kind", ["zip"]),
+        ("kind", {"kind": "zip"}),
+        ("git_mode", ["100644"]),
+        ("git_mode", {"mode": "100644"}),
+        ("source_paths", [["a.cs"]]),
+        ("source_paths", [{"path": "a.cs"}]),
+    ],
+    ids=[
+        "kind-list",
+        "kind-dict",
+        "git-mode-list",
+        "git-mode-dict",
+        "source-paths-list",
+        "source-paths-dict",
+    ],
+)
+def test_read_snapshot_rejects_malformed_manifest_types_before_membership(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, {"a.cs": b"directory input\n"})
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    snapshot_root = tmp_path / "snapshot"
+    manifest = _import_directory(tree, manifest_path, snapshot_root)
+    # The sealed directory snapshot keeps legal null git_mode rows and reads.
+    assert read_snapshot(snapshot_root=snapshot_root) == manifest
+
+    document = json.loads((snapshot_root / "manifest.json").read_bytes())
+    if field == "kind":
+        document["source"]["kind"] = value
+    elif field == "git_mode":
+        file_rows = [row for row in document["entries"] if row["kind"] == "file"]
+        assert file_rows
+        file_rows[0]["git_mode"] = value
+    else:
+        document["source_paths"] = value
+    raw = _canonical(document)
+    (snapshot_root / "manifest.json").write_bytes(raw)
+    (snapshot_root / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)

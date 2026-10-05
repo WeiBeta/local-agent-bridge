@@ -1245,6 +1245,9 @@ def _stage_and_publish(
         for relative in directories:
             _ensure_directory(source_root, relative, created_directories, policy, deadline)
         expanded_total = 0
+        # Fingerprints observed while each staged copy was written. They are the
+        # import's content identity; the final scan must observe them again.
+        copied_files: dict[str, tuple[int, str]] = {}
         for pending in files:
             deadline.check()
             parent = _parent_path(pending.path)
@@ -1260,6 +1263,7 @@ def _stage_and_publish(
                 expanded_total,
             )
             expanded_total += total
+            copied_files[pending.path] = (total, digest)
             if pending.declared_bytes is not None and total != pending.declared_bytes:
                 raise TaskInputError("InputChanged", "a staged file differs from its declared size")
             if pending.expected_sha256 is not None and digest != pending.expected_sha256:
@@ -1278,17 +1282,23 @@ def _stage_and_publish(
             raise TaskInputError(
                 "TreeMismatch", "the staged tree does not match the planned entries"
             )
-        if set(actual_files) != {pending.path for pending in files}:
+        if set(actual_files) != set(copied_files):
             raise TaskInputError(
                 "TreeMismatch", "the staged tree does not match the planned entries"
             )
+        for path, copied_fingerprint in copied_files.items():
+            deadline.check()
+            if actual_files[path] != copied_fingerprint:
+                raise TaskInputError(
+                    "InputChanged", "a staged file differs from the bytes copied from its source"
+                )
         entries: list[dict[str, object]] = [
             {"path": path, "kind": "directory", "bytes": 0, "sha256": None, "git_mode": None}
             for path in directories
         ]
         for pending in files:
             deadline.check()
-            size, digest = actual_files[pending.path]
+            size, digest = copied_files[pending.path]
             entries.append(
                 {
                     "path": pending.path,
@@ -1468,7 +1478,8 @@ def _validate_snapshot_manifest(
     source = document["source"]
     if type(source) is not dict or set(source) != {"kind", "identity", "selection_sha256"}:
         raise TaskInputError("InvalidManifest", "the snapshot source fields are not frozen")
-    if source["kind"] not in _SOURCE_KEYS:
+    source_kind = source["kind"]
+    if type(source_kind) is not str or source_kind not in _SOURCE_KEYS:
         raise TaskInputError("InvalidManifest", "the snapshot source kind is unknown")
     _require_text(source["identity"], "source identity", "InvalidManifest")
     _require_sha256(source["selection_sha256"], "selection_sha256", "InvalidManifest")
@@ -1501,7 +1512,7 @@ def _validate_snapshot_manifest(
         if kind == "file":
             if type(digest) is not str or not _SHA256_TEXT.fullmatch(digest):
                 raise TaskInputError("InvalidManifest", "a file entry needs a SHA-256 digest")
-            if git_mode is not None and git_mode not in _GIT_MODES:
+            if git_mode is not None and (type(git_mode) is not str or git_mode not in _GIT_MODES):
                 raise TaskInputError("InvalidManifest", "a file entry has an unknown Git mode")
             if path in files or path in directories:
                 raise TaskInputError("InvalidManifest", "a manifest path is declared twice")
@@ -1527,16 +1538,20 @@ def _validate_snapshot_manifest(
                 )
             parent = _parent_path(parent)
     source_paths = document["source_paths"]
-    if type(source_paths) is not list or len(set(source_paths)) != len(source_paths):
+    if type(source_paths) is not list:
         raise TaskInputError("InvalidManifest", "source_paths must be a list of unique paths")
+    seen_source_paths: set[str] = set()
     for item in source_paths:
-        _validate_relative_path(
+        path = _validate_relative_path(
             item,
             label="source path",
             code="InvalidManifest",
             depth_limit=_DEFAULT_DEPTH_LIMIT,
             component_codepoints_limit=_DEFAULT_COMPONENT_CODEPOINTS,
         )
+        if path in seen_source_paths:
+            raise TaskInputError("InvalidManifest", "source_paths must be a list of unique paths")
+        seen_source_paths.add(path)
     excluded_entries = document["excluded_paths"]
     if type(excluded_entries) is not list:
         raise TaskInputError("InvalidManifest", "excluded_paths must be a list")
