@@ -175,6 +175,15 @@ def _git_repository(root: Path, files: dict[str, bytes], executable: str | None 
     return _git_commit(root, "synthetic input")
 
 
+def _git_blob(root: Path, payload: bytes) -> str:
+    return _git(root, "hash-object", "-w", "--stdin", data=payload).decode("ascii").strip()
+
+
+def _git_tree(root: Path, entries: list[tuple[str, str, str, str]]) -> str:
+    listing = "".join(f"{mode} {kind} {sha}\t{name}\n" for mode, kind, sha, name in entries)
+    return _git(root, "mktree", data=listing.encode("utf-8")).decode("ascii").strip()
+
+
 def _git_source(root: Path, commit: str, paths: list[str]) -> dict[str, object]:
     return {"kind": "git", "root": str(root), "commit": commit, "paths": paths}
 
@@ -442,6 +451,82 @@ def test_git_rejects_missing_paths_directories_and_short_commit_ids(tmp_path: Pa
     )
 
 
+def test_git_rejects_implicit_parent_folding_conflicts(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    files = {"caf\u00e9/a.cs": b"nfc parent\n", "cafe\u0301/b.cs": b"decomposed parent\n"}
+    commit = _git_repository(repository, files)
+    snapshot_root = tmp_path / "snapshot"
+    _expect_error(
+        "PathConflict",
+        import_snapshot,
+        source=_git_source(repository, commit, sorted(files)),
+        policy=_policy(),
+        snapshot_root=snapshot_root,
+    )
+    assert not snapshot_root.exists()
+    assert not snapshot_root.with_name(snapshot_root.name + ".staging").exists()
+
+
+def test_git_rejects_case_folded_implicit_parents_from_colliding_trees(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    upper = _git_tree(repository, [("100644", "blob", _git_blob(repository, b"upper\n"), "x.cs")])
+    lower = _git_tree(repository, [("100644", "blob", _git_blob(repository, b"lower\n"), "y.cs")])
+    root = _git_tree(
+        repository,
+        [("040000", "tree", upper, "A"), ("040000", "tree", lower, "a")],
+    )
+    commit = (
+        _git(
+            repository,
+            "-c",
+            "user.email=bridge@example.invalid",
+            "-c",
+            "user.name=Bridge Test",
+            "commit-tree",
+            root,
+            "-m",
+            "synthetic case-colliding trees",
+        )
+        .decode("ascii")
+        .strip()
+    )
+    snapshot_root = tmp_path / "snapshot"
+    _expect_error(
+        "PathConflict",
+        import_snapshot,
+        source=_git_source(repository, commit, ["A/x.cs", "a/y.cs"]),
+        policy=_policy(),
+        snapshot_root=snapshot_root,
+    )
+    assert not snapshot_root.exists()
+    assert not snapshot_root.with_name(snapshot_root.name + ".staging").exists()
+
+
+def test_directory_import_rejects_folding_conflicts_between_real_dirs(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    files = {"caf\u00e9/a.cs": b"nfc parent\n", "cafe\u0301/b.cs": b"decomposed parent\n"}
+    _write_tree(tree, files)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    snapshot_root = tmp_path / "snapshot"
+    _expect_error(
+        "PathConflict",
+        import_snapshot,
+        source=_directory_source(tree, manifest_path),
+        policy=_policy(),
+        snapshot_root=snapshot_root,
+    )
+    assert not snapshot_root.exists()
+    assert not snapshot_root.with_name(snapshot_root.name + ".staging").exists()
+
+
 def test_zip_strip_prefix_is_explicit(tmp_path: Path) -> None:
     package = tmp_path / "input.zip"
     zip_sha = _write_zip(package, {"data.txt": b"payload\n"})
@@ -550,6 +635,64 @@ def test_zip_accepts_explicit_directory_entries_with_children(tmp_path: Path) ->
         snapshot_root=tmp_path / "snapshot",
     )
     assert set(_entry_map(manifest)) == {"a", "a/b.cs"}
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["pkg/caf\u00e9/a.cs", "pkg/cafe\u0301/b.cs"],
+        ["pkg/A/x.cs", "pkg/a/y.cs"],
+        ["pkg/caf\u00e9/", "pkg/cafe\u0301/b.cs"],
+        ["pkg/x/caf\u00e9/deep/a.cs", "pkg/x/cafe\u0301/deep/b.cs"],
+        ["pkg/A", "pkg/a/b.cs"],
+        ["pkg/A/b/", "pkg/a/x.cs"],
+    ],
+)
+def test_zip_rejects_implicit_parent_folding_conflicts(tmp_path: Path, names: list[str]) -> None:
+    package = tmp_path / "input.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        for name in names:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                archive.writestr(zipfile.ZipInfo(name), b"" if name.endswith("/") else b"payload\n")
+    zip_sha = _sha256(package.read_bytes())
+    snapshot_root = tmp_path / "snapshot"
+    _expect_error(
+        "PathConflict",
+        import_snapshot,
+        source=_zip_source(package, zip_sha),
+        policy=_policy(),
+        snapshot_root=snapshot_root,
+    )
+    # The completed view is checked during planning, before any staging exists.
+    assert not snapshot_root.exists()
+    assert not snapshot_root.with_name(snapshot_root.name + ".staging").exists()
+
+
+def test_zip_implicit_parents_import_with_original_unicode(tmp_path: Path) -> None:
+    package = tmp_path / "input.zip"
+    files = {
+        "caf\u00e9/menu.cs": "// caf\u00e9 source\n".encode(),
+        "\u4e2d\u6587/\u8bf4\u660e.md": "\u4e2d\u6587\u5185\u5bb9\n".encode(),
+        "plain.cs": b"plain\n",
+    }
+    with zipfile.ZipFile(package, "w") as archive:
+        for name, payload in files.items():
+            archive.writestr(zipfile.ZipInfo(name), payload)
+    zip_sha = _sha256(package.read_bytes())
+    manifest = import_snapshot(
+        source=_zip_source(package, zip_sha, strip=None),
+        policy=_policy(),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert set(_entry_map(manifest)) == {
+        "caf\u00e9",
+        "caf\u00e9/menu.cs",
+        "\u4e2d\u6587",
+        "\u4e2d\u6587/\u8bf4\u660e.md",
+        "plain.cs",
+    }
+    assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
 
 
 def _mode_info(name: str, mode: int, *, dos_attributes: int = 0x20) -> zipfile.ZipInfo:
@@ -974,6 +1117,30 @@ def test_zip_exclusion_does_not_invent_implicit_directories(tmp_path: Path) -> N
     assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
 
 
+def test_implicit_parent_conflicts_are_rejected_before_exclusions(tmp_path: Path) -> None:
+    package = tmp_path / "input.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr(zipfile.ZipInfo("pkg/keep.cs"), b"keep\n")
+        archive.writestr(zipfile.ZipInfo("pkg/caf\u00e9/x.cs"), b"omit\n")
+        archive.writestr(zipfile.ZipInfo("pkg/cafe\u0301/y.cs"), b"omit\n")
+    zip_sha = _sha256(package.read_bytes())
+    snapshot_root = tmp_path / "snapshot"
+    _expect_error(
+        "PathConflict",
+        import_snapshot,
+        source=_zip_source(package, zip_sha),
+        policy=_policy(
+            excluded_paths=[
+                {"path": "caf\u00e9/x.cs", "reason": "dropped"},
+                {"path": "cafe\u0301/y.cs", "reason": "dropped"},
+            ]
+        ),
+        snapshot_root=snapshot_root,
+    )
+    assert not snapshot_root.exists()
+    assert not snapshot_root.with_name(snapshot_root.name + ".staging").exists()
+
+
 def test_git_exclusion_keeps_exact_file_accounting(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -1057,6 +1224,56 @@ def test_read_snapshot_rejects_selection_denominator_drift(tmp_path: Path) -> No
     (snapshot_root / "manifest.json").write_bytes(original)
     (snapshot_root / "SEALED").write_bytes(sealed)
     assert read_snapshot(snapshot_root=snapshot_root)
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [("caf\u00e9", "cafe\u0301"), ("A", "a")],
+)
+def test_read_snapshot_rejects_manifest_folding_conflicts(
+    tmp_path: Path, first: str, second: str
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, {"keep.cs": b"kept input\n"})
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    snapshot_root = tmp_path / "snapshot"
+    import_snapshot(
+        source=_directory_source(tree, manifest_path),
+        policy=_policy(),
+        snapshot_root=snapshot_root,
+    )
+    document = json.loads((snapshot_root / "manifest.json").read_bytes())
+    colliding = [
+        {"path": first, "kind": "directory", "bytes": 0, "sha256": None, "git_mode": None},
+        {
+            "path": f"{first}/a.cs",
+            "kind": "file",
+            "bytes": 1,
+            "sha256": "0" * 64,
+            "git_mode": None,
+        },
+        {"path": second, "kind": "directory", "bytes": 0, "sha256": None, "git_mode": None},
+        {
+            "path": f"{second}/b.cs",
+            "kind": "file",
+            "bytes": 1,
+            "sha256": "0" * 64,
+            "git_mode": None,
+        },
+    ]
+    document["entries"] = sorted(
+        [*document["entries"], *colliding], key=lambda entry: entry["path"].encode("utf-8")
+    )
+    identity = [
+        {key: entry[key] for key in ("path", "kind", "bytes", "sha256")}
+        for entry in document["entries"]
+    ]
+    document["snapshot_id"] = _sha256(_canonical({"contract_version": 1, "entries": identity}))
+    raw = _canonical(document)
+    (snapshot_root / "manifest.json").write_bytes(raw)
+    (snapshot_root / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=snapshot_root)
 
 
 def test_trusted_control_files_are_hash_bound(tmp_path: Path) -> None:
@@ -3435,6 +3652,34 @@ def test_zip_deflate_actual_length_is_checked_beyond_matching_metadata(
         descriptor_changes=changes,
     )
     _reject_zip_length_fixture(tmp_path, raw, "InputChanged", staged=True)
+
+
+def test_zip_corrupt_deflate_stream_maps_the_decompress_error(tmp_path: Path) -> None:
+    payload = b"original-source"
+    compressor = zlib.compressobj(wbits=-15)
+    real = compressor.compress(payload) + compressor.flush()
+    raw = _zip_length_fixture(
+        payload,
+        method=zipfile.ZIP_DEFLATED,
+        compressed_data=b"\xff" * len(real),
+    )
+    package = tmp_path / "corrupt.zip"
+    package.write_bytes(raw)
+    snapshot_root = tmp_path / "snapshot"
+    error = _expect_error(
+        "InputChanged",
+        import_snapshot,
+        source=_zip_source(package, _sha256(raw), strip=None),
+        policy=_policy(),
+        snapshot_root=snapshot_root,
+    )
+    assert isinstance(error.__cause__, zlib.error)
+    assert package.read_bytes() == raw
+    assert not snapshot_root.exists()
+    staging = tmp_path / "snapshot.staging"
+    assert (staging / "IMPORT-FAILED").read_text().strip() == "InputChanged"
+    assert not (staging / "manifest.json").exists()
+    assert not (staging / "SEALED").exists()
 
 
 @pytest.mark.parametrize("defect", ["unfinished", "truncated-end", "trailing", "second-stream"])

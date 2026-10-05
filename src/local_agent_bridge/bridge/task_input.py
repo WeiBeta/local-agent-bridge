@@ -27,7 +27,8 @@ import subprocess
 import time
 import unicodedata
 import zipfile
-from collections.abc import Iterator, Sequence
+import zlib
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, suppress
 from copy import copy
 from dataclasses import dataclass, replace
@@ -461,6 +462,27 @@ def _covers(prefix: str, path: str) -> bool:
     return prefix == path or path.startswith(prefix + "/")
 
 
+def _completed_directories(
+    files: Mapping[str, object], directories: set[str], deadline: _Deadline | None = None
+) -> set[str]:
+    """Return the explicit directories plus every implicit parent directory.
+
+    The result is a validation view only: callers keep their original
+    explicit registry for exclusion accounting and staging, so completed
+    parents never become registered input entries by themselves.
+    """
+
+    completed = set(directories)
+    for path in (*files, *directories):
+        if deadline is not None:
+            deadline.check()
+        parent = _parent_path(path)
+        while parent is not None:
+            completed.add(parent)
+            parent = _parent_path(parent)
+    return completed
+
+
 def _most_specific_exclusion(
     path: str, excluded: tuple[tuple[str, str], ...], deadline: _Deadline
 ) -> tuple[str, str] | None:
@@ -481,31 +503,37 @@ def _most_specific_exclusion(
 
 
 def _check_collection_conflicts(
-    files: dict[str, _PendingFile], directories: set[str], deadline: _Deadline
+    files: Mapping[str, object],
+    directories: set[str],
+    deadline: _Deadline | None = None,
+    *,
+    code: str = "PathConflict",
 ) -> None:
-    deadline.check()
+    def check_budget() -> None:
+        if deadline is not None:
+            deadline.check()
+
+    check_budget()
     if set(files) & directories:
-        raise TaskInputError("PathConflict", "a path is declared as both a file and a directory")
+        raise TaskInputError(code, "a path is declared as both a file and a directory")
     folded: dict[str, str] = {}
     for path in (*files, *directories):
-        deadline.check()
+        check_budget()
         key = unicodedata.normalize("NFC", path).casefold()
         previous = folded.get(key)
         if previous is not None and previous != path:
             raise TaskInputError(
-                "PathConflict", "distinct input names collide under NFC or Windows case folding"
+                code, "distinct input names collide under NFC or Windows case folding"
             )
         folded[key] = path
     for path in files:
-        deadline.check()
+        check_budget()
         parent = _parent_path(path)
         while parent is not None:
             if parent in files:
-                raise TaskInputError(
-                    "PathConflict", "a file entry is also a parent of another entry"
-                )
+                raise TaskInputError(code, "a file entry is also a parent of another entry")
             parent = _parent_path(parent)
-    deadline.check()
+    check_budget()
 
 
 def _zip_entry_name(info: zipfile.ZipInfo, policy: _Policy) -> tuple[str, bool]:
@@ -744,7 +772,9 @@ def _plan_zip_members(
             zip_name=info.filename,
             disk_path=None,
         )
-    _check_collection_conflicts(files, directories, deadline)
+    _check_collection_conflicts(
+        files, _completed_directories(files, directories, deadline), deadline
+    )
     return files, directories
 
 
@@ -852,7 +882,7 @@ def _plan_git_selection(
             zip_name=None,
             disk_path=None,
         )
-    _check_collection_conflicts(files, set(), deadline)
+    _check_collection_conflicts(files, _completed_directories(files, set(), deadline), deadline)
     return files, set(), root
 
 
@@ -1034,7 +1064,9 @@ def _plan_directory_tree(
         )
         for path, (size, digest) in actual_files.items()
     }
-    _check_collection_conflicts(files, set(actual_directories), deadline)
+    _check_collection_conflicts(
+        files, _completed_directories(files, actual_directories, deadline), deadline
+    )
     return files, actual_directories
 
 
@@ -1176,7 +1208,15 @@ def _zip_chunks(archive: zipfile.ZipFile, member: str, deadline: _Deadline) -> I
         deadline.check()
         while True:
             deadline.check()
-            chunk = reader.read(_STREAM_CHUNK_BYTES)
+            try:
+                chunk = reader.read(_STREAM_CHUNK_BYTES)
+            except zlib.error as error:
+                # CPython's decompressor surfaces corrupt deflate data as
+                # zlib.error; keep the stable stream-copy rejection code and
+                # preserve the original exception as the cause.
+                raise TaskInputError(
+                    "InputChanged", "an archive stream failed to decompress"
+                ) from error
             deadline.check()
             if not chunk:
                 break
@@ -1685,6 +1725,7 @@ def _validate_snapshot_manifest(
                     "InvalidManifest", "a manifest entry is missing an explicit parent"
                 )
             parent = _parent_path(parent)
+    _check_collection_conflicts(files, directories, code="InvalidManifest")
     source_paths = document["source_paths"]
     if type(source_paths) is not list:
         raise TaskInputError("InvalidManifest", "source_paths must be a list of unique paths")
