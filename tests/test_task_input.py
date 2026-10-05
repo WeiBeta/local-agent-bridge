@@ -977,11 +977,12 @@ def test_sensitive_excluded_and_source_path_accounting(tmp_path: Path) -> None:
     assert manifest["excluded_paths"] == [
         {"path": "creds/key.pem", "reason": "credential material"}
     ]
-    assert manifest["source_paths"] == ["src/main.cs", "creds/key.pem"]
+    # Contract §7.1 keeps declaration members/original names in UTF-8 order.
+    assert manifest["source_paths"] == ["creds/key.pem", "src/main.cs"]
     expected_selection = _sha256(
         _canonical(
             {
-                "source_paths": ["src/main.cs", "creds/key.pem"],
+                "source_paths": ["creds/key.pem", "src/main.cs"],
                 "excluded_paths": [{"path": "creds/key.pem", "reason": "credential material"}],
             }
         )
@@ -4784,3 +4785,325 @@ def test_zip_r13_an_unexplained_name_difference_is_rejected() -> None:
     _expect_error(
         "ZipEntryRejected", entry._zip_entry_name, info, entry._default_verification_policy()
     )
+
+
+def _semantics_origin(
+    tmp_path: Path, kind: str, files: dict[str, bytes]
+) -> tuple[dict[str, object], Path]:
+    """Make one plain synthetic tree, with a byte-pinned source of each kind."""
+    tree = tmp_path / "origin"
+    tree.mkdir()
+    _write_tree(tree, files)
+    if kind == "zip":
+        package = tmp_path / "origin.zip"
+        return _zip_source(package, _write_zip(package, files)), tree
+    if kind == "directory":
+        inventory = _manifest_file(tree, _tree_document(tree))
+        return _directory_source(tree, inventory), tree
+    fixed_options = (
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        f"core.hooksPath={tmp_path / 'no-hooks'}",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "user.name=OfflineFixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+    )
+    _git(tree, *fixed_options, "init", "-q")
+    _git(tree, *fixed_options, "add", "--all")
+    _git(tree, *fixed_options, "commit", "-q", "--allow-empty", "-m", "synthetic path semantics")
+    commit = _git_sha(tree, "HEAD")
+    return _git_source(tree, commit, list(reversed(files))), tree
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize(
+    ("actual", "rule", "blocked"),
+    [
+        pytest.param("Creds/Key.pem", "creds/key.pem", True, id="case-file"),
+        pytest.param("Creds/Deep/Key.pem", "creds", True, id="case-subtree"),
+        pytest.param("Cafe\u0301/clé.pem", "CAFÉ", True, id="nfc-subtree"),
+        pytest.param("Creds2/Key.pem", "creds", False, id="component-boundary"),
+        pytest.param("AuthToken.cs", "token", False, id="ordinary-business-name"),
+    ],
+)
+def test_path_semantics_sensitive_scope(
+    tmp_path: Path, kind: str, actual: str, rule: str, blocked: bool
+) -> None:
+    raw = b"SYNTHETIC-NONCREDENTIAL\r\n\x00\xff"
+    source, tree = _semantics_origin(tmp_path, kind, {actual: raw})
+    if actual == "Creds/Key.pem":
+        observed = os.path.samefile(tree / actual, tree / rule)
+        (tmp_path / "SAMEFILE.json").write_bytes(_canonical({"samefile": observed}))
+        assert observed, "case-only fixture must name the same Windows file"
+    target = tmp_path / "snapshot"
+    policy = _policy(source_paths=[actual], sensitive_paths=[rule])
+    if blocked:
+        _expect_error(
+            "SensitivePathImported",
+            import_snapshot,
+            source=source,
+            policy=policy,
+            snapshot_root=target,
+        )
+        assert not target.exists()
+        assert not target.with_name("snapshot.staging").exists()
+    else:
+        manifest = import_snapshot(source=source, policy=policy, snapshot_root=target)
+        assert manifest["source_paths"] == [actual]
+        assert target.joinpath("source", actual).read_bytes() == raw
+        assert read_snapshot(snapshot_root=target) == manifest
+    assert tree.joinpath(actual).read_bytes() == raw
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+def test_path_semantics_exclusion_scope_and_sensitive_interaction(
+    tmp_path: Path, kind: str
+) -> None:
+    files = {
+        "Creds/Key.pem": b"x",
+        "Creds/Deep/Cafe\u0301.pem": b"y",
+        "Creds2/AuthToken.cs": b"ordinary\r\n\x00\xff",
+    }
+    source, _ = _semantics_origin(tmp_path, kind, files)
+    exclusions = [
+        {"path": "creds", "reason": "outside input"},
+        {"path": "CREDS/deep", "reason": "separate subtree"},
+    ]
+    results = []
+    for index, order in enumerate((exclusions, list(reversed(exclusions)))):
+        target = tmp_path / f"snapshot-{index}"
+        policy = _policy(
+            source_paths=list(reversed(files)), excluded_paths=order, sensitive_paths=["CREDS"]
+        )
+        before = _canonical(policy)
+        manifest = import_snapshot(source=source, policy=policy, snapshot_root=target)
+        assert _canonical(policy) == before
+        records = {row["path"]: row["reason"] for row in manifest["excluded_paths"]}
+        assert records["Creds/Key.pem"] == "outside input"
+        assert records["Creds/Deep/Cafe\u0301.pem"] == "separate subtree"
+        assert "Creds2/AuthToken.cs" in _entry_map(manifest)
+        assert set(manifest["source_paths"]) == set(files)
+        assert manifest["source"]["selection_sha256"] == _sha256(
+            _canonical(
+                {
+                    "source_paths": sorted(files, key=lambda path: path.encode("utf-8")),
+                    "excluded_paths": manifest["excluded_paths"],
+                }
+            )
+        )
+        assert read_snapshot(snapshot_root=target) == manifest
+        results.append(manifest)
+    assert results[0] == results[1], "rule order must not choose a different exclusion reason"
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+def test_path_semantics_exclusion_nfc_preserves_original_name(tmp_path: Path, kind: str) -> None:
+    original = "Cafe\u0301/Key.pem"
+    source, _ = _semantics_origin(tmp_path, kind, {original: b"synthetic"})
+    manifest = import_snapshot(
+        source=source,
+        policy=_policy(
+            source_paths=[original],
+            excluded_paths=[{"path": "CAFÉ", "reason": "omitted"}],
+            sensitive_paths=["café"],
+        ),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert {row["path"] for row in manifest["excluded_paths"]} >= {original}
+    assert manifest["source_paths"] == [original]
+    assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+def test_path_semantics_exclusion_does_not_cross_component_boundary(
+    tmp_path: Path, kind: str
+) -> None:
+    source, _ = _semantics_origin(tmp_path, kind, {"Creds2/Key.pem": b"synthetic"})
+    _expect_error(
+        "ExcludedPathUnknown",
+        import_snapshot,
+        source=source,
+        policy=_policy(excluded_paths=[{"path": "creds", "reason": "not present"}]),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert not (tmp_path / "snapshot.staging").exists()
+
+
+@pytest.mark.parametrize("field", ["sensitive_paths", "excluded_paths"])
+@pytest.mark.parametrize("rules", [("Creds", "creds"), ("café", "cafe\u0301")])
+def test_path_semantics_equivalent_scope_rules_are_not_merged(
+    field: str, rules: tuple[str, str]
+) -> None:
+    values = (
+        [{"path": path, "reason": "omitted"} for path in rules]
+        if field == "excluded_paths"
+        else list(rules)
+    )
+    _expect_error("InvalidPolicy", entry._validate_policy, _policy(**{field: values}))
+
+
+def test_path_semantics_specific_exclusion_uses_component_depth() -> None:
+    # Casefold expands ß: original codepoint length must not rank scope depth.
+    broad = "S" * 16
+    deep = "ß" * 8 + "/leaf"
+    policy = entry._validate_policy(
+        _policy(
+            excluded_paths=[{"path": broad, "reason": "broad"}, {"path": deep, "reason": "deep"}]
+        )
+    )
+    assert entry._most_specific_exclusion(
+        broad + "/leaf/a.cs", policy.excluded_paths, entry._Deadline.starting_now(60)
+    ) == (deep, "deep")
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("variant", ["exact", "case-alias", "nfc-alias", "wrong-hash", "excluded"])
+def test_path_semantics_control_reference_is_exact(tmp_path: Path, kind: str, variant: str) -> None:
+    original = "Cafe\u0301/AGENTS.md"
+    raw = b"# synthetic host guide\r\n\x00\xff"
+    source, _ = _semantics_origin(tmp_path, kind, {original: raw})
+    reference = original
+    if variant == "case-alias":
+        reference = "cafe\u0301/agents.md"
+    elif variant == "nfc-alias":
+        reference = "Café/AGENTS.md"
+    digest = "0" * 64 if variant == "wrong-hash" else _sha256(raw)
+    exclusions = [{"path": "CAFÉ", "reason": "omitted"}] if variant == "excluded" else []
+    policy = _policy(trusted_control_files={reference: digest}, excluded_paths=exclusions)
+    target = tmp_path / "snapshot"
+    if variant == "exact":
+        manifest = import_snapshot(source=source, policy=policy, snapshot_root=target)
+        assert target.joinpath("source", original).read_bytes() == raw
+        assert read_snapshot(snapshot_root=target) == manifest
+    else:
+        _expect_error(
+            "InputControlConflict",
+            import_snapshot,
+            source=source,
+            policy=policy,
+            snapshot_root=target,
+        )
+        assert not target.exists()
+        assert (target.with_name("snapshot.staging") / "IMPORT-FAILED").read_text() == (
+            "InputControlConflict\n"
+        )
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("declared", ["empty", "subset", "all"])
+def test_path_semantics_canonical_declarations_and_digest(
+    tmp_path: Path, kind: str, declared: str
+) -> None:
+    # Preserve a decomposed name in a different component without an NFC collision.
+    files = {
+        "é.cs": b"accent\r\n",
+        "z.cs": b"ascii\x00\xff",
+        "中文/e\u0301.cs": b"decomposed\r\n\x80",
+    }
+    source, _ = _semantics_origin(tmp_path, kind, files)
+    names = [] if declared == "empty" else ["中文/e\u0301.cs", "z.cs"]
+    if declared == "all":
+        names.append("é.cs")
+    expected = sorted(names, key=lambda path: path.encode("utf-8"))
+    manifests = []
+    for index, order in enumerate((names, list(reversed(names)))):
+        policy = _policy(source_paths=order)
+        original_policy = _canonical(policy)
+        original_source = _canonical(source)
+        target = tmp_path / f"snapshot-{index}"
+        manifest = import_snapshot(source=source, policy=policy, snapshot_root=target)
+        assert _canonical(policy) == original_policy and _canonical(source) == original_source
+        assert manifest["source_paths"] == expected
+        assert manifest["source"]["selection_sha256"] == _sha256(
+            _canonical({"source_paths": expected, "excluded_paths": []})
+        )
+        assert read_snapshot(snapshot_root=target) == manifest
+        for path, raw in files.items():
+            assert target.joinpath("source", path).read_bytes() == raw
+        manifests.append(manifest)
+    assert manifests[0] == manifests[1]
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("variant", ["case-member", "nfc-excluded-member", "duplicate"])
+def test_path_semantics_declaration_members_are_exact(
+    tmp_path: Path, kind: str, variant: str
+) -> None:
+    original = "Cafe\u0301/a.cs"
+    source, _ = _semantics_origin(tmp_path, kind, {original: b"synthetic"})
+    declared = ["cafe\u0301/A.cs"]
+    exclusions = []
+    code = "SourcePathUnaccounted"
+    if variant == "nfc-excluded-member":
+        declared = ["Café/a.cs"]
+        exclusions = [{"path": "CAFÉ", "reason": "omitted"}]
+    elif variant == "duplicate":
+        declared = [original, original]
+        code = "InvalidPolicy"
+    _expect_error(
+        code,
+        import_snapshot,
+        source=source,
+        policy=_policy(source_paths=declared, excluded_paths=exclusions),
+        snapshot_root=tmp_path / "snapshot",
+    )
+    assert not (tmp_path / "snapshot.staging").exists()
+
+
+@pytest.mark.parametrize("variant", ["reverse-ascii", "reverse-unicode", "duplicate"])
+def test_path_semantics_reader_rejects_noncanonical_declarations(
+    tmp_path: Path, variant: str
+) -> None:
+    paths = ["z.cs", "é.cs", "中文/e\u0301.cs"]
+    target = tmp_path / "snapshot"
+    document = _read_collection_fixture(target, paths, [])
+    ordered = sorted(paths, key=lambda path: path.encode("utf-8"))
+    if variant == "reverse-ascii":
+        document["source_paths"] = [ordered[1], ordered[0], ordered[2]]
+    elif variant == "reverse-unicode":
+        document["source_paths"] = [ordered[0], ordered[2], ordered[1]]
+    else:
+        document["source_paths"] = [ordered[0], *ordered]
+    document["source"]["selection_sha256"] = _sha256(
+        _canonical({"source_paths": document["source_paths"], "excluded_paths": []})
+    )
+    raw = _canonical(document)
+    (target / "manifest.json").write_bytes(raw)
+    (target / "SEALED").write_bytes(_sha256(raw).encode("ascii"))
+    before = (target / "manifest.json").read_bytes(), (target / "SEALED").read_bytes()
+    _expect_error("InvalidManifest", read_snapshot, snapshot_root=target)
+    assert ((target / "manifest.json").read_bytes(), (target / "SEALED").read_bytes()) == before
+
+
+@pytest.mark.parametrize("variant", ["exact", "case-alias", "nfc-alias", "component-boundary"])
+def test_path_semantics_zip_strip_prefix_is_exact(tmp_path: Path, variant: str) -> None:
+    prefix = "Cafe\u0301"
+    rule = {
+        "exact": prefix,
+        "case-alias": "cafe\u0301",
+        "nfc-alias": "Café",
+        "component-boundary": "Cafe",
+    }[variant]
+    package = tmp_path / "origin.zip"
+    raw = b"original bytes\r\n\x00\xff"
+    source = _zip_source(package, _write_zip(package, {"说明.cs": raw}, prefix=prefix), strip=rule)
+    target = tmp_path / "snapshot"
+    if variant == "exact":
+        manifest = import_snapshot(
+            source=source, policy=_policy(source_paths=["说明.cs"]), snapshot_root=target
+        )
+        assert target.joinpath("source", "说明.cs").read_bytes() == raw
+        assert read_snapshot(snapshot_root=target) == manifest
+    else:
+        _expect_error(
+            "StripPrefixMismatch",
+            import_snapshot,
+            source=source,
+            policy=_policy(),
+            snapshot_root=target,
+        )
+        assert not target.with_name("snapshot.staging").exists()

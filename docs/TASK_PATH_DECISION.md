@@ -80,3 +80,31 @@ F1/F2/F3 另在本任务新 Scratch 做真实 Windows 回归：junction、合成
 - 新 Scratch 真实 Windows F1/F2/F3 复验通过；普通元数据身份命中实测通过，Permission/I/O 和发布观察错误分支明确为注入测试。
 - ruff 和 src/tests 格式通过；全仓格式仍仅基线 TASK_WORKSPACE_CONTRACT.md 漂移，文件未改。不称全部门禁全绿。
 - 最初的新标签测试误期待 LF，已按既有 Windows 换行更正；复用开发环境缺安装元数据的失败经本工作树离线锁定同步纠正。原始失败和最终证据均归档。
+
+## 路径比较与排序统一核对（2026-10-05，Repair03）
+
+本轮 TASK_ID=LAB-TASK-PATH-SEMANTICS-REPAIR-03，管理 task 019fe10b-df55-7b82-a9ba-3702dc08c55f。
+作者明确授权本次有界统一核对/修复，解除此前两轮后的停止点；不重置历史轮数或无限重试。
+base 为 231fde85432e527e9482bee6a940a01b6d776f31，tree 为 5dcacae388fbae2de29964b8a76c9d229c52fad4。
+实施前短方案及矩阵已写入本任务 Scratch/DESIGN.md；R16 报告哈希核验后复现七失败，旧材料不改。
+
+| 用途 | 调用点 | 比较/排序 | 正负等价类 |
+| --- | --- | --- | --- |
+| 物理/逻辑身份冲突 | _reject_broad_root、_check_collection_conflicts、reader | 物理身份保留 stat/samestat；逻辑集合含隐式父链，以 NFC/casefold 冲突拒绝，不去重 | 原 Unicode 单名合法；case/NFC 多名冲突拒绝；两类身份不混同 |
+| 敏感覆盖 | _apply_selection | NFC/casefold 完整路径或带分量边界的子树，只检查保留文件 | Git/ZIP/目录 case 别名实测 samefile；Unicode 范围拒绝；creds2/AuthToken.cs 合法 |
+| 排除覆盖 | _apply_selection、_most_specific_exclusion | 参数范围用等价键，分量最深原因；等价重复 InvalidPolicy；记录原名 | 大小写/NFC、目录前缀、敏感交互、分量边界、未知规则与原因顺序独立 |
+| 可信 control | _stage_and_publish 的 actual_files.get | 原名精确成员与 SHA 绑定 | 精确通过；别名、错hash、排除后缺失拒绝，保留失败 staging |
+| 来源声明成员 | _validate_policy、_apply_selection、reader | 原名精确成员、重复拒绝；文件或明确排除原名 | 空/子集/混合排除合法；未知、case/NFC 别名不能替代原声明 |
+| ZIP 前缀/层级 | _plan_zip_members、_completed_directories | 原名精确 strip_prefix 与分量边界；父链冲突仍拒绝 | 精确 Unicode 前缀通过；case/NFC 别名与相似前缀拒绝 |
+| 输出/selection | _path_key、policy、publish、reader | 无序参数内部规范化且不改参数；原 UTF-8 字节排序；reader 拒绝非规范序列 | 三来源、非ASCII、空/子集/重复、原名原字节及独立摘要 |
+
+根因是范围规则与精确引用共用了 _covers，以及 source_paths 成员保持被误作输入顺序保持。
+选择接受无序参数再规范化，与既有 excluded_paths 参数排序一致；不是放宽持久排序合同。
+_path_identity_key 只用于集合冲突与敏感/排除范围；_covers 仍按原名检查 reader 排除记录。
+control、来源声明和 ZIP 剥离维持精确引用，不通过全局 casefold 扩大匹配。
+原名、Unicode 与文件内容不改写；逻辑等价不声称物理 samefile。重叠排除用分量深度，避免折叠扩展影响原因选择。
+兼容影响：无序输入仍可导入，但 source_paths/selection/完整 manifest SHA 变为规范顺序；旧无序封存结果拒绝，须重新导入。
+范围规则新增等价匹配可能新增敏感拒绝或明确排除；等价重复规则不再依赖声明顺序。内容 snapshot_id 不变。
+既有身份/集合/ZIP、deadline、容量不变量继续回归；两处 Markdown 签名格式基线漂移单列，不改历史证据。
+归档入口：C:/Users/user/Documents/Codex-Archive/2026-10-05-LAB-TASK-PATH-SEMANTICS-REPAIR-03/INDEX.md。
+本轮结论以 REPAIR_REPORT.md/JUnit 为准，仍仅为实现自检；管理另派未参与实现者独立 Review。

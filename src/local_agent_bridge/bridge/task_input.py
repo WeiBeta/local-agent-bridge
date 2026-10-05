@@ -403,6 +403,8 @@ def _validate_policy(policy: object) -> _Policy:
             raise TaskInputError("InvalidPolicy", "source_paths contains a duplicate path")
         seen_paths.add(path)
         source_paths.append(path)
+    # Keep exact declaration members and spelling, with a canonical sequence.
+    source_paths.sort(key=_path_key)
 
     excluded_values = policy["excluded_paths"]
     if type(excluded_values) is not list:
@@ -416,9 +418,10 @@ def _validate_policy(policy: object) -> _Policy:
             )
         path = checked_path(item["path"], "excluded path")
         reason = _require_text(item["reason"], "excluded reason", "InvalidPolicy")
-        if path in seen_excluded:
+        identity_key = _path_identity_key(path)
+        if identity_key in seen_excluded:
             raise TaskInputError("InvalidPolicy", "excluded_paths contains a duplicate path")
-        seen_excluded.add(path)
+        seen_excluded.add(identity_key)
         excluded_paths.append((path, reason))
     excluded_paths.sort(key=lambda item: _path_key(item[0]))
 
@@ -429,10 +432,12 @@ def _validate_policy(policy: object) -> _Policy:
     seen_sensitive: set[str] = set()
     for item in sensitive_values:
         path = checked_path(item, "sensitive path")
-        if path in seen_sensitive:
+        identity_key = _path_identity_key(path)
+        if identity_key in seen_sensitive:
             raise TaskInputError("InvalidPolicy", "sensitive_paths contains a duplicate path")
-        seen_sensitive.add(path)
+        seen_sensitive.add(identity_key)
         sensitive_paths.append(path)
+    sensitive_paths.sort(key=_path_key)
 
     trusted_values = policy["trusted_control_files"]
     if type(trusted_values) is not dict:
@@ -482,7 +487,21 @@ def _parent_path(path: str) -> str | None:
 
 
 def _covers(prefix: str, path: str) -> bool:
+    """Compare recorded original names with a complete component boundary."""
     return prefix == path or path.startswith(prefix + "/")
+
+
+def _path_identity_key(path: str) -> str:
+    """Logical equivalence for conflict rejection and policy scope matching.
+
+    This conservative NFC/casefold relation is not an OS samefile claim and
+    never replaces a recorded name or an exact source/control reference.
+    """
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+def _scope_covers(prefix: str, path: str) -> bool:
+    return _covers(_path_identity_key(prefix), _path_identity_key(path))
 
 
 def _completed_directories(
@@ -509,18 +528,20 @@ def _completed_directories(
 def _most_specific_exclusion(
     path: str, excluded: tuple[tuple[str, str], ...], deadline: _Deadline
 ) -> tuple[str, str] | None:
-    """Return the covering exclusion with the longest prefix for one path.
+    """Return the deepest covering exclusion for one path.
 
-    Distinct exclusions that cover one path are prefixes of each other, so the
-    longest match is unique and does not depend on declaration order.
+    Equivalent duplicate rules are rejected by policy validation. Remaining
+    matches form one component chain, whose deepest rule is unique even when
+    NFC/casefold changes the original spelling's codepoint length.
     """
 
     best: tuple[str, str] | None = None
-    best_length = -1
+    best_depth = -1
     for prefix, reason in excluded:
         deadline.check()
-        if len(prefix) > best_length and _covers(prefix, path):
-            best_length = len(prefix)
+        depth = prefix.count("/") + 1
+        if depth > best_depth and _scope_covers(prefix, path):
+            best_depth = depth
             best = (prefix, reason)
     return best
 
@@ -542,7 +563,7 @@ def _check_collection_conflicts(
     folded: dict[str, str] = {}
     for path in (*files, *directories):
         check_budget()
-        key = unicodedata.normalize("NFC", path).casefold()
+        key = _path_identity_key(path)
         previous = folded.get(key)
         if previous is not None and previous != path:
             raise TaskInputError(
@@ -941,6 +962,7 @@ def _plan_git_selection(
             raise TaskInputError("InvalidSource", "git paths contains a duplicate path")
         seen_paths.add(path)
         selected.append(path)
+    selected.sort(key=_path_key)
     object_type = _git_text(root, deadline, "cat-file", "-t", commit).strip()
     if object_type != "commit":
         raise TaskInputError("GitSelectionInvalid", "the declared Git object is not a commit")
@@ -1177,7 +1199,7 @@ def _apply_selection(
     all_paths = (*files, *directories)
     for prefix, _reason in excluded:
         deadline.check()
-        if not any(_covers(prefix, path) for path in all_paths):
+        if not any(_scope_covers(prefix, path) for path in all_paths):
             raise TaskInputError(
                 "ExcludedPathUnknown", "an excluded path is not present in the input"
             )
@@ -1212,7 +1234,7 @@ def _apply_selection(
         deadline.check()
         for path in kept_files:
             deadline.check()
-            if _covers(prefix, path):
+            if _scope_covers(prefix, path):
                 raise TaskInputError(
                     "SensitivePathImported", "a declared sensitive path would enter the snapshot"
                 )
@@ -1828,7 +1850,7 @@ def _validate_snapshot_manifest(
     source_paths = document["source_paths"]
     if type(source_paths) is not list:
         raise TaskInputError("InvalidManifest", "source_paths must be a list of unique paths")
-    seen_source_paths: set[str] = set()
+    previous_source: bytes | None = None
     for item in source_paths:
         path = _validate_relative_path(
             item,
@@ -1837,9 +1859,10 @@ def _validate_snapshot_manifest(
             depth_limit=_DEFAULT_DEPTH_LIMIT,
             component_codepoints_limit=_DEFAULT_COMPONENT_CODEPOINTS,
         )
-        if path in seen_source_paths:
-            raise TaskInputError("InvalidManifest", "source_paths must be a list of unique paths")
-        seen_source_paths.add(path)
+        current_source = _path_key(path)
+        if previous_source is not None and current_source <= previous_source:
+            raise TaskInputError("InvalidManifest", "source_paths must be sorted and unique")
+        previous_source = current_source
     excluded_entries = document["excluded_paths"]
     if type(excluded_entries) is not list:
         raise TaskInputError("InvalidManifest", "excluded_paths must be a list")
