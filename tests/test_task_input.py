@@ -140,13 +140,7 @@ def _git(root: Path, *arguments: str, data: bytes | None = None) -> bytes:
     return completed.stdout
 
 
-def _git_repository(root: Path, files: dict[str, bytes], executable: str | None = None) -> str:
-    _git(root, "init", "-q")
-    _git(root, "config", "core.autocrlf", "false")
-    _write_tree(root, files)
-    _git(root, "add", "-A")
-    if executable is not None:
-        _git(root, "update-index", "--chmod=+x", executable)
+def _git_commit(root: Path, message: str) -> str:
     _git(
         root,
         "-c",
@@ -156,9 +150,23 @@ def _git_repository(root: Path, files: dict[str, bytes], executable: str | None 
         "commit",
         "-q",
         "-m",
-        "synthetic input",
+        message,
     )
     return _git(root, "rev-parse", "HEAD").decode("ascii").strip()
+
+
+def _git_sha(root: Path, revision: str) -> str:
+    return _git(root, "rev-parse", revision).decode("ascii").strip()
+
+
+def _git_repository(root: Path, files: dict[str, bytes], executable: str | None = None) -> str:
+    _git(root, "init", "-q")
+    _git(root, "config", "core.autocrlf", "false")
+    _write_tree(root, files)
+    _git(root, "add", "-A")
+    if executable is not None:
+        _git(root, "update-index", "--chmod=+x", executable)
+    return _git_commit(root, "synthetic input")
 
 
 def _git_source(root: Path, commit: str, paths: list[str]) -> dict[str, object]:
@@ -330,46 +338,92 @@ def test_git_import_preserves_engineering_bytes_and_ordinary_names(tmp_path: Pat
     assert read_snapshot(snapshot_root=tmp_path / "snapshot") == manifest
 
 
-def test_git_rejects_links_submodules_and_broken_selections(tmp_path: Path) -> None:
+def test_git_import_ignores_commit_tree_and_blob_replacements(tmp_path: Path) -> None:
+    original = b"class OriginalFrozenInput {}\r\n"
+    replaced = b"class DifferentInput {}\r\n"
+    for scenario in ("commit", "tree", "blob"):
+        repository = tmp_path / f"repository-{scenario}"
+        repository.mkdir()
+        frozen = _git_repository(repository, {"a.cs": original})
+        (repository / "a.cs").write_bytes(replaced)
+        _git(repository, "add", "-A")
+        diverging = _git_commit(repository, "change the same file")
+        source = _git_source(repository, frozen, ["a.cs"])
+        before = import_snapshot(
+            source=source,
+            policy=_policy(),
+            snapshot_root=tmp_path / f"before-{scenario}",
+        )
+        objects = {
+            "commit": frozen,
+            "tree": _git_sha(repository, f"{frozen}^{{tree}}"),
+            "blob": _git_sha(repository, f"{frozen}:a.cs"),
+        }
+        replacements = {
+            "commit": diverging,
+            "tree": _git_sha(repository, f"{diverging}^{{tree}}"),
+            "blob": _git_sha(repository, f"{diverging}:a.cs"),
+        }
+        _git(repository, "replace", objects[scenario], replacements[scenario])
+        # Plain Git honours the replacement ref, so each fixture is live.
+        if scenario == "commit":
+            assert _git(repository, "cat-file", "-p", frozen).startswith(
+                b"tree " + replacements["tree"].encode("ascii")
+            )
+        elif scenario == "tree":
+            assert replacements["blob"].encode("ascii") in _git(repository, "ls-tree", frozen)
+        else:
+            assert _git(repository, "cat-file", "blob", objects["blob"]) == replaced
+        after = import_snapshot(
+            source=source,
+            policy=_policy(),
+            snapshot_root=tmp_path / f"after-{scenario}",
+        )
+        assert after == before
+        assert after["source"]["identity"] == frozen
+        staged = tmp_path / f"after-{scenario}" / "source" / "a.cs"
+        assert staged.read_bytes() == original
+        _git(repository, "show-ref", "--verify", f"refs/replace/{objects[scenario]}")
+
+
+def test_git_rejects_link_and_gitlink_entries_from_commits_that_contain_them(
+    tmp_path: Path,
+) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
-    commit = _git_repository(repository, TREE_FILES)
+    base_commit = _git_repository(repository, TREE_FILES)
     link_sha = (
         _git(repository, "hash-object", "-w", "--stdin", data=b"target.txt").decode("ascii").strip()
     )
-    _git(
-        repository,
-        "-c",
-        "user.email=bridge@example.invalid",
-        "-c",
-        "user.name=Bridge Test",
-        "commit",
-        "-q",
-        "--allow-empty",
-        "-m",
-        "link",
-    )
     _git(repository, "update-index", "--add", "--cacheinfo", f"120000,{link_sha},link.txt")
-    _git(
-        repository,
-        "-c",
-        "user.email=bridge@example.invalid",
-        "-c",
-        "user.name=Bridge Test",
-        "commit",
-        "-q",
-        "-m",
-        "add link",
+    link_commit = _git_commit(repository, "add a symbolic link entry")
+    _git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base_commit},vendor/lib")
+    gitlink_commit = _git_commit(repository, "add a gitlink entry")
+    link_listing = _git(repository, "ls-tree", "-rz", "--full-tree", link_commit).decode("utf-8")
+    assert f"120000 blob {link_sha}\tlink.txt" in link_listing
+    gitlink_listing = _git(repository, "ls-tree", "-rz", "--full-tree", gitlink_commit).decode(
+        "utf-8"
     )
-    for paths, code in (
-        (["link.txt"], "GitSelectionInvalid"),
-        (["missing.cs"], "GitSelectionInvalid"),
-        (["src"], "GitSelectionInvalid"),
-    ):
+    assert f"160000 commit {base_commit}\tvendor/lib" in gitlink_listing
+    for commit, path in ((link_commit, "link.txt"), (gitlink_commit, "vendor/lib")):
         _expect_error(
-            code,
+            "GitSelectionInvalid",
             import_snapshot,
-            source=_git_source(repository, commit, paths),
+            source=_git_source(repository, commit, [path]),
+            policy=_policy(),
+            snapshot_root=tmp_path / "snapshot",
+        )
+
+
+def test_git_rejects_missing_paths_directories_and_short_commit_ids(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    commit = _git_repository(repository, TREE_FILES)
+    for path in ("missing.cs", "src"):
+        _expect_error(
+            "GitSelectionInvalid",
+            import_snapshot,
+            source=_git_source(repository, commit, [path]),
             policy=_policy(),
             snapshot_root=tmp_path / "snapshot",
         )

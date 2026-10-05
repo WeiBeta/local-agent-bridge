@@ -68,6 +68,11 @@ _MANIFEST_KEYS = frozenset(
 )
 _ENTRY_KEYS = frozenset({"path", "kind", "bytes", "sha256", "git_mode"})
 _GIT_MODES = frozenset({"100644", "100755"})
+# refs/replace entries make a fixed object id read as another object while the
+# recorded identity stays unchanged. Module A treats the original objects as
+# the only source of truth, so every Git invocation passes Git's own
+# --no-replace-objects global option instead of editing refs or configuration.
+_NO_REPLACE_OBJECTS = "--no-replace-objects"
 _DEFAULT_DEPTH_LIMIT = _LIMIT_CEILINGS["depth_limit"]
 _DEFAULT_COMPONENT_CODEPOINTS = _LIMIT_CEILINGS["component_codepoints_limit"]
 
@@ -593,7 +598,7 @@ def _verify_zip_package(source: dict[str, object], policy: _Policy) -> Path:
 
 def _git_text(root: Path, *arguments: str) -> str:
     try:
-        return _run_git(root, *arguments)
+        return _run_git(root, _NO_REPLACE_OBJECTS, *arguments)
     except BridgePathError as error:
         raise TaskInputError("GitCommandFailed", "the bounded Git listing failed") from error
 
@@ -936,7 +941,7 @@ def _git_bytes(root: Path, arguments: list[str], deadline: _Deadline) -> bytes:
         raise TaskInputError("GitUnavailable", "git is not available on this host")
     try:
         completed = subprocess.run(
-            [executable, "-C", str(root), *arguments],
+            [executable, "-C", str(root), _NO_REPLACE_OBJECTS, *arguments],
             check=False,
             stdin=subprocess.DEVNULL,
             capture_output=True,
