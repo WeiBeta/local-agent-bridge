@@ -61,6 +61,10 @@ Git 通过固定 `ls-tree -rz` / `cat-file blob` 原字节读取，明确拒绝 
 
 默认资源 policy 是工程判断的实施初值：压缩包 ≤64 MiB、条目 ≤20,000、展开总量 ≤512 MiB、单文件 ≤64 MiB、单文件展开/压缩比 ≤200、深度 ≤32；单路径分量 ≤255 字符（Unicode 码点，不是255字节），同时须满足目标文件系统分量限制；最终绝对物理路径含根和分隔符，预算为 ≤240 个 UTF-16 码元，导入 deadline 60 秒。路径身份保留原始 Unicode，不做 ANSI 折叠或 NFC 改名；NFC/casefold 仅用于冲突拒绝，拒绝不可编码的孤立 surrogate。零压缩长度且有展开内容拒绝。上限按实际字节与磁盘余量检查；超限明确阻断，不跳过条目或扩大限额。物理预算不足返回 `PathBudgetExceeded`，再申请明确短路径，不静默换目录。冻结 policy 可收紧或采用已授权上限，不提供任意无限值。
 
+磁盘检查按管理 2026-10-05 的 LAB-TASK-DISK-CAPACITY-REPAIR-01 冻结要求定义：创建 staging 前，在已核对的输出父目录调用标准库 `shutil.disk_usage`，要求当前 `free` 字节不少于本次实际保留文件的声明长度总和。ZIP 使用保留成员的展开长度，目录使用已核验清单/实际长度；Git 在选择与排除后以既有固定 `--no-replace-objects cat-file -s` 预取保留原 blob 的长度，并在 staging 前核对单文件及累计 policy 上限。排除内容不写入，不计入内容待写总量；排除记录仍进入清单。每个实际内容 chunk 写前按该 chunk 长度复查其输出父目录的当前余量；每块写后刷新 Python 缓冲，再检查下一块/文件。manifest 与 SEALED 分别在排他创建前按实际待写序列化 bytes 查询，清单包含排除记录的实际字节，不预估或另加固定 metadata/安全余量。等于待写长度可通过该次容量检查，后续写入与 metadata 仍须各自通过；内容总量预检不声称已预留整次导入的空间。
+
+上述查询、Git 大小预取及缓冲刷新消耗入口创建的同一绝对 deadline，查询返回后再次核对，不重置预算。容量不足沿用 `ResourceLimitExceeded`；查询或实际写入/刷新发生 I/O 异常沿用非敏感 `IoFailed` 并保留 cause。staging 前拒绝无新 staging；开始后拒绝保留专用现场，无最终根。失败标签仅为尽力恢复记录，标签自身不执行容量验收，不依赖标签保证失败根不可接受。成功 rename 后没有容量查询或其他可失败检查。查询为点时观测，不是配额、全局预留或文件系统分配开销预测，不能防止其他进程在查询后耗尽空间，也不承诺小文件/目录/文件系统 metadata 的分配开销；实际 ENOSPC 仍必须拒绝且保留现场。本澄清不表示自检已替代独立 A 验收。[Python 3.13 disk_usage](https://docs.python.org/3.13/library/shutil.html#shutil.disk_usage)；[Git cat-file](https://git-scm.com/docs/git-cat-file)。
+
 ## 4. 专用工作目录与最小请求
 
 ```text

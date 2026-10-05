@@ -17,6 +17,7 @@ import time
 import warnings
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1933,7 +1934,7 @@ def test_metadata_deadline_uses_real_elapsed_time(
         ("git-type", "git", None),
         ("git-tree", "git", None),
         ("git-listing-parse", "git", None),
-        ("git-size", "git", "staging"),
+        ("git-size", "git", None),
         ("git-blob", "git", "staging"),
         ("zip-hash", "zip", None),
         ("zip-open", "zip", None),
@@ -2191,6 +2192,9 @@ def test_blocking_io_is_checked_after_return_including_eof_and_close(
             if self.action == "write" and not injected:
                 expire_once()
             return result
+
+        def flush(self):
+            return self.handle.flush()
 
     if operation in {"zip-read", "zip-empty-eof"}:
         original_read = entry.zipfile.ZipExtFile.read
@@ -2664,3 +2668,380 @@ def test_one_absolute_budget_spans_selection_origin_close_and_metadata(
     (tmp_path / "publication-budget-observation.json").write_bytes(
         _canonical({"budget_count": len(budgets), "expires_at": 101.0, "events": events})
     )
+
+
+def _capacity_source(tmp_path: Path, kind: str, files: dict[str, bytes]) -> dict[str, object]:
+    if kind == "zip":
+        package = tmp_path / "capacity.zip"
+        return _zip_source(package, _write_zip(package, files))
+    root = tmp_path / "input"
+    root.mkdir()
+    if kind == "git":
+        commit = _git_repository(root, files)
+        return _git_source(root, commit, sorted(files))
+    _write_tree(root, files)
+    inventory = _manifest_file(root, _tree_document(root))
+    return _directory_source(root, inventory)
+
+
+def _capacity_queries(monkeypatch: pytest.MonkeyPatch, free_bytes: list[int]) -> list[Path]:
+    """Supply one exact synthetic free-space observation per expected query."""
+
+    queries: list[Path] = []
+
+    def disk_usage(path):
+        assert len(queries) < len(free_bytes), "unexpected extra output-volume query"
+        queries.append(Path(path))
+        return SimpleNamespace(free=free_bytes[len(queries) - 1])
+
+    monkeypatch.setattr(entry.shutil, "disk_usage", disk_usage)
+    return queries
+
+
+def _refuse_failure_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_write = Path.write_text
+
+    def write_text(path, *arguments, **keywords):
+        if path.name == "IMPORT-FAILED":
+            raise OSError(errno.ENOSPC, "synthetic label write failure")
+        return original_write(path, *arguments, **keywords)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("free_bytes", [1, 4095])
+def test_capacity_preflight_refuses_without_creating_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, free_bytes: int
+) -> None:
+    source = _capacity_source(tmp_path, kind, {"a.cs": b"Z" * 4096})
+    queries = _capacity_queries(monkeypatch, [free_bytes])
+    snapshot = tmp_path / "snapshot"
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(),
+        snapshot_root=snapshot,
+    )
+    assert queries == [tmp_path]
+    assert not snapshot.exists()
+    assert not snapshot.with_name("snapshot.staging").exists()
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_capacity_exact_content_and_metadata_boundaries_succeed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, extra_bytes: int
+) -> None:
+    files = {"a.cs": b"abcd", "b.cs": b"efghij", "empty.dat": b""}
+    source = _capacity_source(tmp_path, kind, files)
+    reference = tmp_path / "reference"
+    expected = import_snapshot(source=source, policy=_policy(), snapshot_root=reference)
+    manifest_bytes = len((reference / "manifest.json").read_bytes())
+    monkeypatch.setattr(entry, "_STREAM_CHUNK_BYTES", 3)
+    queries = _capacity_queries(monkeypatch, [10 + extra_bytes, 3, 1, 3, 3, manifest_bytes, 64])
+    snapshot = tmp_path / "snapshot"
+    actual = import_snapshot(source=source, policy=_policy(), snapshot_root=snapshot)
+    assert actual == expected == read_snapshot(snapshot_root=snapshot)
+    assert (
+        queries
+        == [tmp_path]
+        + [snapshot.with_name("snapshot.staging") / "source"] * 4
+        + [snapshot.with_name("snapshot.staging")] * 2
+    )
+    for name, raw in files.items():
+        assert (snapshot / "source" / name).read_bytes() == raw
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("exclude", [False, True])
+def test_capacity_preflight_counts_retained_multifile_total_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, exclude: bool
+) -> None:
+    files = {"a.cs": b"abcd", "b.cs": b"123456", "omit.dat": b"X" * 4096}
+    source = _capacity_source(tmp_path, kind, files)
+    policy = _policy(source_paths=sorted(files))
+    if exclude:
+        policy["excluded_paths"] = [{"path": "omit.dat", "reason": "synthetic exclusion"}]
+    # Each retained file fits separately; the cumulative retained total does not.
+    free_bytes = 9 if exclude else sum(map(len, files.values())) - 1
+    queries = _capacity_queries(monkeypatch, [free_bytes])
+    snapshot = tmp_path / "snapshot"
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=source,
+        policy=policy,
+        snapshot_root=snapshot,
+    )
+    assert queries == [tmp_path]
+    assert not snapshot.exists() and not snapshot.with_name("snapshot.staging").exists()
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("exclude_all", [False, True])
+def test_capacity_excluded_bytes_are_not_reserved_or_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, exclude_all: bool
+) -> None:
+    files = {"a.cs": b"abcd", "omit.dat": b"X" * 4096}
+    source = _capacity_source(tmp_path, kind, files)
+    excluded = sorted(files) if exclude_all else ["omit.dat"]
+    policy = _policy(
+        source_paths=sorted(files),
+        excluded_paths=[{"path": name, "reason": "synthetic exclusion"} for name in excluded],
+    )
+    original_git = entry._git_bytes
+    size_reads: list[str] = []
+
+    def git_bytes(root, arguments, deadline):
+        if arguments[:2] == ["cat-file", "-s"]:
+            size_reads.append(arguments[2])
+        return original_git(root, arguments, deadline)
+
+    monkeypatch.setattr(entry, "_git_bytes", git_bytes)
+    values = [0, 10000, 64] if exclude_all else [4, 4, 10000, 64]
+    queries = _capacity_queries(monkeypatch, values)
+    snapshot = tmp_path / "snapshot"
+    manifest = import_snapshot(source=source, policy=policy, snapshot_root=snapshot)
+    assert manifest == read_snapshot(snapshot_root=snapshot)
+    assert len(queries) == len(values)
+    assert not (snapshot / "source/omit.dat").exists()
+    assert (snapshot / "source/a.cs").exists() is not exclude_all
+    assert {row["path"] for row in manifest["excluded_paths"]} == set(excluded)
+    if kind == "git":
+        assert len(size_reads) == (0 if exclude_all else 1)
+
+
+@pytest.mark.parametrize("kind", ["git", "zip", "directory"])
+@pytest.mark.parametrize("scope", ["within-file", "next-file"])
+@pytest.mark.parametrize("label_fails", [False, True])
+def test_capacity_decreasing_free_space_stops_before_the_next_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    scope: str,
+    label_fails: bool,
+) -> None:
+    if scope == "within-file":
+        files, values, copied = {"a.cs": b"abcdef"}, [6, 2, 1], b"ab"
+        monkeypatch.setattr(entry, "_STREAM_CHUNK_BYTES", 2)
+    else:
+        files, values, copied = {"a.cs": b"abcd", "b.cs": b"123456"}, [10, 4, 5], b"abcd"
+    source = _capacity_source(tmp_path, kind, files)
+    queries = _capacity_queries(monkeypatch, values)
+    original_usage = entry.shutil.disk_usage
+    snapshot = tmp_path / "snapshot"
+    staging = snapshot.with_name("snapshot.staging")
+
+    def observed_usage(path):
+        if len(queries) == 2:
+            assert (staging / "source/a.cs").read_bytes() == copied
+        return original_usage(path)
+
+    monkeypatch.setattr(entry.shutil, "disk_usage", observed_usage)
+    if label_fails:
+        _refuse_failure_label(monkeypatch)
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(),
+        snapshot_root=snapshot,
+    )
+    assert len(queries) == len(values)
+    assert (staging / "source/a.cs").read_bytes() == copied
+    if scope == "next-file":
+        assert (staging / "source/b.cs").read_bytes() == b""
+    assert not snapshot.exists() and not (staging / "manifest.json").exists()
+    assert (staging / "IMPORT-FAILED").exists() is not label_fails
+    _expect_error("SnapshotRootInvalid", read_snapshot, snapshot_root=snapshot)
+
+
+@pytest.mark.parametrize("metadata", ["manifest.json", "SEALED"])
+@pytest.mark.parametrize("label_fails", [False, True])
+def test_capacity_metadata_shortage_uses_serialized_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, metadata: str, label_fails: bool
+) -> None:
+    source = _capacity_source(tmp_path, "directory", {"a.cs": b"abcdef"})
+    reference = tmp_path / "reference"
+    import_snapshot(source=source, policy=_policy(), snapshot_root=reference)
+    manifest_bytes = len((reference / "manifest.json").read_bytes())
+    values = (
+        [6, 6, manifest_bytes - 1] if metadata == "manifest.json" else [6, 6, manifest_bytes, 63]
+    )
+    queries = _capacity_queries(monkeypatch, values)
+    if label_fails:
+        _refuse_failure_label(monkeypatch)
+    snapshot = tmp_path / "snapshot"
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(),
+        snapshot_root=snapshot,
+    )
+    staging = snapshot.with_name("snapshot.staging")
+    assert len(queries) == len(values)
+    assert not (staging / metadata).exists()
+    assert (staging / "manifest.json").exists() is (metadata == "SEALED")
+    assert (staging / "source/a.cs").read_bytes() == b"abcdef"
+    assert not snapshot.exists()
+    assert (staging / "IMPORT-FAILED").exists() is not label_fails
+
+
+@pytest.mark.parametrize(
+    "query_number", [1, 2, 3, 4], ids=["preflight", "chunk", "manifest", "seal"]
+)
+@pytest.mark.parametrize("label_fails", [False, True])
+def test_capacity_query_failure_preserves_cause_without_host_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query_number: int, label_fails: bool
+) -> None:
+    source = _capacity_source(tmp_path, "directory", {"a.cs": b"abcdef"})
+    failure = OSError(errno.EIO, "synthetic private host detail")
+    query_count = 0
+
+    def disk_usage(path):
+        nonlocal query_count
+        query_count += 1
+        if query_count == query_number:
+            raise failure
+        return SimpleNamespace(free=10000)
+
+    monkeypatch.setattr(entry.shutil, "disk_usage", disk_usage)
+    if label_fails:
+        _refuse_failure_label(monkeypatch)
+    snapshot = tmp_path / "snapshot"
+    error = _expect_error(
+        "IoFailed", import_snapshot, source=source, policy=_policy(), snapshot_root=snapshot
+    )
+    assert error.__cause__ is failure
+    assert "private host detail" not in str(error)
+    assert query_count == query_number
+    assert not snapshot.exists()
+    staging = snapshot.with_name("snapshot.staging")
+    assert staging.exists() is (query_number > 1)
+    assert (staging / "IMPORT-FAILED").exists() is (query_number > 1 and not label_fails)
+
+
+@pytest.mark.parametrize("target_name", ["a.cs", "manifest.json", "SEALED"])
+@pytest.mark.parametrize("label_fails", [False, True])
+def test_capacity_actual_write_enospc_retains_partial_evidence_without_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_name: str, label_fails: bool
+) -> None:
+    source = _capacity_source(tmp_path, "directory", {"a.cs": b"abcdef"})
+    failure = OSError(errno.ENOSPC, "synthetic write exhaustion")
+    original_open, original_fdopen = entry.os.open, entry.os.fdopen
+    targets: dict[int, Path] = {}
+    injected = False
+
+    def os_open(path, *arguments, **keywords):
+        descriptor = original_open(path, *arguments, **keywords)
+        targets[descriptor] = Path(path)
+        return descriptor
+
+    class FailingWriter:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *arguments):
+            return self.handle.__exit__(*arguments)
+
+        def write(self, raw):
+            nonlocal injected
+            self.handle.write(raw[:2])
+            self.handle.flush()
+            injected = True
+            raise failure
+
+    def fdopen(descriptor, mode, *arguments, **keywords):
+        handle = original_fdopen(descriptor, mode, *arguments, **keywords)
+        if mode == "wb" and targets[descriptor].name == target_name:
+            return FailingWriter(handle)
+        return handle
+
+    monkeypatch.setattr(entry.os, "open", os_open)
+    monkeypatch.setattr(entry.os, "fdopen", fdopen)
+    # Real writes of two harmless fixture bytes precede a directed ENOSPC;
+    # this does not fill the volume or claim a natural OS capacity failure.
+    monkeypatch.setattr(entry.shutil, "disk_usage", lambda path: SimpleNamespace(free=10000))
+    if label_fails:
+        _refuse_failure_label(monkeypatch)
+    snapshot = tmp_path / "snapshot"
+    error = _expect_error(
+        "IoFailed", import_snapshot, source=source, policy=_policy(), snapshot_root=snapshot
+    )
+    assert injected and error.__cause__ is failure
+    staging = snapshot.with_name("snapshot.staging")
+    target = staging / "source/a.cs" if target_name == "a.cs" else staging / target_name
+    assert len(target.read_bytes()) == 2
+    assert not snapshot.exists()
+    assert (staging / "IMPORT-FAILED").exists() is not label_fails
+    _expect_error("SnapshotRootInvalid", read_snapshot, snapshot_root=snapshot)
+
+
+@pytest.mark.parametrize(
+    "query_number", [1, 2, 3, 4], ids=["preflight", "chunk", "manifest", "seal"]
+)
+def test_capacity_queries_consume_the_original_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query_number: int
+) -> None:
+    source = _capacity_source(tmp_path, "directory", {"a.cs": b"abcdef"})
+    clock = _ImportClock()
+    original_check = entry._Deadline.check
+    budgets: set[tuple[int, float]] = set()
+    query_count = 0
+
+    def check(deadline):
+        budgets.add((id(deadline), deadline.expires_at))
+        return original_check(deadline)
+
+    def disk_usage(path):
+        nonlocal query_count
+        query_count += 1
+        clock.now += 1.0 - 0.25 * (query_number - 1) if query_count == query_number else 0.25
+        return SimpleNamespace(free=10000)
+
+    monkeypatch.setattr(entry, "time", clock)
+    monkeypatch.setattr(entry._Deadline, "check", check)
+    monkeypatch.setattr(entry.shutil, "disk_usage", disk_usage)
+    snapshot = tmp_path / "snapshot"
+    _expect_error(
+        "DeadlineExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(deadline_seconds=1),
+        snapshot_root=snapshot,
+    )
+    assert query_count == query_number
+    assert len(budgets) == 1 and next(iter(budgets))[1] == 101.0
+    assert not snapshot.exists()
+    assert snapshot.with_name("snapshot.staging").exists() is (query_number > 1)
+
+
+def test_capacity_git_declared_total_and_file_limits_precede_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _capacity_source(tmp_path, "git", {"a.cs": b"abcd", "b.cs": b"123456"})
+
+    def no_capacity_query(path):
+        pytest.fail("Git declaration limits must be checked before staging or space query")
+
+    monkeypatch.setattr(entry.shutil, "disk_usage", no_capacity_query)
+    for name, policy in [
+        ("file", _policy(file_bytes_limit=5)),
+        ("total", _policy(expanded_bytes_limit=9)),
+    ]:
+        snapshot = tmp_path / name
+        _expect_error(
+            "ResourceLimitExceeded",
+            import_snapshot,
+            source=source,
+            policy=policy,
+            snapshot_root=snapshot,
+        )
+        assert not snapshot.exists() and not snapshot.with_name(name + ".staging").exists()

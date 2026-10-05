@@ -36,6 +36,7 @@
 | ZIP-06 / O | staging 写入中断、磁盘不足、父路径在检查后变 reparse、已存在目标 | staging 保留且未 sealed；最终清单不可信；不覆盖原目录，竞态防护未闭合时明确阻断 |
 | INPUT-07 / O | 真实 ZIP close 完成后注入异常、关闭入口读最终根、关闭耗时/异常与失败标签 I/O 失败 | 来源关闭在最终根可读前完成；关闭失败或返回后到期保留 staging，不产生有效最终根。标签写入失败不影响此拒绝资格；原始来源/失败现场不删除、不覆盖 |
 | INPUT-08 / O | 单一绝对预算跨选择/关闭/metadata；真实 1.2s metadata 延迟及正常对照；最终 rename 紧前到期、rename 自身跨时成功、rename 失败 | 预算不重置；发布前超时为 DeadlineExceeded、无有效最终根、staging 及已有 metadata 保留并尽力标签。紧前预算检查通过后的 rename 成功为成功提交，即使跨时返回也正常读回，不再事后改判失败；不宣称严格墙钟抢占。rename 失败保持既有错误 code/cause，不依赖事后标签撤销成功资格 |
+| INPUT-09 / O | Git/ZIP/目录合成余量：保留声明总量不足/相等/足够、多文件累计/排除/全排除、块间/文件间余量下降、manifest/SEALED 实际 bytes 不足/相等、查询异常/超时、写入路径 ENOSPC 与标签失败 | staging 前不足无新 staging；原 Git blob size 预取保持 no-replace 与同一 deadline，不预留排除内容字节；每个内容 chunk 写前复查，写后刷新 Python 缓冲，metadata 按实际 bytes 检查；不足 ResourceLimitExceeded，查询/写入 I/O 为非敏感 IoFailed/cause 保留；开始后的失败现场保留、无最终根，不依赖失败标签。成功 rename 后不查询；不真实填盘/改配额，不声称可防并发耗尽或精确分配开销，自检非独立 A 接受 |
 | INPUT-05 / O | Git mode120000/160000、LFS pointer、包内 hooks/setup/宿主控制文件 | 链接/submodule 拒绝；LFS不自动联网；不执行 hooks/setup；控制冲突启动前阻断，保留所有选择/排除依据 |
 | INPUT-06 / O | 普通业务 AuthToken.cs 与真实敏感路径排除规则 | 不因 token 子字符串漏源码；敏感路径仍拒绝/明确排除；不读取真实凭据作 fixture |
 | SNAPSHOT-01 / O | sealed 后改一个 byte、manifest/task/profile 哈希漂移；两副本分别编辑 | drift gate 拒绝；Coding 改动不改 snapshot 或另一 reviewer；不使用共享可写树、hardlink 或 junction |

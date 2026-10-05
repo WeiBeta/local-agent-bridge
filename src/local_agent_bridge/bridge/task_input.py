@@ -28,7 +28,7 @@ import unicodedata
 import zipfile
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -1072,11 +1072,34 @@ def _git_bytes(root: Path, arguments: list[str], deadline: _Deadline) -> bytes:
     return completed.stdout
 
 
-def _git_chunks(root: Path, blob_ref: str, policy: _Policy, deadline: _Deadline) -> Iterator[bytes]:
-    size_text = _git_bytes(root, ["cat-file", "-s", blob_ref], deadline).decode("ascii").strip()
+def _prefetch_git_sizes(
+    files: list[_PendingFile], root: Path, policy: _Policy, deadline: _Deadline
+) -> list[_PendingFile]:
+    """Declare only retained original blobs, before staging consumes space."""
+
+    declared: list[_PendingFile] = []
+    total = 0
+    for pending in files:
+        deadline.check()
+        size_raw = _git_bytes(root, ["cat-file", "-s", pending.blob_ref], deadline).strip()
+        if not size_raw.isdigit():
+            raise TaskInputError(
+                "GitCommandFailed", "a Git blob size was not in the expected shape"
+            )
+        size = int(size_raw)
+        if size > policy.file_bytes_limit:
+            raise TaskInputError("ResourceLimitExceeded", "a Git blob exceeds the file bytes limit")
+        total += size
+        if total > policy.expanded_bytes_limit:
+            raise TaskInputError(
+                "ResourceLimitExceeded", "the input exceeds the expanded bytes limit"
+            )
+        declared.append(replace(pending, declared_bytes=size))
     deadline.check()
-    if not size_text.isdigit() or int(size_text) > policy.file_bytes_limit:
-        raise TaskInputError("ResourceLimitExceeded", "a Git blob exceeds the file bytes limit")
+    return declared
+
+
+def _git_chunks(root: Path, blob_ref: str, deadline: _Deadline) -> Iterator[bytes]:
     raw = _git_bytes(root, ["cat-file", "blob", blob_ref], deadline)
     for start in range(0, len(raw), _STREAM_CHUNK_BYTES):
         deadline.check()
@@ -1085,16 +1108,28 @@ def _git_chunks(root: Path, blob_ref: str, policy: _Policy, deadline: _Deadline)
 
 
 def _pending_chunks(
-    pending: _PendingFile, context: _ImportContext, policy: _Policy, deadline: _Deadline
+    pending: _PendingFile, context: _ImportContext, deadline: _Deadline
 ) -> Iterator[bytes]:
     if pending.disk_path is not None:
         yield from _file_chunks(pending.disk_path, deadline)
     elif pending.blob_ref is not None and context.git_root is not None:
-        yield from _git_chunks(context.git_root, pending.blob_ref, policy, deadline)
+        yield from _git_chunks(context.git_root, pending.blob_ref, deadline)
     elif pending.zip_name is not None and context.archive is not None:
         yield from _zip_chunks(context.archive, pending.zip_name, deadline)
     else:
         raise TaskInputError("InvalidSource", "a pending file has no usable origin")
+
+
+def _check_disk_space(parent: Path, required_bytes: int, deadline: _Deadline) -> None:
+    """Check current output-volume free bytes, without reserving or guessing overhead."""
+
+    deadline.check()
+    free_bytes = shutil.disk_usage(parent).free
+    deadline.check()
+    if free_bytes < required_bytes:
+        raise TaskInputError(
+            "ResourceLimitExceeded", "the output volume has insufficient free space"
+        )
 
 
 def _write_stream(
@@ -1124,8 +1159,12 @@ def _write_stream(
                     "ResourceLimitExceeded", "the staged tree exceeds the expanded bytes limit"
                 )
             digest.update(chunk)
-            deadline.check()
+            _check_disk_space(target.parent, len(chunk), deadline)
             handle.write(chunk)
+            deadline.check()
+            # Flush this file's Python buffer before the next free-space query;
+            # otherwise small chunks could remain invisible to the volume API.
+            handle.flush()
             deadline.check()
     deadline.check()
     return total, digest.hexdigest()
@@ -1134,7 +1173,7 @@ def _write_stream(
 def _write_exclusive(target: Path, raw: bytes, deadline: _Deadline) -> None:
     deadline.check()
     _assert_plain_target(target, label="snapshot metadata")
-    deadline.check()
+    _check_disk_space(target.parent, len(raw), deadline)
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
     with os.fdopen(descriptor, "wb") as handle:
         deadline.check()
@@ -1192,6 +1231,8 @@ def _stage_and_publish(
         deadline.check()
         _check_physical_budget(source_root.joinpath(*relative.split("/")), policy)
     _assert_plain_target(staging_root, label="the staging root")
+    declared_total = sum(pending.declared_bytes for pending in files)
+    _check_disk_space(snapshot_root.parent, declared_total, deadline)
     deadline.check()
     try:
         os.mkdir(staging_root)
@@ -1213,7 +1254,7 @@ def _stage_and_publish(
             _check_physical_budget(target, policy)
             total, digest = _write_stream(
                 target,
-                _pending_chunks(pending, context, policy, deadline),
+                _pending_chunks(pending, context, deadline),
                 policy,
                 deadline,
                 expanded_total,
@@ -1394,6 +1435,10 @@ def _import_snapshot(
         kept_files, kept_directories, excluded_records = _apply_selection(
             files, directories, validated_policy, deadline
         )
+        if context.git_root is not None:
+            kept_files = _prefetch_git_sizes(
+                kept_files, context.git_root, validated_policy, deadline
+            )
         selection = _selection_digest(validated_policy.source_paths, excluded_records)
         deadline.check()
         return _stage_and_publish(
