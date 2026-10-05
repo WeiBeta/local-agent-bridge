@@ -85,6 +85,9 @@ _ZIP_DESCRIPTOR_FLAG = 0x8
 _ZIP64_SIZE_SENTINEL = 0xFFFFFFFF
 _ZIP64_EXTRA_ID = 0x1
 _ZIP_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
+_ZIP_UTF8_NAME_FLAG = 0x800
+_ZIP_UNICODE_PATH_EXTRA_ID = 0x7075
+_ZIP_UNICODE_PATH_HEADER = struct.Struct("<BL")
 
 
 class TaskInputError(RuntimeError):
@@ -536,22 +539,16 @@ def _check_collection_conflicts(
     check_budget()
 
 
-def _zip_entry_name(info: zipfile.ZipInfo, policy: _Policy) -> tuple[str, bool]:
-    original = getattr(info, "orig_filename", info.filename)
-    # CPython truncates a raw name at its first NUL and, where the host
-    # separator is a backslash, rewrites that backslash as a slash. A real
-    # NUL, or a difference beyond that separator rewrite, means the parsed
-    # filename hides part of the original spelling.
-    if "\x00" in original or original.replace("\\", "/") != info.filename.replace("\\", "/"):
+def _zip_name_path(name: str, policy: _Policy) -> tuple[str, bool]:
+    """Validate a complete name before omitting its directory separator."""
+
+    if "\x00" in name:
         raise TaskInputError("ZipEntryRejected", "an archive name hides text after a NUL")
-    # Judge the complete original name before a trailing separator, a strip
-    # prefix or an empty-output step can reduce it: an empty or root-anchored
-    # original is rejected as an input instead of silently dropping the entry.
-    if not original:
+    if not name:
         raise TaskInputError("ZipEntryRejected", "an archive entry name must not be empty")
-    if original.startswith(("/", "\\")):
+    if name.startswith(("/", "\\")):
         raise TaskInputError("ZipEntryRejected", "an archive entry name must not start at a root")
-    name = info.filename
+    name = name.replace("\\", "/")
     trailing_directory = name.endswith("/")
     if trailing_directory:
         name = name[:-1]
@@ -563,6 +560,41 @@ def _zip_entry_name(info: zipfile.ZipInfo, policy: _Policy) -> tuple[str, bool]:
         component_codepoints_limit=policy.component_codepoints_limit,
         backslash_separator=True,
     )
+    return normalized, trailing_directory
+
+
+def _zip_entry_name(info: zipfile.ZipInfo, policy: _Policy) -> tuple[str, bool]:
+    original = info.orig_filename
+    _zip_name_path(original, policy)
+    expected = original.replace("\\", "/")
+    encoding = "utf-8" if info.flag_bits & _ZIP_UTF8_NAME_FLAG else "cp437"
+    filename_crc = zlib.crc32(original.encode(encoding))
+    # CPython 3.13 keeps orig_filename for local-header comparison, but may
+    # replace filename with a version-1, CRC-matching Unicode Path extra.
+    # Inspect only that field's complete name: its NUL must not disappear in
+    # CPython's sanitizer. Directory parsing, open, decompression and CRC
+    # remain the standard library's responsibility.
+    extra = info.extra
+    position = 0
+    while position + 4 <= len(extra):
+        field_id, size = struct.unpack_from("<HH", extra, position)
+        position += 4
+        end = position + size
+        if end > len(extra):
+            raise TaskInputError("ZipEntryRejected", "an archive extra field is truncated")
+        if field_id == _ZIP_UNICODE_PATH_EXTRA_ID:
+            if size < _ZIP_UNICODE_PATH_HEADER.size:
+                raise TaskInputError("ZipEntryRejected", "a Unicode Path extra field is truncated")
+            version, name_crc = _ZIP_UNICODE_PATH_HEADER.unpack_from(extra, position)
+            if version == 1 and name_crc == filename_crc:
+                unicode_name = extra[position + _ZIP_UNICODE_PATH_HEADER.size : end].decode("utf-8")
+                if unicode_name:
+                    _zip_name_path(unicode_name, policy)
+                    expected = unicode_name.replace("\\", "/")
+        position = end
+    normalized, trailing_directory = _zip_name_path(info.filename, policy)
+    if expected != info.filename.replace("\\", "/"):
+        raise TaskInputError("ZipEntryRejected", "an archive name has an unexplained parser change")
     return normalized, trailing_directory
 
 
@@ -738,13 +770,43 @@ def _plan_zip_members(
     deadline.check()
     if len(infos) > policy.entry_count_limit:
         raise TaskInputError("ResourceLimitExceeded", "the package exceeds the entry count limit")
-    files: dict[str, _PendingFile] = {}
-    directories: set[str] = set()
+    original_files: dict[str, zipfile.ZipInfo] = {}
+    original_directories: set[str] = set()
+    members: dict[str, tuple[zipfile.ZipInfo, str]] = {}
     for info in infos:
         deadline.check()
         name, trailing_directory = _zip_entry_name(info, policy)
-        kind = _zip_entry_kind(info, trailing_directory)
+        original_name, original_directory = _zip_name_path(info.orig_filename, policy)
+        kind = _zip_entry_kind(info, trailing_directory or original_directory)
+        if (
+            original_name in original_files
+            or original_name in original_directories
+            or name in members
+        ):
+            raise TaskInputError("PathConflict", "an archive entry path is declared twice")
+        if kind == "directory":
+            original_directories.add(original_name)
+        else:
+            original_files[original_name] = info
+        members[name] = (info, kind)
         _check_zip_local_record(archive, info, deadline)
+    # Both source-name views include every explicit record, including roots
+    # that stripping will omit. Implicit parents validate each collection but
+    # never become explicit source records for exclusion accounting.
+    source_files = {name: info for name, (info, kind) in members.items() if kind == "file"}
+    source_directories = {name for name, (_info, kind) in members.items() if kind == "directory"}
+    _check_collection_conflicts(
+        original_files,
+        _completed_directories(original_files, original_directories, deadline),
+        deadline,
+    )
+    _check_collection_conflicts(
+        source_files, _completed_directories(source_files, source_directories, deadline), deadline
+    )
+    files: dict[str, _PendingFile] = {}
+    directories: set[str] = set()
+    for name, (info, kind) in members.items():
+        deadline.check()
         if kind == "directory":
             # Directory entries have no staged file, so validate their empty
             # stream here rather than bypassing real deflate EOF/CRC checks.
@@ -752,16 +814,14 @@ def _plan_zip_members(
                 if chunk:
                     raise TaskInputError("ZipEntryRejected", "an archive directory has content")
         deadline.check()
-        if not name:
-            continue
         if strip_prefix is not None:
             if name == strip_prefix:
                 if kind != "directory":
                     raise TaskInputError(
                         "StripPrefixMismatch", "the strip prefix entry is not a directory"
                     )
-                # The strip-prefix root passed the same name, kind and record
-                # checks as every entry above; only its output row is omitted.
+                # All source-name collection and record/stream checks passed;
+                # only the strip-prefix root's output row is omitted.
                 continue
             if not name.startswith(strip_prefix + "/"):
                 raise TaskInputError(
@@ -1118,12 +1178,14 @@ def _apply_selection(
         deadline.check()
         if path not in excluded_path_set:
             kept_directories.add(path)
-    for path in kept_files:
+    # Complete the output inventory after exclusions, from retained files AND
+    # retained empty directories. These parents are not invented source rows.
+    for path in (*kept_files, *kept_directories):
         deadline.check()
         parent = _parent_path(path)
         while parent is not None:
             if parent in files:
-                raise TaskInputError("PathConflict", "a kept file sits under a file entry")
+                raise TaskInputError("PathConflict", "a kept entry sits under a file entry")
             kept_directories.add(parent)
             parent = _parent_path(parent)
     for prefix in policy.sensitive_paths:
@@ -1631,7 +1693,13 @@ def _import_snapshot(
         elif source_kind == "zip":
             package_path = _verify_zip_package(source, validated_policy, deadline)
             deadline.check()
-            archive = stack.enter_context(zipfile.ZipFile(package_path))
+            try:
+                archive = zipfile.ZipFile(package_path)
+            except UnicodeDecodeError as error:
+                raise TaskInputError(
+                    "InputChanged", "the ZIP package failed its name encoding check"
+                ) from error
+            archive = stack.enter_context(archive)
             deadline.check()
             context = _ImportContext(archive=archive)
             files, directories = _plan_zip_members(archive, source, validated_policy, deadline)
