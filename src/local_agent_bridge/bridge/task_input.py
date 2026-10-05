@@ -9,8 +9,8 @@ tree.
 
 The module is deliberately offline: no model, upstream CLI, credential,
 network or shell access happens here. Only the caller-provided input roots
-and a fresh snapshot root are touched; failures keep the dedicated staging
-root with a failure label instead of publishing a manifest.
+and a fresh snapshot root are touched; failures retain dedicated staging
+and attempt a failure label instead of publishing the final root.
 """
 
 from __future__ import annotations
@@ -1178,6 +1178,7 @@ def _stage_and_publish(
     deadline: _Deadline,
     snapshot_root: Path,
     context: _ImportContext,
+    origin_stack: ExitStack,
     source_kind: str,
     identity: str,
     selection_sha256: str,
@@ -1192,7 +1193,6 @@ def _stage_and_publish(
         _check_physical_budget(source_root.joinpath(*relative.split("/")), policy)
     _assert_plain_target(staging_root, label="the staging root")
     deadline.check()
-    renamed = False
     try:
         os.mkdir(staging_root)
         deadline.check()
@@ -1225,6 +1225,12 @@ def _stage_and_publish(
                 raise TaskInputError(
                     "InputChanged", "a staged file differs from its manifest digest"
                 )
+        # Origin handles are no longer needed once the byte copy is complete.
+        # Close them inside the staging failure domain, before verification,
+        # metadata or publication can make the final root acceptable.
+        deadline.check()
+        origin_stack.close()
+        deadline.check()
         actual_files, actual_directories = _scan_tree(source_root, policy, deadline)
         deadline.check()
         if actual_directories != set(directories):
@@ -1298,15 +1304,14 @@ def _stage_and_publish(
         _assert_plain_target(staging_root, label="the staging root")
         _assert_plain_target(snapshot_root, label="the snapshot output")
         deadline.check()
-        # The OS rename is the visibility linearization point. It cannot be
-        # preempted here. If it returns late, retain the moved evidence with a
-        # failure label; readers must reject it even if SEALED already exists.
+        # Successful rename is the commit point. The cooperative budget was
+        # checked immediately above; this OS operation cannot be preempted.
+        # A successful late return stays committed, with no fallible origin
+        # cleanup or deadline check left to turn success into failure.
         os.rename(staging_root, snapshot_root)
-        renamed = True
-        deadline.check()
         return manifest
     except BaseException as error:
-        _write_failure_label(snapshot_root if renamed else staging_root, _failure_code(error))
+        _write_failure_label(staging_root, _failure_code(error))
         raise
 
 
@@ -1325,10 +1330,12 @@ def import_snapshot(
 ) -> dict[str, object]:
     """Import one frozen input into a fresh, sealed snapshot root.
 
-    Returns the sealed SnapshotManifest. The snapshot root must not exist;
-    Pre-publication failures keep the dedicated staging root with a failure
-    label. A rename that returns after the deadline keeps the moved evidence
-    at snapshot_root with the same label; read_snapshot rejects failed roots.
+    Returns the sealed SnapshotManifest. The snapshot root must not exist.
+    Pre-publication failures retain staging and attempt a failure label; they
+    never publish the final root. One absolute cooperative deadline covers
+    origin reads/close, verification and metadata, and is checked immediately
+    before rename. Successful rename commits even if it returns late; no
+    post-commit timing or origin cleanup can reclassify it as failure.
     """
 
     try:
@@ -1365,54 +1372,43 @@ def _import_snapshot(
         raise TaskInputError("SnapshotRootInvalid", "the snapshot parent directory must exist")
     _assert_plain_target(parent, label="the snapshot output parent")
     deadline.check()
-    published = False
-    try:
-        with ExitStack() as stack:
-            context = _ImportContext()
-            if source_kind == "git":
-                files, directories, git_root = _plan_git_selection(
-                    source, validated_policy, deadline
-                )
-                context = _ImportContext(git_root=git_root)
-                identity = _require_text(source["commit"], "git commit", "InvalidSource")
-            elif source_kind == "zip":
-                package_path = _verify_zip_package(source, validated_policy, deadline)
-                deadline.check()
-                archive = stack.enter_context(zipfile.ZipFile(package_path))
-                deadline.check()
-                context = _ImportContext(archive=archive)
-                files, directories = _plan_zip_members(archive, source, validated_policy, deadline)
-                identity = _require_sha256(source["sha256"], "zip sha256", "InvalidSource")
-            else:
-                files, directories = _plan_directory_tree(source, validated_policy, deadline)
-                identity = _require_sha256(
-                    source["manifest_sha256"], "manifest sha256", "InvalidSource"
-                )
-            kept_files, kept_directories, excluded_records = _apply_selection(
-                files, directories, validated_policy, deadline
-            )
-            selection = _selection_digest(validated_policy.source_paths, excluded_records)
+    with ExitStack() as stack:
+        context = _ImportContext()
+        if source_kind == "git":
+            files, directories, git_root = _plan_git_selection(source, validated_policy, deadline)
+            context = _ImportContext(git_root=git_root)
+            identity = _require_text(source["commit"], "git commit", "InvalidSource")
+        elif source_kind == "zip":
+            package_path = _verify_zip_package(source, validated_policy, deadline)
             deadline.check()
-            manifest = _stage_and_publish(
-                files=kept_files,
-                directories=kept_directories,
-                excluded_records=excluded_records,
-                policy=validated_policy,
-                deadline=deadline,
-                snapshot_root=snapshot_root,
-                context=context,
-                source_kind=source_kind,
-                identity=identity,
-                selection_sha256=selection,
+            archive = stack.enter_context(zipfile.ZipFile(package_path))
+            deadline.check()
+            context = _ImportContext(archive=archive)
+            files, directories = _plan_zip_members(archive, source, validated_policy, deadline)
+            identity = _require_sha256(source["sha256"], "zip sha256", "InvalidSource")
+        else:
+            files, directories = _plan_directory_tree(source, validated_policy, deadline)
+            identity = _require_sha256(
+                source["manifest_sha256"], "manifest sha256", "InvalidSource"
             )
-            published = True
-        # Closing an origin handle is part of the same import, not a new budget.
+        kept_files, kept_directories, excluded_records = _apply_selection(
+            files, directories, validated_policy, deadline
+        )
+        selection = _selection_digest(validated_policy.source_paths, excluded_records)
         deadline.check()
-        return manifest
-    except BaseException as error:
-        if published:
-            _write_failure_label(snapshot_root, _failure_code(error))
-        raise
+        return _stage_and_publish(
+            files=kept_files,
+            directories=kept_directories,
+            excluded_records=excluded_records,
+            policy=validated_policy,
+            deadline=deadline,
+            snapshot_root=snapshot_root,
+            context=context,
+            origin_stack=stack,
+            source_kind=source_kind,
+            identity=identity,
+            selection_sha256=selection,
+        )
 
 
 def _validate_snapshot_manifest(

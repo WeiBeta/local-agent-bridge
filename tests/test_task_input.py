@@ -7,6 +7,7 @@ No real package, credential, provider, network or upstream CLI is involved.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -1951,8 +1952,7 @@ def test_metadata_deadline_uses_real_elapsed_time(
         ("manifest-after-write", "directory", "staging"),
         ("seal-after-write", "directory", "staging"),
         ("rename-precheck", "directory", "staging"),
-        ("rename-return", "directory", "snapshot"),
-        ("zip-close", "zip", "snapshot"),
+        ("zip-close", "zip", "staging"),
     ],
 )
 def test_import_stages_share_one_deadline(
@@ -2047,10 +2047,8 @@ def test_import_stages_share_one_deadline(
             "_assert_plain_target",
             lambda args, kw: args[0] == snapshot and (staging / "SEALED").exists(),
         )
-    elif stage == "rename-return":
-        delay_result(entry.os, "rename", lambda args, kw: args[0] == staging)
     elif stage == "zip-close":
-        delay_result(entry.zipfile.ZipFile, "close", lambda args, kw: snapshot.exists())
+        delay_result(entry.zipfile.ZipFile, "close", lambda args, kw: staging.exists())
     else:
         pytest.fail(f"missing stage injection: {stage}")
 
@@ -2066,16 +2064,10 @@ def test_import_stages_share_one_deadline(
         assert not staging.exists()
         assert not snapshot.exists()
     else:
-        failed = staging if failure_root == "staging" else snapshot
-        assert failed.is_dir()
-        assert (failed / "IMPORT-FAILED").read_text() == "DeadlineExceeded\n"
-        assert not (snapshot if failed == staging else staging).exists()
-        if failure_root == "snapshot":
-            # Preserve the rename/close evidence; never erase SEALED to hide it.
-            assert (failed / "manifest.json").is_file()
-            assert (failed / "SEALED").is_file()
-            assert (failed / "source/src/a.cs").read_bytes() == b"a"
-            _expect_error("InvalidManifest", read_snapshot, snapshot_root=failed)
+        assert failure_root == "staging"
+        assert staging.is_dir()
+        assert (staging / "IMPORT-FAILED").read_text() == "DeadlineExceeded\n"
+        assert not snapshot.exists()
 
 
 @pytest.mark.parametrize("kind", ["git", "zip", "directory"])
@@ -2309,3 +2301,366 @@ def test_elapsed_work_is_not_reset_between_selection_and_metadata(
     assert observed_deadlines == [101.0]
     assert (tmp_path / "snapshot.staging/manifest.json").exists()
     assert not (tmp_path / "snapshot.staging/SEALED").exists()
+
+
+@pytest.fixture
+def publication_input(tmp_path: Path) -> dict[str, object]:
+    """A new stored ZIP for publication ordering, independent of deadline fixtures."""
+
+    package = tmp_path / "publication.zip"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("a.cs", b"class Publication {}\r\n")
+    return {
+        "source": {
+            "kind": "zip",
+            "path": str(package),
+            "sha256": hashlib.sha256(package.read_bytes()).hexdigest(),
+            "strip_prefix": None,
+        },
+        "policy": {
+            "source_paths": [],
+            "excluded_paths": [],
+            "sensitive_paths": [],
+            "trusted_control_files": {},
+            "deadline_seconds": 1,
+        },
+        "snapshot_root": tmp_path / "published",
+    }
+
+
+@pytest.mark.parametrize("label_io_failure", [False, True], ids=["label-ok", "label-io-failure"])
+@pytest.mark.parametrize("close_result", ["normal", "expired", "error", "expired-error"])
+def test_zip_origin_close_precedes_sealing_and_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    publication_input: dict[str, object],
+    close_result: str,
+    label_io_failure: bool,
+) -> None:
+    package = Path(publication_input["source"]["path"])
+    snapshot = publication_input["snapshot_root"]
+    staging = snapshot.with_name(snapshot.name + ".staging")
+    original_package = package.read_bytes()
+    clock = _ImportClock()
+    original_close = zipfile.ZipFile.close
+    original_write_text = Path.write_text
+    close_error = OSError(errno.EIO, "synthetic origin close completion failure")
+    observation = {"close_result": close_result, "label_io_failure": label_io_failure}
+    close_events: list[dict[str, object]] = []
+    label_attempts: list[str] = []
+
+    def observed_close(handle):
+        if handle.fp is None or Path(handle.filename) != package or handle.mode != "r":
+            return original_close(handle)
+        event: dict[str, object] = {
+            "entry_time": clock.now,
+            "origin_open_at_entry": True,
+            "snapshot_exists_at_entry": snapshot.exists(),
+            "staging_exists_at_entry": staging.exists(),
+            "manifest_exists_at_entry": (staging / "manifest.json").exists(),
+            "seal_exists_at_entry": (staging / "SEALED").exists(),
+        }
+        try:
+            read_snapshot(snapshot_root=snapshot)
+        except TaskInputError as error:
+            event["reader_error_at_entry"] = error.code
+        else:
+            event["reader_error_at_entry"] = None
+        result = original_close(handle)
+        event["origin_closed_after_real_close"] = handle.fp is None
+        if close_result.startswith("expired"):
+            clock.expire()
+        event["return_time"] = clock.now
+        close_events.append(event)
+        if close_result.endswith("error"):
+            raise close_error
+        return result
+
+    def label_write(path, *arguments, **keywords):
+        if path in {staging / "IMPORT-FAILED", snapshot / "IMPORT-FAILED"}:
+            label_attempts.append(str(path))
+            if label_io_failure:
+                raise OSError(errno.ENOSPC, "synthetic failure label write rejection")
+        return original_write_text(path, *arguments, **keywords)
+
+    manifest = None
+    import_error = None
+    with monkeypatch.context() as patches:
+        patches.setattr(entry, "time", clock)
+        patches.setattr(zipfile.ZipFile, "close", observed_close)
+        patches.setattr(Path, "write_text", label_write)
+        try:
+            manifest = import_snapshot(**publication_input)
+        except TaskInputError as error:
+            import_error = error
+    try:
+        readback = read_snapshot(snapshot_root=snapshot)
+    except TaskInputError as error:
+        reader_error = error.code
+        readback = None
+    else:
+        reader_error = None
+    observation.update(
+        close_events=close_events,
+        label_attempts=label_attempts,
+        import_error=import_error.code if import_error else None,
+        reader_error=reader_error,
+        snapshot_exists=snapshot.exists(),
+        staging_exists=staging.exists(),
+    )
+    (tmp_path / "publication-close-observation.json").write_bytes(_canonical(observation))
+
+    assert len(close_events) == 1, "the actual source ZIP close was not observed exactly once"
+    event = close_events[0]
+    assert event["origin_closed_after_real_close"], "the real ZIP close did not complete"
+    assert not event["snapshot_exists_at_entry"], "final root became visible before origin close"
+    assert event["reader_error_at_entry"] is not None, "reader accepted a root at close entry"
+    assert event["staging_exists_at_entry"]
+    assert not event["manifest_exists_at_entry"]
+    assert not event["seal_exists_at_entry"]
+    assert package.read_bytes() == original_package
+    if close_result == "normal":
+        assert import_error is None
+        assert readback == manifest
+        assert not staging.exists()
+        assert label_attempts == []
+    else:
+        expected_code = "IoFailed" if close_result.endswith("error") else "DeadlineExceeded"
+        assert import_error is not None and import_error.code == expected_code
+        if close_result.endswith("error"):
+            assert import_error.__cause__ is close_error
+        assert not snapshot.exists(), "failed origin close published a valid final root"
+        assert reader_error is not None
+        assert (staging / "source/a.cs").read_bytes() == b"class Publication {}\r\n"
+        assert not (staging / "manifest.json").exists()
+        assert not (staging / "SEALED").exists()
+        assert label_attempts == [str(staging / "IMPORT-FAILED")]
+        if label_io_failure:
+            assert not (staging / "IMPORT-FAILED").exists()
+        else:
+            assert (staging / "IMPORT-FAILED").read_text() == expected_code + "\n"
+
+
+@pytest.mark.parametrize("label_io_failure", [False, True], ids=["label-ok", "label-io-failure"])
+@pytest.mark.parametrize(
+    "rename_result", ["expired-precheck", "error", "late-operation", "late-return"]
+)
+def test_final_rename_is_the_commit_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    publication_input: dict[str, object],
+    rename_result: str,
+    label_io_failure: bool,
+) -> None:
+    snapshot = publication_input["snapshot_root"]
+    staging = snapshot.with_name(snapshot.name + ".staging")
+    original_rename = os.rename
+    original_target_check = entry._assert_plain_target
+    original_write_text = Path.write_text
+    original_close = zipfile.ZipFile.close
+    rename_error = OSError(errno.EIO, "synthetic final rename failure")
+    committed = False
+    closed_origins = []
+    rename_events = []
+    label_attempts = []
+
+    class CommitClock(_ImportClock):
+        def monotonic(self) -> float:
+            assert not committed, "the importer checked time after successful final rename"
+            return super().monotonic()
+
+    clock = CommitClock()
+
+    def observed_close(handle):
+        is_origin = handle.fp is not None and handle.mode == "r"
+        result = original_close(handle)
+        if is_origin:
+            closed_origins.append(handle)
+        return result
+
+    def final_target_check(path, **keywords):
+        result = original_target_check(path, **keywords)
+        if (
+            rename_result == "expired-precheck"
+            and path == snapshot
+            and (staging / "SEALED").exists()
+        ):
+            clock.expire()
+        return result
+
+    def final_rename(old, new):
+        nonlocal committed
+        assert old == staging and new == snapshot
+        assert clock.now < 101.0, "final rename entered after the budget expired"
+        assert len(closed_origins) == 1 and closed_origins[0].fp is None
+        assert not snapshot.exists()
+        rename_events.append({"entry_time": clock.now})
+        if rename_result == "error":
+            raise rename_error
+        if rename_result == "late-operation":
+            # Simulate time spent inside the unpreemptible rename call before
+            # its real OS side effect; this is an explicit boundary injection.
+            clock.expire()
+        result = original_rename(old, new)
+        if rename_result == "late-return":
+            clock.expire()
+        committed = True
+        rename_events[-1]["return_time"] = clock.now
+        return result
+
+    def label_write(path, *arguments, **keywords):
+        if path == staging / "IMPORT-FAILED":
+            label_attempts.append(str(path))
+            if label_io_failure:
+                raise OSError(errno.ENOSPC, "synthetic failure label write rejection")
+        return original_write_text(path, *arguments, **keywords)
+
+    manifest = None
+    import_error = None
+    with monkeypatch.context() as patches:
+        patches.setattr(entry, "time", clock)
+        patches.setattr(zipfile.ZipFile, "close", observed_close)
+        patches.setattr(entry, "_assert_plain_target", final_target_check)
+        patches.setattr(os, "rename", final_rename)
+        patches.setattr(Path, "write_text", label_write)
+        try:
+            manifest = import_snapshot(**publication_input)
+        except TaskInputError as error:
+            import_error = error
+    (tmp_path / "publication-rename-observation.json").write_bytes(
+        _canonical(
+            {
+                "rename_result": rename_result,
+                "label_io_failure": label_io_failure,
+                "rename_events": rename_events,
+                "label_attempts": label_attempts,
+                "import_error": import_error.code if import_error else None,
+                "committed": committed,
+                "origin_close_count": len(closed_origins),
+            }
+        )
+    )
+    if rename_result.startswith("late"):
+        assert import_error is None and committed
+        assert read_snapshot(snapshot_root=snapshot) == manifest
+        assert len(rename_events) == 1 and rename_events[0]["return_time"] >= 101.0
+        assert label_attempts == []
+        assert not (snapshot / "IMPORT-FAILED").exists()
+        assert not staging.exists()
+    else:
+        expected_code = "IoFailed" if rename_result == "error" else "DeadlineExceeded"
+        assert import_error is not None and import_error.code == expected_code
+        if rename_result == "error":
+            assert import_error.__cause__ is rename_error
+            assert len(rename_events) == 1
+        else:
+            assert rename_events == []
+        assert not snapshot.exists()
+        assert (staging / "manifest.json").is_file()
+        assert (staging / "SEALED").is_file()
+        assert (staging / "source/a.cs").read_bytes() == b"class Publication {}\r\n"
+        assert label_attempts == [str(staging / "IMPORT-FAILED")]
+        if label_io_failure:
+            assert not (staging / "IMPORT-FAILED").exists()
+        else:
+            assert (staging / "IMPORT-FAILED").read_text() == expected_code + "\n"
+
+
+@pytest.mark.parametrize("delay_seconds", [0.0, 1.2], ids=["no-delay", "bounded-real-delay"])
+def test_successful_final_rename_can_return_after_the_cooperative_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    publication_input: dict[str, object],
+    delay_seconds: float,
+) -> None:
+    original_rename = os.rename
+    original_check = entry._Deadline.check
+    observation: dict[str, object] = {"delay_seconds": delay_seconds}
+    committed = False
+
+    def observed_check(deadline):
+        assert not committed, "a deadline check ran after successful final rename"
+        observation["expires_at"] = deadline.expires_at
+        return original_check(deadline)
+
+    def delayed_rename(old, new):
+        nonlocal committed
+        observation["rename_started_at"] = time.monotonic()
+        assert observation["rename_started_at"] < observation["expires_at"]
+        # A deliberate delay inside the final call, not a claim about natural
+        # OS latency or strict wall-clock preemption.
+        time.sleep(delay_seconds)
+        result = original_rename(old, new)
+        observation["rename_finished_at"] = time.monotonic()
+        committed = True
+        return result
+
+    with monkeypatch.context() as patches:
+        patches.setattr(entry._Deadline, "check", observed_check)
+        patches.setattr(os, "rename", delayed_rename)
+        manifest = import_snapshot(**publication_input)
+    snapshot = publication_input["snapshot_root"]
+    assert read_snapshot(snapshot_root=snapshot) == manifest
+    assert not (snapshot / "IMPORT-FAILED").exists()
+    if delay_seconds:
+        assert observation["rename_finished_at"] >= observation["expires_at"]
+    else:
+        assert observation["rename_finished_at"] < observation["expires_at"]
+    (tmp_path / "publication-real-rename-observation.json").write_bytes(_canonical(observation))
+
+
+def test_one_absolute_budget_spans_selection_origin_close_and_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publication_input: dict[str, object]
+) -> None:
+    clock = _ImportClock()
+    original_check = entry._Deadline.check
+    original_selection = entry._selection_digest
+    original_close = zipfile.ZipFile.close
+    original_write = entry._write_exclusive
+    budgets: set[tuple[int, float]] = set()
+    events: list[dict[str, object]] = []
+
+    def observed_check(deadline):
+        budgets.add((id(deadline), deadline.expires_at))
+        return original_check(deadline)
+
+    def elapsed_selection(*arguments):
+        result = original_selection(*arguments)
+        clock.now += 0.4
+        events.append({"stage": "selection", "return_time": clock.now})
+        return result
+
+    def elapsed_close(handle):
+        is_origin = handle.fp is not None and handle.mode == "r"
+        result = original_close(handle)
+        if is_origin:
+            clock.now += 0.4
+            events.append({"stage": "origin-close", "return_time": clock.now})
+        return result
+
+    def elapsed_metadata(target, raw, deadline):
+        assert target.name == "manifest.json"
+        assert clock.now == pytest.approx(100.8)
+        assert deadline.expires_at == 101.0
+        result = original_write(target, raw, deadline)
+        clock.now += 0.3
+        events.append({"stage": "metadata", "return_time": clock.now})
+        return result
+
+    monkeypatch.setattr(entry, "time", clock)
+    monkeypatch.setattr(entry._Deadline, "check", observed_check)
+    monkeypatch.setattr(entry, "_selection_digest", elapsed_selection)
+    monkeypatch.setattr(zipfile.ZipFile, "close", elapsed_close)
+    monkeypatch.setattr(entry, "_write_exclusive", elapsed_metadata)
+    _expect_error("DeadlineExceeded", import_snapshot, **publication_input)
+    snapshot = publication_input["snapshot_root"]
+    staging = snapshot.with_name(snapshot.name + ".staging")
+    assert len(budgets) == 1 and next(iter(budgets))[1] == 101.0
+    assert [event["stage"] for event in events] == ["selection", "origin-close", "metadata"]
+    assert not snapshot.exists()
+    assert (staging / "manifest.json").is_file()
+    assert not (staging / "SEALED").exists()
+    assert (staging / "IMPORT-FAILED").read_text() == "DeadlineExceeded\n"
+    (tmp_path / "publication-budget-observation.json").write_bytes(
+        _canonical({"budget_count": len(budgets), "expires_at": 101.0, "events": events})
+    )

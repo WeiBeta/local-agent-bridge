@@ -54,8 +54,10 @@ Git 通过固定 `ls-tree -rz` / `cat-file blob` 原字节读取，明确拒绝 
 3. 对整个条目集合检查重复、Windows casefold/NFC 冲突、文件与目录同名、`a` 文件与 `a/b` 前缀冲突；明确目录项与它的普通子文件不算冲突。禁止自动去重/覆盖、大小写重命名或自动剥掉顶层目录；需要 strip-prefix 时由冻结输入清单明确指定，并再次做冲突检查。
 4. 拒绝 symlink、设备/FIFO、目录 reparse 属性、加密 ZIP 与 v1 不支持的压缩方法；ZIP v1 支持 stored/deflate。普通文件身份必须保守判定，不能只依据后缀；目录遍历拒绝 symlink/junction/reparse 及多链接普通文件（保守拒绝硬链接输入），禁止输出 reparse/硬链接。
 5. 在创建 staging 前核对声明资源限额；流式读时累计实际解压长度、CRC 与 hash，不能只信 central directory 的声明。解压时不嵌套解压其他 archive，不运行任何文件。
-6. 只向全新、已核对普通父链的专用 staging 排他创建文件；每次创建重核父链，完成后重新枚举全部属性/清单。错误保留带失败标签的专用 staging；不发布 manifest、不覆盖旧根、不自动清理。此方案还需部署环境防止并发篡改父目录，普通 path.resolve 检查不能宣称消除了竞态。
-7. 全部条目通过后原子发布清单与 sealed 标记；为每个任务/每个 reviewer 各复制一次，再逐字节核对。不是共享可写目录、hardlink 或 junction。输入原包、原始业务仓库及 sealed snapshot 不给 Worker 写权限。
+6. 只向全新、已核对普通父链的专用 staging 排他创建文件；每次创建重核父链，复制完成后先关闭全部来源句柄，再重新枚举全部属性/清单及验证。来源读取/关闭、验证和 metadata 等所有可失败动作须在最终发布前完成。发布前错误保留专用 staging 并尽力写入失败标签；标签 I/O 失败也不得产生有效最终根。不覆盖旧根、不自动删除/回滚现场；staging 中已写的 manifest/SEALED 保留为失败证据，不构成最终发布。此方案还需部署环境防止并发篡改父目录，普通 path.resolve 检查不能宣称消除了竞态。
+7. 全部条目及来源关闭/验证通过后，在 staging 写清单与 sealed 标记，最终 rename 调用紧前检查同一绝对预算；成功 rename 是成功提交的线性化点。rename 成功后不得因事后计时或来源清理改判失败；rename 失败按既有错误契约处理，保留 staging 并尽力标签，不删除/覆盖/回滚证据。为每个任务/每个 reviewer 各复制一次，再逐字节核对。不是共享可写目录、hardlink 或 junction。输入原包、原始业务仓库及 sealed snapshot 不给 Worker 写权限。
+
+导入 deadline 是协作式单次绝对预算，自导入入口计时，贯穿来源预检、读取/句柄关闭、选择、复制、验证、哈希及 metadata，不在阶段之间重置。rename 前到期返回 `DeadlineExceeded`，来源关闭异常按既有错误契约失败，二者都不得发布有效最终根。最后一次 OS rename 自身不可抢占；若紧前预算检查通过、rename 跨时返回成功，仍属已提交成功。该语义不承诺严格墙钟抢占，也不依赖事后 best-effort 标签撤销成功资格。以上 deadline/最终提交/失败可见性澄清按管理在 2026-10-05 对 LAB-TASK-PUBLICATION-REPAIR-02 的裁定执行，不代表完整 A 已验收。
 
 默认资源 policy 是工程判断的实施初值：压缩包 ≤64 MiB、条目 ≤20,000、展开总量 ≤512 MiB、单文件 ≤64 MiB、单文件展开/压缩比 ≤200、深度 ≤32；单路径分量 ≤255 字符（Unicode 码点，不是255字节），同时须满足目标文件系统分量限制；最终绝对物理路径含根和分隔符，预算为 ≤240 个 UTF-16 码元，导入 deadline 60 秒。路径身份保留原始 Unicode，不做 ANSI 折叠或 NFC 改名；NFC/casefold 仅用于冲突拒绝，拒绝不可编码的孤立 surrogate。零压缩长度且有展开内容拒绝。上限按实际字节与磁盘余量检查；超限明确阻断，不跳过条目或扩大限额。物理预算不足返回 `PathBudgetExceeded`，再申请明确短路径，不静默换目录。冻结 policy 可收紧或采用已授权上限，不提供任意无限值。
 
