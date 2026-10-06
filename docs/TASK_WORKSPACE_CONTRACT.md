@@ -201,7 +201,7 @@ GR03 类型任务的中文 out/report.md、findings.json、coverage.json、progr
 
 A 先按下表交可复用快照 fixture；B/C 可使用同一冻结 schema 并行做本地 fixture，接入后再集成。D 最后接 CLI/打包/文档，拥有这些共享文件。现有 slice_run/cursor_run 的必要生命周期抽取由 C 单独拥有；A/B 不触碰捕获/恢复。各包独立 worktree、精确 base、allow-list、测试与独立 Review。字段变更交管理先裁决再同批更新，不由各包自添 profile。真实运行前完成对应 R 与实际权限；普通 Phase 不重复确认。
 
-建议 CLI（待实现，不可调用当前安装版）：`task import` 选 git/zip/directory；`task prepare --snapshot ... --task-manifest ... --task-note ... --deployment-profile ... --authorization ... --out ...`；`task plan --task-root ... --host agy|cursor --deployment-receipt ...`；`task run` 缺省 preflight、--execute 才启动；`task collect --task-root ... --run-root ... --out <fresh result root>`。角色/能力/边界在 task manifest 中一次写清，不造组合 profile；import 的 commit/ZIP hash/目录 manifest 必填，run 不接受任意 model/argv/供应商 URL。
+建议 CLI（待实现，不可调用当前安装版）：`task import` 选 git/zip/directory；`task prepare --snapshot ... --task-manifest ... --task-note ... --deployment-profile ... --authorization ... --out ...`；`task plan --task-root ... --host agy|cursor --trusted-control-root ... --trusted-inputs-sha256 ...`；`task run` 使用同一可信根/摘要，缺省 preflight、--execute 才启动；`task collect --task-root ... --run-root ... --out <fresh result root>`。角色/能力/边界在 task manifest 中一次写清，不造组合 profile；import 的 commit/ZIP hash/目录 manifest 必填，run 不接受任意 model/argv/供应商 URL。
 
 ### 7.1 A/B/C 共用的最小 JSON 接口（v1 冻结）
 
@@ -241,24 +241,175 @@ def import_snapshot(
 def read_snapshot(*, snapshot_root: Path) -> dict[str, object]: ...
 # task_workspace.py
 def prepare_task(
-    *, snapshot_root: Path, task_manifest: dict[str, object], task_note: bytes,
-    deployment_profile: dict[str, object], authorization: dict[str, object],
-    task_root: Path
+    *,
+    snapshot_root: Path,
+    task_manifest: dict[str, object],
+    task_note: bytes,
+    deployment_profile: dict[str, object],
+    authorization: dict[str, object],
+    task_root: Path,
 ) -> dict[str, object]: ...
 def collect_task(
     *, task_root: Path, run_root: Path | None, result_root: Path
 ) -> dict[str, object]: ...
 # task_run.py
 def plan_task(
-    *, task_root: Path, host: Literal["agy", "cursor"],
-    deployment_receipt: dict[str, object]
+    *,
+    task_root: Path,
+    host: Literal["agy", "cursor"],
+    trusted_control_root: Path,
+    trusted_inputs_sha256: str,
 ) -> dict[str, object]: ...
 def run_task(
-    *, task_root: Path, plan: dict[str, object], run_root: Path, execute: bool = False
+    *,
+    task_root: Path,
+    plan: dict[str, object],
+    run_root: Path,
+    trusted_control_root: Path,
+    trusted_inputs_sha256: str,
+    execute: bool = False,
 ) -> dict[str, object]: ...
 ```
 
 返回依次为SnapshotManifest、SnapshotManifest、TaskManifest、Result、Plan、RunReceipt。read_snapshot重验封存manifest/tree；prepare_task核对task_note原字节instructions_sha256并建副本；collect_task允许run_root=null用于未运行fixture，但transport=NotRun，management_decision=null。输出根都须全新；失败保留现场。各模块导出TaskInputError/TaskWorkspaceError/TaskRunError（RuntimeError子类，code:S、非敏感消息），已有BridgePathError在新入口映射并保留cause，旧入口异常不改；不自行再调用模型。C Ready/Blocked不等于管理业务裁决。CLI只包装固定入口，不开放caller-selected函数或任意工具链命令。
+
+
+### 7.3 C 部署回执与可信输入（管理工程冻结，2026-10-06）
+
+TASK_ID=LAB-TASK-RUN-C-01；管理=019fe10b-df55-7b82-a9ba-3702dc08c55f。采用提案 SHA-256 `cde9efe36266a1b9c3ee3c40a9e35d3d33f87acef1e25cc205644d1cd13a6656` 第3–7节。以下是管理工程冻结，不是作者新增实际权限、部署或 R 接受。原提案保留不改。新增准确 DeploymentReceipt；原 TaskManifest/Profile/Authorization/Plan/RunReceipt 键集合不变。
+
+#### 3. 准确 JSON 类型和摘要
+
+沿用合同规范 JSON 字节、未知/重复键拒绝、无 BOM/尾换行、NaN/Infinity 拒绝。所有字段必填，明确标 null 的才可为 null。以下是闭合集合；没有任意字段扩展。
+
+- H：64 位小写 SHA-256；S：非空 UTF-8 字符串；A：通过 A 包规则的本地 Windows 绝对路径，不接受宽根/reparse。
+- Caps：原三键 bool 对象；Role/Boundary/Evidence：原合同枚举与记录。
+- FileIdentity=`{path:A,sha256:H}`。
+- ConfigIdentity=`{path:A,sha256:H|null}`；null hash **只表示该准确路径应不存在**，不是不核验。存在文件须普通单链接文件。
+- Toolchain=`{ref:S,identity_files:list[FileIdentity],recipe_refs:list[S]}`；identity_files 非空。ref/recipe_refs 只指已登记事实与配套 recipe，既不含命令文本，也不提供执行自定义 recipe 的接口。
+- Gate=`{id:"R-RUNTIME-01"|"WEB-01"|"DEPS-01"|"BOUNDARY-02"|"BOUNDARY-03"|"NETWORK-01",result:"Pass"|"Fail"|"Unrun"|"Unverified",evidence_refs:list[Evidence]}`。
+- RuntimeAcceptance=`{role:Role,capabilities:Caps,execution_boundary:Boundary,receipt_binding_sha256:H,status:"Accepted"|"Blocked"|"Unverified",gates:list[Gate],management_acceptance_ref:Evidence}`。
+
+DeploymentReceipt 准确字段：
+
+| 字段 | 类型和约束 |
+| --- | --- |
+| contract_version | int=1，bool 不算 int |
+| id | S；必须等于 DeploymentProfile.id 和 TaskManifest.deployment_profile_id |
+| host | agy/cursor；等于 profile.host 和请求 host |
+| adapter | agy_task_v1/cursor_task_v1；必须分别与 host 对应，代码固定映射，不接受其他 adapter |
+| workspace_parent | A；可信管理批准的窄物理任务父根；task_root 必须是其普通直接子目录 |
+| bridge | `{version:S,entry:FileIdentity,wheel_sha256:H,product_files:list[FileIdentity]}`；产品文件按 path 原 UTF-8 字节排序/唯一，必须包括实际使用的 task_run/launcher/capture/restore 实现；entry 是 Bridge entry，不是宿主 entry |
+| host_entry | FileIdentity；agy 为登记 agy.exe，Cursor 为登记 agent.ps1；由对应固定 adapter 使用 |
+| launch_shell | FileIdentity 或 null；agy=null；Cursor 为已验收且代码支持的 pwsh 路径/身份，不变成任意解释器入口 |
+| host_version | S；已验收本机 CLI/后端版本事实，不从 entry hash 推断版本 |
+| host_identity_files | 非空 list[FileIdentity]；管理从已验收本机部署确定的后端版本/实现标记；无法点时验证当前后端身份则 Blocked，不为查版本额外启动 CLI |
+| configuration | `{agy_settings:ConfigIdentity|null,cursor_global:ConfigIdentity|null,cursor_project:FileIdentity|null}`；agy 只前者非 null 且 hash 非 null；Cursor 后两者非 null，global 可声明准确路径应不存在；project.path 固定为 task_root/.cursor/cli.json |
+| profile_fields_sha256 | H；对规范 DeploymentProfile 去掉且仅去掉 receipt_sha256 后的对象求 SHA |
+| toolchains | list[Toolchain]；ref 唯一，按 ref UTF-8 字节排序；与 profile.toolchain_refs 一一对应；execute 或 prepare_dependencies 启用时不得为空 |
+| runtime_acceptances | list[RuntimeAcceptance]；可空；role/capabilities/boundary 三元组唯一，不创建组合 profile |
+| provenance_refs | list[Evidence]；引用原部署/launcher/安装/R 来源，不把历史材料改写成当前接受 |
+
+数组 FileIdentity 按 path、recipe_refs/其余引用清单按原字符串 UTF-8 字节排序且唯一；gates 按 id 唯一；runtime_acceptances 按 role、Caps 三 bool 固定键顺序、boundary 排序。Evidence 沿用原记录，引用只作登记材料引用，不作为任意路径/URL 自动解析入口。接受所用 evidence 必须是 HostObserved 且 hash 非 null，管理必须在供给前核验引用；仅具备这些字段不自行产生 Pass。
+
+消除摘要循环：
+
+1. `profile_fields_sha256` 的投影不包含 profile.receipt_sha256；receipt 不包含完整 profile SHA。
+2. `receipt_binding_sha256` 是对 DeploymentReceipt **去掉 runtime_acceptances 和 provenance_refs 两键**后的规范对象求 SHA。
+3. 管理的 R applicability 接受记录绑定上述 digest 和准确 role/Caps/boundary。记录是在核对已有实测范围后出具，不是 C 按 hash 推断 R；当前配置或物理范围不能由旧 R 支持时，只填 Blocked/Unverified。参数化任务子根复用也必须由既有 R/接受材料明确支持，不能自动外推。
+4. 填妥 runtime_acceptances 后，对完整 receipt 求 SHA，填入原 profile.receipt_sha256 和 authorization.receipt_sha256；task 的 profile/auth SHA 仍按原合同求值。
+5. `trusted_inputs_sha256` 为规范对象 `{"deployment_receipt":receipt,"deployment_profile":profile,"authorization":authorization}` 的 SHA，由管理派工另行给出，不放进这三份文件自引用。
+
+#### 4. 持久位置、信任与最小签名变更
+
+可信管理输入根由当前明确派工给出，例如允许的任务 Archive 内专用 `trusted-input/<task_id>`；这只是位置建议，不是本轮创建真实授权材料。
+其三个固定文件为 `deployment-receipt.json`、`deployment-profile.json`、`authorization.json`。Cursor 另可由管理放置固定 `cursor-project.json` 原生配置材料，其 raw SHA 必须等于 receipt.configuration.cursor_project.sha256；它不属于可自由扩展的第四合同对象。
+
+根不得来自 Worker/源包/任务内容，不得在 snapshot、业务 worktree、task_root、run_root 或其后代内；禁止宽根与 reparse，三个文件逐项只读，不递归扫描。当前管理派工必须同时提供根和 trusted_inputs_sha256。D 不从文件内读取“我可信”的标志，也不读取完文件后自动计算 expected hash 来替代派工固定值。
+
+调用方信任是明确的宿主边界：这一方案不鉴别任意同用户程序，也不阻止恶意宿主调用方伪装管理。Worker 没有供给这两个宿主参数的正常入口；declared_scope 不声称其 OS 进程绝对无法访问控制材料。同用户可达范围仍须实际授权；required_enforced 仍须 R 强制证据。若需要防御敌对宿主调用方，那是本次范围之外的新权限系统，不以本提案宣称已实现。
+
+task 的固定绑定副本：原 `control/deployment-profile.json`、`control/authorization.json` 加新增 `control/deployment-receipt.json`；C 在首次 plan 排他保存 receipt 副本与 plan。已有同字节副本可只读复验；存在不同字节则拒绝，不覆盖旧计划或失败现场。它们都归 protected control，不是信任源。
+Cursor `.cursor/cli.json` 是额外固定受保护 Host 文件：D/可信 Host 准备阶段仅将上述固定、管理已核验的配置材料复制至此，C 不开放任意原生权限文本参数；B 保留/回收其 frozen 身份。冲突文件不覆盖。未有相应 CONFIG-03/R 的映射只能 Blocked。run execute=False 不写或读取真实宿主配置。
+
+冻结两个准确 keyword-only 签名：
+
+```python
+def plan_task(
+    *,
+    task_root: Path,
+    host: Literal["agy", "cursor"],
+    trusted_control_root: Path,
+    trusted_inputs_sha256: str,
+) -> dict[str, object]: ...
+
+
+def run_task(
+    *,
+    task_root: Path,
+    plan: dict[str, object],
+    run_root: Path,
+    trusted_control_root: Path,
+    trusted_inputs_sha256: str,
+    execute: bool = False,
+) -> dict[str, object]: ...
+```
+
+以 root+派工 SHA 替代原 plan 的自由 dict 输入，并给 run 增加相同两参数。B prepare/collect 签名和所有原 JSON 键集合不变；D 从同一可信根把原 profile/auth 传给 B。旧 slice/Cursor API、退出码和配置恢复不变。
+
+#### 5. plan → run 重读算法
+
+1. **固定加载**：核对可信根及三固定文件普通链；严格解码、闭合 schema 与规范字节；重算 bundle SHA 与派工参数相等。只读取这些受管理提供的材料和 task/control，不调用真实宿主、读取 key 或真实宿主 settings。
+2. **绑定验证**：task 的 profile/auth/instructions SHA、可信 profile/auth 与 task 副本、receipt id/host/profile 投影 SHA、两个 receipt_sha256 全部一致；task_root 在 receipt.workspace_parent 下。验证原角色/三能力/边界/roots/protected/输出/deadline 合同；原任务控制冲突保持拒绝。
+3. **授权判断**：可信 authorization 是管理对实际已授权任务的准确记录。task_id/能力/边界/读写范围必须相符；web/deps 启用分别需管理提供的有效 scope 引用，依赖还要求 execute。C 不把 task 自带 grant_ref 或 receipt 自填字符串升级为授权，也不建立通用 scope 解释器。
+4. **R 判断**：找唯一准确 role/Caps/boundary、binding digest 相符且 status=Accepted 的记录。所有任务要求 R-RUNTIME-01 Pass；web/deps 分别要求 WEB-01/DEPS-01 Pass；required_enforced 另需 BOUNDARY-02/03/NETWORK-01 Pass，且原 profile.file_scope/network_scope=Enforced。缺项返回 Blocked，允许 runtime_acceptances=[]；不得套旧 slice R、组合不同记录或降级边界。Ready 仅表示这些管理供给门禁满足，仍不等于业务接受或最终瞬时启动核验通过。
+5. **固定计划**：route 只取 agy gemini-3.8-flash-high/high 或 Cursor grok-4.7-high/null。Plan 保持原字段；evidence_refs 引用供给来源/R 记录；在 control 排他保存 receipt/plan 绑定副本。
+6. **run 重读**：每次 run 重新执行 1–4，从外部可信根取得当前固定内容，重算相同 Plan 并与参数及 control/plan.json 严格相等；核对 control/receipt 同字节同 SHA。不得仅验证 caller Plan schema 或使用内存 cache。任一 drift 拒绝，launch_count=0；不静默重 plan。
+7. **未执行路径**：execute=False 返回原 RunReceipt 的 NotRun/0/null/NotRun/NotRun；不初始化 key/store，不触碰宿主配置或启动宿主。Blockers 如实保留；全新 run_root 保存元数据的行为保持原合同，不复用根。
+8. **执行路径**：execute=True 且 Ready 才对 receipt 中明确的 Bridge/host/后端标记/toolchain 文件作普通链与当前 bytes/hash 身份复核，确认实际加载 Bridge 实现属于绑定产品。只读核对准确配置路径的存在/不存在及 hash、原生冲突和配置独占协调；task/control 紧前再核对。失败先于 key/config 写入/launch。复用现有 fixed adapter、原字节备份/漂移恢复、加密 capture 和进程树回收；最多 launch 一次，deadline 取原 task 值。transport/capture/restore 分列，失败产物保留，不产生业务 Completed。
+
+管理变更授权或 R 接受时，必须另给当前可信材料与派工摘要；旧 Plan 随绑定漂移拒绝。没有后台监听、自动过期或自动刷新机制。此入口不自行恢复真实运行授权。
+
+#### 6. B/C/D 所有权与必要变更
+
+| 所有者 | 必要最小变更 | 保持关系 |
+| --- | --- | --- |
+| 管理 | 冻结本 schema/签名/位置；供给实际授权、已有 R 适用性记录和外部根+bundle SHA；引用原部署材料 | Hash 不决定授权或审查质量；没有有效新 task R 可以合法 Blocked |
+| B | 原 task/profile/auth 校验与副本不变；保护新增 receipt/plan control；Cursor 固定 .cursor/cli.json 加入 host 控制面完整性检查，不能让 Worker 改它 | prepare/collect 导出签名不变；不创建 registry，不拥有 launcher |
+| C | DeploymentReceipt 严格验证、两次固定加载和 Plan 再生比较、R/身份/配置 gate；拥有 fixed adapter 与必要 slice_run/cursor_run 生命周期复用 | 可复用原 JSON/路径/restore/capture；不复制 A 路径逻辑，不依赖不存在 B 私有函数 |
+| D | 将两个新增可信输入参数包装成明确 Host CLI 参数；prepare 从同根转交 profile/auth；Cursor 只准备固定配置文件；同步 usage/Skill/打包 | task 参数不新增 argv/model/URL/权限字符串；旧命令不扩权 |
+
+冻结文档未来只需补 DeploymentReceipt 表、上述两个签名、固定 control/Cursor 控制面与 gate 规则；不必改原五种业务 JSON，不需要改变 H3/MCP 或 provider 平台。B 的 `.cursor` 保护处理是必要共享范围变更，须同批明确 allow-list，C 本轮不越界实现。
+
+#### 7. 必要拒绝案例
+
+| 案例 | 结果 |
+| --- | --- |
+| 根来自 task/work、宽根/reparse、非固定文件名、未知/重复键/NaN、bundle SHA 不符 | 拒绝可信输入；launch=0，不读真实 key/config |
+| Worker 自填 grant_ref、授权文件或自算 hash；未从管理当前供给取得根+expected SHA | 不构成可信输入，不能 Ready |
+| receipt 与 host/adapter/profile/task 根/三个引用 SHA 不符，任意 argv/model/URL 或未知字段 | 拒绝；不尝试其他 host/route |
+| web/deps 无可信有效 scope、prepare_dependencies=true 但 execute=false、roots 超范围、Review 写 work | Blocked/合同拒绝，不启动 |
+| 缺新 task R、旧 slice R、WorkerReported/hash=null、只 cwd/ACL/Job Object、required_enforced 缺强制项 | Blocked；不降级或伪称物理强制 |
+| plan→run 材料漂移、项目控制冲突、launcher/后端标记/配置漂移或未知当前版本、配置锁竞争/deny 冲突 | 启动前拒绝；不覆盖现场，不更新输入重试 |
+| capture 不完整、配置恢复失败/语义漂移、中断 | transport/capture/restore 原结果分别保留，不二次启动、不自动业务接受 |
+
+离线测试只能由测试显式注入可信根、固定摘要、合成授权/R 与 fake 文件/launcher；这些测试证明合同分支，不证明实际宿主、权限或新 task R。
+
+
+#### 管理澄清与首次验收边界
+
+- prepare_dependencies 依赖 capabilities.execute=true；run_task(execute=False) 仍是合法 dry run，与能力 bool 独立。
+- 首次新 task R 的受控实机验收路径尚未定义，留后续单独授权；不降低 production Ready、不用旧 slice/smoke R、不加旁路。fake Accepted 只证明分支。
+- product_files/host_identity_files/toolchain 按准确文件与实际运行实现绑定；普通版本字符串不是当前运行证据，无法验证 Blocked，不额外启动宿主 CLI。
+- C 首次创建/核验 control/deployment-receipt.json 与 plan.json，B prepare 不预先要求二者；副本排他创建或同字节复验，漂移不覆盖。
+- Cursor 固定 .cursor/cli.json 由 D/可信 Host 准备后 C 核对，B 保护/收集身份但 prepare 签名不变；缺失/冲突 Blocked，协调只经管理。
+- 可信根/expected SHA 来自当前管理派工，不能从 Worker/task/源包选取；hash/HostObserved/任意宿主调用方不能创建授权。无签名/registry/ACL 平台；路径复用原语，点时检查不消除竞态。固定非敏感错误；元数据写入与实际 launch 分开。
+
+#### C 与 B 候选的固定交接
+
+C 启动前读取 B 保留的 `control/snapshot`，复用 A 的 `read_snapshot` 与树验证，核对 task 的 snapshot_id/manifest SHA、task 根 `SEALED` 和 work 原字节树；不导入 B 私有实现。plan→run 及配置写入前再次检查，漂移 launch=0。Coding 启动后的允许改动由 B collect 检查，C 不把它们当启动前完整性失败。write_roots 必须受 read_roots 覆盖，required_outputs 限于允许 out 路径且包含 out/progress.json；Cursor protected_paths 须预先覆盖 `.cursor` 或 `.cursor/cli.json`，固定目录只允许 cli.json。
+
+RunReceipt.evidence_refs 只登记本次 run_root 下的 Host 元数据和加密会话引用；外部管理/R 来源留在受 plan_sha256 绑定的 Plan，不冒充运行目录文件。加密引用准确使用 `session:<capture_uid>`，其 SHA 是认证会话清单规范字节摘要，capture_uid 字段仍为原 UID。B 按不合法相对路径的 opaque 引用处理，不复制或解密会话。原 capture v2 不改；C 封存 metadata.input_sources 准确记录 task=`control/TASK.md`、request=`fixed_task_v1`。CLI 输出中的测试声明只加密保留，不自动生成 HostObserved TestObservation；没有可独立核验的 recipe/tree/toolchain/时序证据时 test_observations 为空，业务接受仍须后续裁决。
 
 ## 8. 有界复用核验与采用理由
 

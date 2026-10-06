@@ -48,6 +48,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from ctypes import wintypes
 from datetime import UTC, datetime
 from pathlib import Path
@@ -508,7 +509,14 @@ def _drain_stream(stream, destination: SessionStream) -> dict[str, object]:
 
 
 def _launch_and_capture(
-    exe: str, argv: list[str], cwd: str, stdout_path: SessionStream, stderr_path: SessionStream
+    exe: str,
+    argv: list[str],
+    cwd: str,
+    stdout_path: SessionStream,
+    stderr_path: SessionStream,
+    *,
+    timeout_seconds: float = OBSERVATION_TIMEOUT_SECONDS,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> dict[str, object]:
     """Exactly one bounded launch; post-spawn failures are reported, never hidden.
 
@@ -518,6 +526,8 @@ def _launch_and_capture(
     erase the fact that a process ran. The own Job handle is closed on every path,
     and files that a still-running reader may keep writing get no final hash.
     """
+    if isinstance(timeout_seconds, bool) or not 0 < timeout_seconds <= OBSERVATION_TIMEOUT_SECONDS:
+        raise SliceRunError("observation deadline is outside the fixed limit")
     started = time.monotonic()
     started_utc = datetime.now(UTC).isoformat()
     process = spawn_suspended_in_job(argv, cwd)
@@ -533,6 +543,8 @@ def _launch_and_capture(
             statistics[prefix] = {"error": type(error).__name__}
 
     try:
+        if on_spawn is not None:
+            on_spawn(process.pid)
         for prefix, stream, destination in (
             ("stdout", process.stdout, stdout_path),
             ("stderr", process.stderr, stderr_path),
@@ -543,7 +555,7 @@ def _launch_and_capture(
             readers.append(reader)
             reader.start()
         try:
-            process.wait(timeout=OBSERVATION_TIMEOUT_SECONDS)
+            process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
             process.terminate_once()
@@ -577,7 +589,7 @@ def _launch_and_capture(
         "timed_out": timed_out,
         "started_utc": started_utc,
         "elapsed_seconds": round(time.monotonic() - started, 3),
-        "observation_timeout_seconds": OBSERVATION_TIMEOUT_SECONDS,
+        "observation_timeout_seconds": timeout_seconds,
         "exit_code": process.returncode,
     }
     if capture_error is not None:

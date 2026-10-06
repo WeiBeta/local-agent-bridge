@@ -130,3 +130,21 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 真实运行前集中说明/取得：同用户shell实际可触达范围与未强制网络、已有工具执行/终止/恢复/回收R、所选查询/依赖/脚本范围、必要部署/配置权限、调用额度和真实包授权。declared_scope设计获准不等于这些实际权限获准；required_enforced未验收不声称可用。缺项仅阻断相应实际运行，继续安全离线实现，不能把VM建设变整个产品前置。
 
 本页不会创建自动续接/额度调度、付费重试、常驻进程监控、定时巡检或新的Agent平台。
+
+## 8. C 回执接口增补（管理工程冻结，2026-10-06）
+
+采用合同§7.3；不新增实际权限/R。O只用显式可信测试注入与fake，不启动真实宿主/配置/密钥。
+
+| ID / Gate | 操作 | 必须观察的结果 |
+| --- | --- | --- |
+| TRUSTED-INPUT-01 / O | 外部固定receipt/profile/auth和派工expected SHA；task选根、自证hash、未知/重复键/非规范JSON、根重叠/reparse/硬链接 | 固定加载/严格schema/可信供给边界；无密钥配置启动，固定非敏感错误 |
+| RECEIPT-BINDING-01 / O | profile去receipt_sha、R绑定排除两字段、完整receipt/bundle摘要；plan→run漂移 | 无自引用；副本排他/同字节复验；再读管理输入并再生Plan，漂移launch0、不覆盖 |
+| DRY-RUN-01 / O | capabilities.execute=true/prepare_dependencies=true，run execute=False；Accepted/缺R | 合法NotRun/launch_count0，不读key/真实配置；能力依赖与Host启动开关分开 |
+| R-GATE-01 / O | 缺新task R、旧slice、WorkerReported/hash-null、组合别行、缺强制项 | Blocked；不降级/旁路/bootstrap；fake Accepted不证明真实R |
+| IDENTITY-01 / O | 实际使用task_run/launcher/capture/restore产品、Bridge entry/后端标记/toolchain身份和遗漏/漂移 | 精确文件/运行实现绑定，不以版本字符串证明；不能验证Blocked，不另启动CLI |
+| CONTROL-01 / O | C首次receipt/plan；B尚无二者；Cursor固定配置缺失/漂移/冲突 | C创建副本，B不提前要求；D/Host准备、C核对、B保护，不覆盖现场 |
+| PREPARED-TREE-01 / O | B固定control/snapshot与SEALED；plan后work/快照/control漂移，capture准备期间漂移 | 用A现有reader/树校验复核，配置写入前再次检查，launch0；不导入B私有模块 |
+| RUN-EVIDENCE-01 / O | Plan外部来源、run元数据、session UID与两个fake测试事件 | 运行文件SHA可按run_root核对；session:UID为opaque认证清单引用；原始声明不提升为HostObserved测试或业务接受 |
+| CONFIG-LIFECYCLE-01 / O | 配置独占、key/backup/capture/patch/metadata失败、Cursor启动后漂移 | 计数按实际spawn；先备份后key/写入；finally恢复或如实Failed，不覆盖语义漂移，无自动重试 |
+
+原CONFIG/restore/capture/timeout回归保持。D尚未更新pytest testpaths/发行清单，新C单测显式加入验收命令。首次新task R入口留后续单独授权，production Ready仍须对应有效R。
