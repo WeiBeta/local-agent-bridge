@@ -6,9 +6,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from test_task_run import FakeProcess, plan, prepare, run
+from test_task_run import FakeProcess, fake_spawn, plan, prepare, run
 
 from local_agent_bridge.bridge import slice_run, winjob
+from local_agent_bridge.bridge import task_run as runner
 
 CASES = [
     ("job", 0, False),
@@ -305,3 +306,105 @@ def test_pipe_cleanup_attempts_both_streams_when_one_is_interrupted():
     with pytest.raises(KeyboardInterrupt) as error:
         winjob._close_child_pipes(process)
     assert error.value is original and trace == ["first", "second"]
+
+
+WRITE_POINTS = ["lifecycle-failure.json", "launch.json", "run.json"]
+
+
+def fail_one_write(monkeypatch, write_point, attempts):
+    persist = runner._persist
+
+    def failing(path, value, **kwargs):
+        if path.name == write_point:
+            attempts.append(path.name)
+            raise OSError("SECRET-secondary-write")
+        return persist(path, value, **kwargs)
+
+    monkeypatch.setattr(runner, "_persist", failing)
+
+
+@pytest.mark.parametrize("write_point", WRITE_POINTS)
+@pytest.mark.parametrize("boundary,expected", [("native_effect", None), ("after_record", 1)])
+@pytest.mark.parametrize("host", ["agy", "cursor"])
+def test_secondary_write_failure_preserves_original_interrupt(
+    tmp_path, monkeypatch, host, boundary, expected, write_point
+):
+    case = prepare(tmp_path, monkeypatch, host=host)
+    frozen = plan(case)
+    original = KeyboardInterrupt()
+    _process, trace, _oracle = install_native(monkeypatch, boundary, original)
+    attempts = []
+    fail_one_write(monkeypatch, write_point, attempts)
+    target = tmp_path / "run"
+    with pytest.raises(KeyboardInterrupt) as error:
+        run(case, frozen, target, execute=True)
+    assert error.value is original
+    assert attempts == [write_point]
+    assert trace[-3:] == ["reclaim", "close_pipes", "close_job"]
+    for name in ("lifecycle-failure.json", "launch.json", "run.json"):
+        if (target / name).exists():
+            assert b"SECRET" not in (target / name).read_bytes()
+    assert (target / "lifecycle-failure.json").exists() == (write_point != "lifecycle-failure.json")
+    assert (target / "launch.json").exists() == (write_point != "launch.json")
+    if write_point == "run.json":
+        assert not (target / "run.json").exists()
+    else:
+        result = json.loads((target / "run.json").read_bytes())
+        assert result["launch_count"] == expected
+        refs = [item["ref"] for item in result["evidence_refs"]]
+        assert (write_point in refs) is False
+        assert result["transport_state"] == "Failed"
+
+
+@pytest.mark.parametrize("boundary,expected", [("native_effect", None), ("after_record", 1)])
+def test_every_secondary_write_failing_together_still_raises_original(
+    tmp_path, monkeypatch, boundary, expected
+):
+    case = prepare(tmp_path, monkeypatch)
+    frozen = plan(case)
+    original = KeyboardInterrupt()
+    install_native(monkeypatch, boundary, original)
+    attempts = []
+
+    def failing(path, value, **kwargs):
+        attempts.append(path.name)
+        raise OSError("SECRET-secondary-write")
+
+    monkeypatch.setattr(runner, "_persist", failing)
+    target = tmp_path / "run"
+    with pytest.raises(KeyboardInterrupt) as error:
+        run(case, frozen, target, execute=True)
+    assert error.value is original
+    # config-restore.json is attempted first (inside the settings-patch finally)
+    # and keeps its own already-verified launch_error protection.
+    assert attempts == [
+        "config-restore.json",
+        "lifecycle-failure.json",
+        "launch.json",
+        "run.json",
+    ]
+    assert not any((target / name).exists() for name in WRITE_POINTS)
+
+
+@pytest.mark.parametrize("write_point", WRITE_POINTS)
+@pytest.mark.parametrize("host", ["agy", "cursor"])
+def test_write_failure_without_interrupt_reaches_public_mapping(
+    tmp_path, monkeypatch, host, write_point
+):
+    case = prepare(tmp_path, monkeypatch, host=host)
+    frozen = plan(case)
+    if write_point == "lifecycle-failure.json":
+
+        def fail_capture(*_args, **_kwargs):
+            raise ValueError("synthetic lifecycle error")
+
+        monkeypatch.setattr(runner, "_capture_bytes", fail_capture)
+    else:
+        fake_spawn(case, monkeypatch)
+    attempts = []
+    fail_one_write(monkeypatch, write_point, attempts)
+    target = tmp_path / "run"
+    with pytest.raises(runner.TaskRunError, match="IoFailed") as error:
+        run(case, frozen, target, execute=True)
+    assert error.value.code == "IoFailed"
+    assert attempts == [write_point]

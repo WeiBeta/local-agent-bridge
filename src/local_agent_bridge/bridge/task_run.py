@@ -1042,26 +1042,38 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
                 "exception_type": type(error).__name__,
                 "launch_count": result["launch_count"],
             }
-            _persist(run_root / "lifecycle-failure.json", failure)
-            result["evidence_refs"].append(
-                {
-                    "ref": "lifecycle-failure.json",
-                    "sha256": _digest(_canonical(failure)),
-                    "origin": "HostObserved",
-                }
-            )
+            try:
+                _persist(run_root / "lifecycle-failure.json", failure)
+            except BaseException:
+                # A secondary write failure must never replace an interrupt in
+                # flight; the try/finally below still attempts the other items.
+                if interrupted is None:
+                    raise
+            else:
+                result["evidence_refs"].append(
+                    {
+                        "ref": "lifecycle-failure.json",
+                        "sha256": _digest(_canonical(failure)),
+                        "origin": "HostObserved",
+                    }
+                )
         finally:
             result["launch_count"] = lifecycle.launch_count
             if launch is not None or lifecycle.stage != "not_attempted":
                 launch = {**(launch or {}), **lifecycle.record()}
-                _persist(run_root / "launch.json", launch)
-                result["evidence_refs"].append(
-                    {
-                        "ref": "launch.json",
-                        "sha256": _digest(_canonical(launch)),
-                        "origin": "HostObserved",
-                    }
-                )
+                try:
+                    _persist(run_root / "launch.json", launch)
+                except BaseException:
+                    if interrupted is None:
+                        raise
+                else:
+                    result["evidence_refs"].append(
+                        {
+                            "ref": "launch.json",
+                            "sha256": _digest(_canonical(launch)),
+                            "origin": "HostObserved",
+                        }
+                    )
             if result["restore_state"] == "Failed":
                 result["blockers"].append("RestoreFailed")
             if result["capture_state"] == "Incomplete":
@@ -1077,7 +1089,11 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
             result["evidence_refs"] = _combine_evidence(
                 *([item] for item in result["evidence_refs"])
             )
-            _persist(run_root / "run.json", result)
+            try:
+                _persist(run_root / "run.json", result)
+            except BaseException:
+                if interrupted is None:
+                    raise
     if interrupted is not None:
         raise interrupted
     return result
