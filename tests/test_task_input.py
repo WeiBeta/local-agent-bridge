@@ -5107,3 +5107,195 @@ def test_path_semantics_zip_strip_prefix_is_exact(tmp_path: Path, variant: str) 
             snapshot_root=target,
         )
         assert not target.with_name("snapshot.staging").exists()
+
+
+def _label_failure_fixture(
+    tmp_path: Path,
+) -> tuple[dict[str, object], dict[str, object], Path, Path]:
+    """A small directory source whose trusted control digest is deliberately wrong."""
+
+    tree = tmp_path / "label-tree"
+    tree.mkdir()
+    _write_tree(tree, {"Control.json": b'{"synthetic": "control"}\n'})
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    source = _directory_source(tree, manifest_path)
+    policy = _policy(trusted_control_files={"Control.json": "0" * 64})
+    snapshot = tmp_path / "label-snapshot"
+    staging = tmp_path / "label-snapshot.staging"
+    return source, policy, snapshot, staging
+
+
+def _error_chain(error: BaseException) -> list[dict[str, object]]:
+    chain: list[dict[str, object]] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(
+            {
+                "type": type(current).__name__,
+                "code": getattr(current, "code", None),
+                "errno": getattr(current, "errno", None),
+            }
+        )
+        current = current.__cause__
+    return chain
+
+
+def test_failure_label_precheck_failure_keeps_the_primary_control_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # LAB-A-R17-F1: the best-effort label probe must not replace the primary
+    # control conflict with a secondary I/O failure.
+    source, policy, snapshot, staging = _label_failure_fixture(tmp_path)
+    original_is_dir = Path.is_dir
+    precheck_calls: list[str] = []
+
+    def injected_precheck(path: Path) -> bool:
+        if path == staging and original_is_dir(path):
+            precheck_calls.append(str(path))
+            raise OSError(errno.EIO, "synthetic failure label precheck error")
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", injected_precheck)
+    error = _expect_error(
+        "InputControlConflict",
+        import_snapshot,
+        source=source,
+        policy=policy,
+        snapshot_root=snapshot,
+    )
+    monkeypatch.undo()
+    chain = _error_chain(error)
+    (tmp_path / "label-precheck-observation.json").write_bytes(
+        _canonical(
+            {
+                "chain": chain,
+                "public_code": error.code,
+                "cause_is_none": error.__cause__ is None,
+                "precheck_calls": precheck_calls,
+                "final_exists": snapshot.exists(),
+                "staging_exists": staging.exists(),
+                "label_exists": (staging / "IMPORT-FAILED").exists(),
+            }
+        )
+    )
+    assert chain == [{"type": "TaskInputError", "code": "InputControlConflict", "errno": None}]
+    assert error.__cause__ is None
+    assert precheck_calls == [str(staging)]
+    assert not snapshot.exists()
+    assert staging.exists()
+    assert (staging / "source" / "Control.json").read_bytes() == b'{"synthetic": "control"}\n'
+    assert not (staging / "IMPORT-FAILED").exists()
+
+
+def test_failure_label_is_written_for_a_control_conflict(tmp_path: Path) -> None:
+    source, policy, snapshot, staging = _label_failure_fixture(tmp_path)
+    _expect_error(
+        "InputControlConflict",
+        import_snapshot,
+        source=source,
+        policy=policy,
+        snapshot_root=snapshot,
+    )
+    assert not snapshot.exists()
+    assert staging.is_dir()
+    assert (staging / "IMPORT-FAILED").read_text() == "InputControlConflict\n"
+    assert (staging / "source" / "Control.json").read_bytes() == b'{"synthetic": "control"}\n'
+
+
+def test_failure_label_write_failure_keeps_the_primary_control_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, policy, snapshot, staging = _label_failure_fixture(tmp_path)
+    original_write_text = Path.write_text
+    label_attempts: list[str] = []
+
+    def injected_write(path, *arguments, **keywords):
+        if path == staging / "IMPORT-FAILED":
+            label_attempts.append(str(path))
+            raise OSError(errno.ENOSPC, "synthetic failure label write error")
+        return original_write_text(path, *arguments, **keywords)
+
+    monkeypatch.setattr(Path, "write_text", injected_write)
+    error = _expect_error(
+        "InputControlConflict",
+        import_snapshot,
+        source=source,
+        policy=policy,
+        snapshot_root=snapshot,
+    )
+    monkeypatch.undo()
+    assert error.__cause__ is None
+    assert label_attempts == [str(staging / "IMPORT-FAILED")]
+    assert not snapshot.exists()
+    assert staging.exists()
+    assert not (staging / "IMPORT-FAILED").exists()
+
+
+def test_failure_label_skips_cleanly_without_a_staging_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, policy, snapshot, staging = _label_failure_fixture(tmp_path)
+    original_mkdir = os.mkdir
+    original_is_dir = Path.is_dir
+    mkdir_error = OSError(errno.EIO, "synthetic staging root creation error")
+    precheck_calls: list[str] = []
+
+    def failing_mkdir(path, *arguments, **keywords):
+        if Path(path) == staging:
+            raise mkdir_error
+        return original_mkdir(path, *arguments, **keywords)
+
+    def observed_precheck(path: Path) -> bool:
+        if path == staging:
+            precheck_calls.append(str(path))
+        return original_is_dir(path)
+
+    monkeypatch.setattr(entry.os, "mkdir", failing_mkdir)
+    monkeypatch.setattr(Path, "is_dir", observed_precheck)
+    error = _expect_error(
+        "IoFailed",
+        import_snapshot,
+        source=source,
+        policy=policy,
+        snapshot_root=snapshot,
+    )
+    monkeypatch.undo()
+    assert error.__cause__ is mkdir_error
+    assert precheck_calls == [str(staging)]
+    assert not staging.exists()
+    assert not snapshot.exists()
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("injection_point", ["precheck", "write"])
+def test_failure_label_interruptions_propagate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: type[BaseException],
+    injection_point: str,
+) -> None:
+    source, policy, snapshot, staging = _label_failure_fixture(tmp_path)
+    original_is_dir = Path.is_dir
+    original_write_text = Path.write_text
+
+    def injected_precheck(path: Path) -> bool:
+        if injection_point == "precheck" and path == staging and original_is_dir(path):
+            raise interruption("synthetic label precheck interruption")
+        return original_is_dir(path)
+
+    def injected_write(path, *arguments, **keywords):
+        if injection_point == "write" and path == staging / "IMPORT-FAILED":
+            raise interruption("synthetic label write interruption")
+        return original_write_text(path, *arguments, **keywords)
+
+    monkeypatch.setattr(Path, "is_dir", injected_precheck)
+    monkeypatch.setattr(Path, "write_text", injected_write)
+    with pytest.raises(interruption, match="synthetic label"):
+        import_snapshot(source=source, policy=policy, snapshot_root=snapshot)
+    monkeypatch.undo()
+    assert not snapshot.exists()
+    assert staging.exists()
+    assert (staging / "source" / "Control.json").read_bytes() == b'{"synthetic": "control"}\n'
+    assert not (staging / "IMPORT-FAILED").exists()

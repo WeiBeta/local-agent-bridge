@@ -1486,9 +1486,13 @@ def _write_exclusive(target: Path, raw: bytes, deadline: _Deadline) -> None:
 
 
 def _write_failure_label(staging_root: Path, code: str) -> None:
-    if not staging_root.is_dir():
-        return
+    # Recording the label is best effort: neither the pre-check nor the write
+    # may replace the primary import failure that this call reports. Only
+    # ordinary staging path and file problems are absorbed; an interruption
+    # still propagates to its caller.
     with suppress(OSError, TaskInputError):
+        if not staging_root.is_dir():
+            return
         target = staging_root / "IMPORT-FAILED"
         _assert_plain_target(target, label="the failure label")
         if not target.exists():
