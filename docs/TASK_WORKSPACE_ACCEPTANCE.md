@@ -146,5 +146,7 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | PREPARED-TREE-01 / O | B固定control/snapshot与SEALED；plan后work/快照/control漂移，capture准备期间漂移 | 用A现有reader/树校验复核，配置写入前再次检查，launch0；不导入B私有模块 |
 | RUN-EVIDENCE-01 / O | Plan外部来源、run元数据、session UID与两个fake测试事件 | 运行文件SHA可按run_root核对；session:UID为opaque认证清单引用；原始声明不提升为HostObserved测试或业务接受 |
 | CONFIG-LIFECYCLE-01 / O | 配置独占、key/backup/capture/patch/metadata失败、Cursor启动后漂移 | 计数按实际spawn；先备份后key/写入；finally恢复或如实Failed，不覆盖语义漂移，无自动重试 |
+| CURSOR-FINALIZE-01 / O | 正常/异常/KeyboardInterrupt；project/global漂移、只读核验故障及核验中断 | 所有启动路径只读核验；Failed及RestoreFailed如实记录；原中断保留、配置不覆盖 |
+| EVIDENCE-ORDER-01 / O | 各输入引用、caller Plan乱序/重复；跨清单精确ref相同或hash/origin冲突；不同Unicode/大小写ref | 输入有序唯一；完全相同声明可合并，不同声明拒绝；输出按精确ref UTF-8排序，不折叠丢失 |
 
 原CONFIG/restore/capture/timeout回归保持。D尚未更新pytest testpaths/发行清单，新C单测显式加入验收命令。首次新task R入口留后续单独授权，production Ready仍须对应有效R。

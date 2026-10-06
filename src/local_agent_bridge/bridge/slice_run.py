@@ -520,11 +520,12 @@ def _launch_and_capture(
 ) -> dict[str, object]:
     """Exactly one bounded launch; post-spawn failures are reported, never hidden.
 
-    The spawn itself either returns a confirmed process (recorded with its pid at
-    once) or raises before any process exists. Everything after the spawn reports
-    failures through the record instead of raising, so a capture problem can never
-    erase the fact that a process ran. The own Job handle is closed on every path,
-    and files that a still-running reader may keep writing get no final hash.
+    A returned spawner result confirms a resumed process. A spawner exception
+    alone does not prove that no process existed or executed: resume and its
+    later bookkeeping may fail or be interrupted. The callback below observes
+    only a returned result; it cannot attest to those earlier failure windows.
+    Ordinary post-return capture failures use the record; BaseException still
+    propagates after the own Job is closed. Stalled readers get no final hash.
     """
     if isinstance(timeout_seconds, bool) or not 0 < timeout_seconds <= OBSERVATION_TIMEOUT_SECONDS:
         raise SliceRunError("observation deadline is outside the fixed limit")

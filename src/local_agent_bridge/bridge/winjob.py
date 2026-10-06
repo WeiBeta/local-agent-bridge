@@ -7,9 +7,10 @@ suspended can still be terminated externally, so the resume path never
 trusts the suspended state alone: it gates on held-handle liveness checks,
 thread-handle ownership verification (GetProcessIdOfThread compared with the
 PID read from our own process handle) and the creation identity recorded from
-the spawn handle. If any check fails, the suspended process is reclaimed
-through our own handle, the Job is closed, and the candidate never executes.
-There is no fallback to a normal (non-suspended) spawn.
+the spawn handle. Failure triggers reclamation through our own handles and
+Job closure. A failure after or during resume cannot establish non-execution;
+reclamation does not reverse code that may already have run. There is no
+fallback to a normal (non-suspended) spawn.
 
 Error messages stay neutral: they never embed argv, prompt text, stream bytes
 or host paths.
@@ -404,9 +405,10 @@ class AgSuspendedJobProcess:
 def spawn_suspended_in_job(argv: Sequence[str], cwd: str) -> AgSuspendedJobProcess:
     """Production spawner: suspended spawn -> pre-execution Job ownership -> verified resume.
 
-    On any failure the suspended child is reclaimed through our own handle and
-    the Job is closed, so the candidate never executes and nothing leaks. This
-    function never falls back to a normal spawn.
+    Failures attempt reclamation through our own handle and close the Job.
+    A resumed child may have executed before a later failure; an interrupted
+    native resume can have an unobserved result. Neither an exception nor
+    successful reclamation proves non-execution. No normal-spawn fallback.
     """
     job = create_kill_on_close_job()
     try:

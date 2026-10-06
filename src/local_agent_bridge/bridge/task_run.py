@@ -189,7 +189,20 @@ def _evidence(value: object) -> list[dict]:
         if item["sha256"] is not None:
             _hash(item["sha256"])
         _enum(item["origin"], {"WorkerReported", "HostObserved"})
+    _strings([item["ref"] for item in items])
     return items
+
+
+def _combine_evidence(*sources: list[dict]) -> list[dict]:
+    """Combine identical declarations; conflicting exact refs stay an error."""
+    by_ref = {}
+    for source in sources:
+        for item in _evidence(source):
+            previous = by_ref.get(item["ref"])
+            if previous is not None and not contract.deep_equal_strict(previous, item):
+                raise TaskRunError("ConflictingEvidence")
+            by_ref[item["ref"]] = dict(item)
+    return [by_ref[ref] for ref in sorted(by_ref, key=lambda ref: ref.encode("utf-8"))]
 
 
 def _observed(value: list[dict]) -> bool:
@@ -589,7 +602,7 @@ def _make_plan(context: dict, host: str) -> dict:
         and record["capabilities"] == task["capabilities"]
         and record["execution_boundary"] == task["execution_boundary"]
     ]
-    evidence = list(receipt["provenance_refs"])
+    evidence_sources = [receipt["provenance_refs"]]
     if (
         not matches
         or matches[0]["receipt_binding_sha256"] != binding
@@ -613,9 +626,9 @@ def _make_plan(context: dict, host: str) -> dict:
             for key in required
         ):
             blockers.append("RuntimeAcceptanceUnverified")
-        evidence.append(record["management_acceptance_ref"])
-        evidence.extend(
-            item for key in sorted(required & gates.keys()) for item in gates[key]["evidence_refs"]
+        evidence_sources.append([record["management_acceptance_ref"]])
+        evidence_sources.extend(
+            gates[key]["evidence_refs"] for key in sorted(required & gates.keys())
         )
     if task["execution_boundary"] == "required_enforced" and (
         profile["enforcement"]["file_scope"] != "Enforced"
@@ -643,7 +656,7 @@ def _make_plan(context: dict, host: str) -> dict:
         "capabilities": dict(task["capabilities"]),
         "preflight_status": "Blocked" if blockers else "Ready",
         "blockers": sorted(set(blockers)),
-        "evidence_refs": evidence,
+        "evidence_refs": _combine_evidence(*evidence_sources),
     }
 
 
@@ -954,16 +967,25 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
                     )
             else:
                 result["restore_state"] = "Unchanged"
-                launch = _launch(context, writer, request, started, result)
-                # Frozen Cursor config is not changed or silently restored.
+                launch_error: BaseException | None = None
                 try:
-                    for identity in receipt["configuration"].values():
-                        if identity is not None:
-                            _verify_file_identity(identity)
-                    _verify_cursor_project(receipt)
-                except (OSError, TaskRunError, task_input.TaskInputError):
-                    result["restore_state"] = "Failed"
+                    launch = _launch(context, writer, request, started, result)
+                except BaseException as error:
+                    launch_error = error
                     raise
+                finally:
+                    # Read-only on every path, including launch interruption.
+                    # Cleanup cannot replace an exception already in flight.
+                    try:
+                        for identity in receipt["configuration"].values():
+                            if identity is not None:
+                                _verify_file_identity(identity)
+                        _verify_cursor_project(receipt)
+                    except BaseException as error:
+                        result["restore_state"] = "Failed"
+                        result["blockers"].append("CursorConfigurationUnverified")
+                        if launch_error is None and not isinstance(error, Exception):
+                            raise
             result["launch_count"] = 1 if launch.get("spawn_state") == "confirmed" else 0
             result["transport_state"] = (
                 "TimedOut"
@@ -1036,6 +1058,9 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
                     "Failed" if result["transport_state"] != "TimedOut" else "TimedOut"
                 )
             result["blockers"] = sorted(set(result["blockers"]))
+            result["evidence_refs"] = _combine_evidence(
+                *([item] for item in result["evidence_refs"])
+            )
             _persist(run_root / "run.json", result)
     if interrupted is not None:
         raise interrupted

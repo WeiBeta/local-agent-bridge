@@ -241,10 +241,14 @@ def sync(case, *, refresh_r=False):
                     "receipt_binding_sha256": binding,
                     "status": "Accepted",
                     "gates": [
-                        {"id": key, "result": "Pass", "evidence_refs": [observed()]}
+                        {
+                            "id": key,
+                            "result": "Pass",
+                            "evidence_refs": [observed(f"fixture/{key}.json")],
+                        }
                         for key in sorted(required)
                     ],
-                    "management_acceptance_ref": observed(),
+                    "management_acceptance_ref": observed("fixture/management.json"),
                 }
             ]
             if case.accepted
@@ -819,3 +823,140 @@ def test_task_deadline_passed_to_shared_launcher(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "wait", record)
     assert run(case, frozen, tmp_path / "bounded", execute=True)["launch_count"] == 1
     assert 0 < timeouts[0] <= case.task["deadline_seconds"]
+
+
+@pytest.mark.parametrize("outcome", ["normal", "error", "interrupt"])
+@pytest.mark.parametrize("drift", ["none", "project", "global", "io", "check_interrupt"])
+def test_cursor_configuration_finalized_on_all_launch_paths(tmp_path, monkeypatch, outcome, drift):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    project = case.root / ".cursor" / "cli.json"
+    global_path = Path(case.receipt["configuration"]["cursor_global"]["path"])
+    original_project = project.read_bytes()
+    frozen = plan(case)
+    original_error = KeyboardInterrupt() if outcome == "interrupt" else ValueError()
+    process = fake_spawn(
+        case, monkeypatch, wait_error=original_error if outcome == "interrupt" else None
+    )
+    verify = runner._verify_file_identity
+
+    def verify_after_launch(identity_record):
+        if case.calls and identity_record["path"] == str(project):
+            if drift == "io":
+                raise OSError("synthetic readonly configuration error")
+            if drift == "check_interrupt":
+                raise KeyboardInterrupt()
+        return verify(identity_record)
+
+    monkeypatch.setattr(runner, "_verify_file_identity", verify_after_launch)
+    shared_launcher = slice_run._launch_and_capture
+
+    def launch_then_fail(*args, **kwargs):
+        result = shared_launcher(*args, **kwargs)
+        if outcome == "error":
+            raise original_error
+        return result
+
+    monkeypatch.setattr(slice_run, "_launch_and_capture", launch_then_fail)
+    wait = process.wait
+
+    def wait_with_drift(timeout=None):
+        if drift == "project":
+            project.write_bytes(b'{"modified":true}')
+        if drift == "global":
+            global_path.write_bytes(b'{"modified":true}')
+        return wait(timeout)
+
+    monkeypatch.setattr(process, "wait", wait_with_drift)
+    target = tmp_path / "finalized"
+    if outcome == "interrupt" or (outcome == "normal" and drift == "check_interrupt"):
+        with pytest.raises(KeyboardInterrupt) as error:
+            run(case, frozen, target, execute=True)
+        if outcome == "interrupt":
+            assert error.value is original_error
+        result = json.loads((target / "run.json").read_bytes())
+    else:
+        result = run(case, frozen, target, execute=True)
+    assert result["launch_count"] == len(case.calls) == 1 and process.closed
+    assert result["restore_state"] == ("Unchanged" if drift == "none" else "Failed")
+    assert ("RestoreFailed" in result["blockers"]) == (drift != "none")
+    assert result["transport_state"] == (
+        "Completed" if outcome == "normal" and drift == "none" else "Failed"
+    )
+    assert project.read_bytes() == (
+        b'{"modified":true}' if drift == "project" else original_project
+    )
+    assert global_path.exists() == (drift == "global")
+    if outcome == "error":
+        failure = json.loads((target / "lifecycle-failure.json").read_bytes())
+        assert failure["exception_type"] == "ValueError"  # Cleanup does not replace the error.
+
+
+@pytest.mark.parametrize("target", ["provenance", "gate", "enforcement", "caller_plan"])
+@pytest.mark.parametrize("malformation", ["unsorted", "duplicate", "conflicting"])
+def test_evidence_lists_reject_invalid_order_or_repeated_ref(
+    tmp_path, monkeypatch, target, malformation
+):
+    case = prepare(tmp_path, monkeypatch)
+    evidence = [observed("a.json"), observed("z.json")]
+    if malformation == "unsorted":
+        evidence.reverse()
+    else:
+        evidence = [observed("a.json"), observed("a.json")]
+        if malformation == "conflicting":
+            evidence[1]["sha256"] = "b" * 64
+    if target == "caller_plan":
+        frozen = copy.deepcopy(plan(case))
+        frozen["evidence_refs"] = evidence
+        with pytest.raises(runner.TaskRunError, match="InvalidContract"):
+            run(case, frozen, tmp_path / "invalid")
+        assert not (tmp_path / "invalid").exists()
+        return
+    if target == "provenance":
+        case.receipt["provenance_refs"] = evidence
+    if target == "gate":
+        case.receipt["runtime_acceptances"][0]["gates"][0]["evidence_refs"] = evidence
+    if target == "enforcement":
+        case.profile["enforcement"]["evidence_refs"] = evidence
+    sync(case, refresh_r=target == "enforcement")
+    with pytest.raises(runner.TaskRunError, match="InvalidContract"):
+        plan(case)
+
+
+@pytest.mark.parametrize("declaration", ["same", "hash", "origin", "unverified_hash"])
+def test_plan_combines_exact_refs_without_losing_conflicting_declarations(
+    tmp_path, monkeypatch, declaration
+):
+    case = prepare(tmp_path, monkeypatch)
+    record = case.receipt["runtime_acceptances"][0]
+    shared = observed("shared.json")
+    case.receipt["provenance_refs"] = [shared]
+    record["management_acceptance_ref"] = copy.deepcopy(shared)
+    record["gates"][0]["evidence_refs"] = [copy.deepcopy(shared)]
+    if declaration == "hash":
+        case.receipt["provenance_refs"][0]["sha256"] = "b" * 64
+    if declaration == "origin":
+        case.receipt["provenance_refs"][0]["origin"] = "WorkerReported"
+    if declaration == "unverified_hash":
+        case.receipt["provenance_refs"][0]["sha256"] = None
+    sync(case)
+    if declaration == "same":
+        assert plan(case)["evidence_refs"] == [observed("shared.json")]
+    else:
+        with pytest.raises(runner.TaskRunError, match="ConflictingEvidence"):
+            plan(case)
+
+
+def test_exact_unicode_ref_identity_and_output_order(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch)
+    refs = ["Z.json", "a.json", "cafe\u0301.json", "caf\u00e9.json"]
+    case.receipt["provenance_refs"] = [observed(ref) for ref in refs]
+    sync(case)
+    frozen = plan(case)
+    output = [item["ref"] for item in frozen["evidence_refs"]]
+    assert output == sorted(set(output), key=lambda ref: ref.encode("utf-8"))
+    assert all(ref in output for ref in refs)
+    fake_spawn(case, monkeypatch)
+    result = run(case, frozen, tmp_path / "ordered", execute=True)
+    output = [item["ref"] for item in result["evidence_refs"]]
+    assert output == sorted(set(output), key=lambda ref: ref.encode("utf-8"))
+    runner._evidence(result["evidence_refs"])

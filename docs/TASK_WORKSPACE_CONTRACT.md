@@ -312,6 +312,8 @@ DeploymentReceipt 准确字段：
 
 数组 FileIdentity 按 path、recipe_refs/其余引用清单按原字符串 UTF-8 字节排序且唯一；gates 按 id 唯一；runtime_acceptances 按 role、Caps 三 bool 固定键顺序、boundary 排序。Evidence 沿用原记录，引用只作登记材料引用，不作为任意路径/URL 自动解析入口。接受所用 evidence 必须是 HostObserved 且 hash 非 null，管理必须在供给前核验引用；仅具备这些字段不自行产生 Pass。
 
+Evidence 的唯一性按精确 ref 原字符串，不做大小写或 Unicode 形式折叠。每个输入清单自身乱序或重复 ref 均拒绝；Plan 合并多个有效来源清单时，同 ref 且完整 sha256/origin 声明相同才合并为一项，同 ref 不同声明拒绝，不选取优先来源。Plan 与 RunReceipt 输出引用均按 ref 原 UTF-8 字节排序且唯一。
+
 消除摘要循环：
 
 1. `profile_fields_sha256` 的投影不包含 profile.receipt_sha256；receipt 不包含完整 profile SHA。
@@ -403,6 +405,7 @@ def run_task(
 - product_files/host_identity_files/toolchain 按准确文件与实际运行实现绑定；普通版本字符串不是当前运行证据，无法验证 Blocked，不额外启动宿主 CLI。
 - C 首次创建/核验 control/deployment-receipt.json 与 plan.json，B prepare 不预先要求二者；副本排他创建或同字节复验，漂移不覆盖。
 - Cursor 固定 .cursor/cli.json 由 D/可信 Host 准备后 C 核对，B 保护/收集身份但 prepare 签名不变；缺失/冲突 Blocked，协调只经管理。
+- Cursor readonly 配置收尾核验覆盖正常返回、异常和中断；无法复核或漂移记 restore_state=Failed，不覆盖现场，原启动中断/异常不被收尾错误替换。
 - 可信根/expected SHA 来自当前管理派工，不能从 Worker/task/源包选取；hash/HostObserved/任意宿主调用方不能创建授权。无签名/registry/ACL 平台；路径复用原语，点时检查不消除竞态。固定非敏感错误；元数据写入与实际 launch 分开。
 
 #### C 与 B 候选的固定交接
