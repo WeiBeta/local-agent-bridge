@@ -8,12 +8,13 @@ import json
 import os
 import subprocess
 import threading
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from local_agent_bridge.bridge import slice_run
+from local_agent_bridge.bridge import slice_run, task_workspace
 from local_agent_bridge.bridge import task_run as runner
 from local_agent_bridge.capture.session import SessionStore
 
@@ -71,19 +72,51 @@ def prepare(
     caps=None,
     boundary="declared_scope",
     accepted=True,
+    actual_b=False,
+    files=None,
 ):
     """The test itself explicitly injects trust; nothing is a real grant or R."""
     caps = caps or {"execute": True, "web_reference": False, "prepare_dependencies": False}
     parent = tmp_path / "tasks"
     root = parent / "fixture"
-    for name in ("control", "work", "out", "scratch"):
-        (root / name).mkdir(parents=True)
+    parent.mkdir()
+    if not actual_b:
+        for name in ("control", "work", "out", "scratch"):
+            (root / name).mkdir(parents=True)
     trust = tmp_path / "trusted"
     trust.mkdir()
     note = "离线工程任务\n".encode()
-    (root / "control" / "TASK.md").write_bytes(note)
-    (root / "work" / "source.py").write_bytes(b"n = 0\r\n")
-    snapshot = prepare_snapshot(root)
+    files = {"source.py": b"n = 0\r\n"} if files is None else files
+    rules = {
+        path: runner._digest(raw)
+        for path, raw in files.items()
+        if path.rsplit("/", 1)[-1] in {"AGENTS.md", "GEMINI.md", "CLAUDE.md", ".cursorrules"}
+    }
+    if actual_b:
+        package = tmp_path / "input.zip"
+        with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path, raw in files.items():
+                archive.writestr(path, raw)
+        snapshot_root = tmp_path / "input-snapshot"
+        snapshot = runner.task_input.import_snapshot(
+            source={
+                "kind": "zip",
+                "path": str(package),
+                "sha256": runner._digest(package.read_bytes()),
+                "strip_prefix": None,
+            },
+            policy={
+                "source_paths": sorted(path for path in files if path.endswith(".py")),
+                "excluded_paths": [],
+                "sensitive_paths": [],
+                "trusted_control_files": rules,
+            },
+            snapshot_root=snapshot_root,
+        )
+    else:
+        (root / "control" / "TASK.md").write_bytes(note)
+        (root / "work" / "source.py").write_bytes(files["source.py"])
+        snapshot = prepare_snapshot(root)
     host_root = tmp_path / "fake-host"
     host_root.mkdir()
     host_entry = host_root / ("agy.exe" if host == "agy" else "agent.ps1")
@@ -101,13 +134,12 @@ def prepare(
     monkeypatch.setattr(slice_run, "_pwsh_path", lambda: str(shell))
     config = {"agy_settings": identity(settings), "cursor_global": None, "cursor_project": None}
     if host == "cursor":
-        (root / ".cursor").mkdir()
+        project_raw = b'{"permissions":{"allow":["Read(work/**)"],"deny":["Mcp(*)"]}}'
         project = root / ".cursor" / "cli.json"
-        project.write_bytes(b'{"permissions":{"allow":["Read(work/**)"],"deny":["Mcp(*)"]}}')
         config = {
             "agy_settings": None,
             "cursor_global": {"path": str(host_root / "global.json"), "sha256": None},
-            "cursor_project": identity(project),
+            "cursor_project": {"path": str(project), "sha256": runner._digest(project_raw)},
         }
     write_roots = ["out", "scratch", "work"] if role == "Coding" else ["out", "scratch"]
     profile = {
@@ -170,6 +202,7 @@ def prepare(
         "write_roots": write_roots.copy(),
         "web_scope": "fixture-readonly-query" if caps["web_reference"] else None,
         "dependency_scope": "fixture-locked-scratch" if caps["prepare_dependencies"] else None,
+        "input_control_bindings": {"task_fields_sha256": H, "files": rules},
     }
     task = {
         "contract_version": 1,
@@ -186,7 +219,9 @@ def prepare(
         "read_roots": profile["read_roots"].copy(),
         "write_roots": write_roots.copy(),
         "protected_paths": sorted(
-            ["control", "task.json", "work/vendor"] + ([".cursor"] if host == "cursor" else [])
+            ["control", "task.json", "work/vendor"]
+            + ["work/" + path for path in rules]
+            + ([".cursor"] if host == "cursor" else [])
         ),
         "required_outputs": ["out/progress.json"],
         "acceptance_ids": ["TEST-01"],
@@ -205,14 +240,30 @@ def prepare(
         store=SessionStore(KEY, root=tmp_path / "fake-sessions"),
         calls=[],
         accepted=accepted,
+        snapshot=snapshot,
     )
     monkeypatch.setattr(slice_run, "_protect_directory", lambda _path: None)
     monkeypatch.setattr(slice_run, "_session_store", lambda: case.store)
-    sync(case, refresh_r=True)
+    sync(case, refresh_r=True, persist_task=not actual_b)
+    if actual_b:
+        assert (
+            task_workspace.prepare_task(
+                snapshot_root=snapshot_root,
+                task_manifest=task,
+                task_note=note,
+                deployment_profile=profile,
+                authorization=auth,
+                task_root=root,
+            )
+            == task
+        )
+    if host == "cursor":
+        (root / ".cursor").mkdir()
+        project.write_bytes(project_raw)
     return case
 
 
-def sync(case, *, refresh_r=False):
+def sync(case, *, refresh_r=False, persist_task=True):
     receipt, profile = case.receipt, case.profile
     receipt["profile_fields_sha256"] = digest(
         {key: value for key, value in profile.items() if key != "receipt_sha256"}
@@ -256,6 +307,9 @@ def sync(case, *, refresh_r=False):
         )
     profile["receipt_sha256"] = case.auth["receipt_sha256"] = digest(receipt)
     case.task["deployment_profile_sha256"] = digest(profile)
+    case.auth["input_control_bindings"]["task_fields_sha256"] = digest(
+        {key: value for key, value in case.task.items() if key != "authorization_sha256"}
+    )
     case.task["authorization_sha256"] = digest(case.auth)
     bundle = {
         "deployment_receipt": receipt,
@@ -269,10 +323,11 @@ def sync(case, *, refresh_r=False):
         ("authorization.json", case.auth),
     ):
         write_json(case.trust / filename, value)
-        if filename != "deployment-receipt.json":
+        if persist_task and filename != "deployment-receipt.json":
             write_json(case.root / "control" / filename, value)
-    write_json(case.root / "task.json", case.task)
-    (case.root / "SEALED").write_bytes(digest(case.task).encode("ascii"))
+    if persist_task:
+        write_json(case.root / "task.json", case.task)
+        (case.root / "SEALED").write_bytes(digest(case.task).encode("ascii"))
 
 
 def plan(case):
@@ -459,7 +514,12 @@ def test_r_authorization_and_boundary_gates(tmp_path, monkeypatch, change):
     if change == "enforcement":
         case.profile["enforcement"]["network_scope"] = "Unverified"
     sync(case)
-    assert plan(case)["preflight_status"] == "Blocked"
+    if change in {"scope_missing", "unsupported"}:
+        # B rejects incompatible prepare authorization before C generates a Plan.
+        with pytest.raises(runner.TaskRunError, match="AuthorizationMismatch"):
+            plan(case)
+    else:
+        assert plan(case)["preflight_status"] == "Blocked"
 
 
 @pytest.mark.parametrize("target", ["receipt", "note", "plan", "control"])

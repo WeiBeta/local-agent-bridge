@@ -143,7 +143,7 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | R-GATE-01 / O | 缺新task R、旧slice、WorkerReported/hash-null、组合别行、缺强制项 | Blocked；不降级/旁路/bootstrap；fake Accepted不证明真实R |
 | IDENTITY-01 / O | 实际使用task_run/launcher/capture/restore产品、Bridge entry/后端标记/toolchain身份和遗漏/漂移 | 精确文件/运行实现绑定，不以版本字符串证明；不能验证Blocked，不另启动CLI |
 | CONTROL-01 / O | C首次receipt/plan；B尚无二者；Cursor固定配置缺失/漂移/冲突 | C创建副本，B不提前要求；D/Host准备、C核对、B保护，不覆盖现场 |
-| PREPARED-TREE-01 / O | B固定control/snapshot与SEALED；plan后work/快照/control漂移，capture准备期间漂移 | 用A现有reader/树校验复核，配置写入前再次检查，launch0；不导入B私有模块 |
+| PREPARED-TREE-01 / O | B固定control/snapshot与SEALED；plan后work/快照/control漂移，capture准备期间漂移 | 先核验外部可信输入，再用B公共verify_input_controls及A完整树校验复核，配置写入前再次检查，launch0；不使用B私有导出 |
 | RUN-EVIDENCE-01 / O | Plan外部来源、run元数据、session UID与两个fake测试事件 | 运行文件SHA可按run_root核对；session:UID为opaque认证清单引用；原始声明不提升为HostObserved测试或业务接受 |
 | CONFIG-LIFECYCLE-01 / O | 配置独占、key/backup/capture/patch/metadata失败、Cursor启动后漂移 | 计数按底层执行事实；先备份后key/写入；finally恢复或如实Failed，不覆盖语义漂移，无自动重试 |
 | LAUNCH-FACT-01 / O | 恢复前身份失败；原生调用无效果/有效果但返回未观测；返回转换/记录前后中断；线程关闭/交接/捕获失败；第二线程失败 | 0/1/null事实贯通；confirmed不降级；unknown必Failed+LaunchUnverified，不允许再试；NotRun0/Completed1；无包装器仍持久化launch事实 |
@@ -151,4 +151,20 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | CURSOR-FINALIZE-01 / O | 正常/异常/KeyboardInterrupt；project/global漂移、只读核验故障及核验中断 | 所有启动路径只读核验；Failed及RestoreFailed如实记录；原中断保留、配置不覆盖 |
 | EVIDENCE-ORDER-01 / O | 各输入引用、caller Plan乱序/重复；跨清单精确ref相同或hash/origin冲突；不同Unicode/大小写ref | 输入有序唯一；完全相同声明可合并，不同声明拒绝；输出按精确ref UTF-8排序，不折叠丢失 |
 
-原CONFIG/restore/capture/timeout和R02/R03回归保持。D尚未更新pytest testpaths/发行清单，新C单测显式加入验收命令。B/D/旧receipt消费者的null处理仍需分别适配、核验；本矩阵不表示端到端兼容或独立Review通过。首次新task R入口留后续单独授权，production Ready仍须对应有效R。
+原CONFIG/restore/capture/timeout和R02/R03回归保持。D尚未更新pytest testpaths/发行清单，新B/C和贯通测试显式加入验收命令。下节补B消费null与真实B产物贯通候选；D/旧receipt兼容仍待独立处理。本矩阵不表示独立Review通过。首次新task R入口留后续单独授权，production Ready仍须对应有效R。
+
+## 9. B/C 接口贯通候选（LAB-TASK-BC-INTEGRATION-01）
+
+采用合同§7.4的冻结控制绑定与公共Host导出。仅实际A导入→B prepare的合成数据、fake Host/R/key；不手工伪造B形状替代这组贯通测试，不运行真实CLI/provider/config/R。新候选仍须独立Review。
+
+| ID / Gate | 操作 | 必须观察的结果 |
+| --- | --- | --- |
+| BC-CONTROL-01 / O | Coding/Review、两Host、空/原生嵌套规则，B实际prepare→C plan/run→B collect | 投影/完整task摘要贯通；原名与CRLF/BOM/非ASCII/无尾换行原字节保留；protected生效；源码文字不创建信任 |
+| BC-CONTROL-02 / O | 缺/多/空绑定、投影/hash/名称/protected漂移，plan/run/capture阶段规则漂移 | 公共导出准确调用；外部bundle先验；InputControlConflict在配置/启动前停止，底层错误保留；collect保留当前与原快照字节，scopeFail/continuation=null |
+| BC-LAUNCH-01 / O | 正常、NotRun、未执行/confirmed/unknown异常与原始中断 | 0/1/null和清理观察原样回收；unknown必Failed+LaunchUnverified，无二次launch/续接；原中断传播，NotRun0/Completed1 |
+| BC-LAUNCH-02 / O | null与NotRun/Completed/TimedOut/缺LaunchUnverified、Blocked+null、bool/越界 | RunReceiptInvalid/Failed/continuation=null，不将null当0或成功 |
+| BC-FINALIZE-01 / O | agy语义漂移、Cursor project漂移及异常收尾 | 启动事实1保持、RestoreFailed/transportFailed，备份与当前配置保留；Cursor control漂移另记Fail |
+| BC-EVIDENCE-01 / O | C真实fake encrypted session refs、自报/opaque/hash-null测试、测试报告digest漂移 | UID为opaque Unverified，原声明/观测保留，不自动Pass；失配产物单独保留，未核验测试不能作last_test_run |
+| BC-COMPAT-01 / O | 全旧离线回归与旧异常回执合同审查 | 旧成功/未启动/fixed argv/退出码回归保持；legacy nullable方案尚未冻结，旧adapter修正依赖暂停，不冒充三项全部完成 |
+
+显式验收命令包含原pytest testpaths的12模块（含test_bridge_winjob.py生命周期回归），再加test_task_run.py、test_task_workspace.py及test_task_bc_integration.py；每轮全新Scratch basetemp/log/XML。完整结果须列出D的两个已知发行失败和平台skip，不能用忽略这些模块的绿色局部回归替代。ruff check和format check只验证代码规范，不替代独立Review、D或真实R。

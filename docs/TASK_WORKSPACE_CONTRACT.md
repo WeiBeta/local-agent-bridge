@@ -83,7 +83,7 @@ run-<id>/                         # 单次启动、配置恢复与加密 UID；�
 result-<id>/                      # Host collect 生成的验收清单与候选产物
 ```
 
-源包里的 AGENTS、配置、README 和脚本属于输入材料，不自动提升为授权。Host 控制文件放在独立 namespace；各宿主会自动加载的项目控制配置必须在 prepare/plan 中识别。与本 profile 冲突时返回 `InputControlConflict`，在模型启动前停止；不得静默执行包内 hooks/setup、覆盖配置或隐藏源码条目。可信项目规则由管理按哈希明确列入 control。Review 的工作区根可设为 task 根、source 在 work 子目录、out 可写；宿主具体配置发现行为必须实测，不能只靠布局假定不会加载嵌套配置。
+源包里的 AGENTS、配置、README 和脚本属于输入材料，不自动提升为授权。Host 控制文件放在独立 namespace；各宿主会自动加载的项目控制配置必须在 prepare/plan 中识别。与本 profile 冲突时返回 `InputControlConflict`，在模型启动前停止；不得静默执行包内 hooks/setup、覆盖配置或隐藏源码条目。管理核对的原生项目规则按精确原名与原字节摘要列入 Authorization.input_control_bindings.files，且 work 下对应路径必须 protected；A 的 trusted_control_files 仅为导入声明，不能替代这项任务绑定。源包原生配置不能凭规则绑定豁免（详见§7.4）。Review 的工作区根可设为 task 根、source 在 work 子目录、out 可写；宿主具体配置发现行为必须实测，不能只靠布局假定不会加载嵌套配置。
 
 task.json 必需字段（路径均为任务根内相对路径；下面值是合成规格示例）：
 
@@ -214,7 +214,7 @@ A 先按下表交可复用快照 fixture；B/C 可使用同一冻结 schema 并�
 | SnapshotManifest（A→B/C） | contract_version:int=1、snapshot_id:H、source:{kind:S,identity:S,selection_sha256:H}、entries:list[Entry]、source_paths:list[P]、excluded_paths:list[{path:P,reason:S}]；snapshot_root/manifest.json，普通字节树在snapshot_root/source。Entry={path:P,kind:file/directory,bytes:I,sha256:H或null,git_mode:100644/100755或null}；目录bytes=0/hash和mode=null，所有父目录显式一次、根不列入；file hash必填，git_mode仅来源记录。source_paths每项必须在file entries或excluded_paths中 |
 | TaskManifest（B→C） | 第4节JSON就是准确键集合：contract_version:int=1，task_id:S，role:Coding/Review，snapshot_id/snapshot_manifest_sha256/instructions_sha256/deployment_profile_sha256/authorization_sha256:H，deployment_profile_id:S，capabilities:{execute:bool,web_reference:bool,prepare_dependencies:bool}，execution_boundary:declared_scope/required_enforced，read_roots/write_roots/protected_paths/required_outputs:list[P]，acceptance_ids:list[S]，deadline_seconds:int1–1020，source_output_bytes_limit:正整数；task_root/task.json |
 | DeploymentProfile（B/C） | contract_version:int=1、id:S、host:agy/cursor、receipt_sha256:H、roles:list[Coding/Review]、supported_capabilities:上述三bool对象、execution_modes:list[declared_scope/required_enforced]、read_roots/write_roots:list[P]（任务相对根，经回执映射到已授权物理父根）、toolchain_refs:list[S]、enforcement:{method:S,file_scope:Declared/Enforced/Unverified,network_scope:Declared/Enforced/Unverified,evidence_refs:list[Evidence]}；control/deployment-profile.json。refs仅引用登记工具链/证据，不接自定义命令 |
-| Authorization（B/C） | contract_version:int=1、task_id:S、grant_ref:S、receipt_sha256:H、capabilities:上述三bool对象、execution_boundary:上述枚举、read_roots/write_roots:list[P]、web_scope:S或null、dependency_scope:S或null；control/authorization.json。grant_ref/各scope只引用已有可信管理授权，C须与部署回执核对；自填字符串不能创建授权，启用能力要求对应有效scope |
+| Authorization（B/C） | contract_version:int=1、task_id:S、grant_ref:S、receipt_sha256:H、capabilities:上述三bool对象、execution_boundary:上述枚举、read_roots/write_roots:list[P]、web_scope:S或null、dependency_scope:S或null、input_control_bindings:{task_fields_sha256:H,files:dict[P,H]}；control/authorization.json。binding必填且不能null，files允许空；摘要构造顺序及原名匹配见§7.4。grant_ref/各scope只引用已有可信管理授权，C须与部署回执核对；自填字符串不能创建授权，启用能力要求对应有效scope |
 | Plan（C） | contract_version:int=1，task_id:S，task_manifest_sha256:H，deployment_receipt_sha256:H，host:agy/cursor，route:{model:S,effort:S或null}，execution_boundary:上述枚举，capabilities:上述三bool对象，preflight_status:Ready/Blocked，blockers:list[S]，evidence_refs:list[Evidence]；可信control中的plan.json。model/effort只能由固定adapter选择，不能caller定义；Ready还须有效实际授权与对应R |
 | RunReceipt（C→B） | contract_version:int=1，task_id:S，plan_sha256:H，transport_state:NotRun/Completed/Failed/TimedOut，launch_count:0/1/null，capture_uid:S或null，capture_state:NotRun/Sealed/Incomplete，restore_state:NotRun/Unchanged/Restored/Failed，test_observations:list[TestObservation]，evidence_refs:list[Evidence]，blockers:list[S]；run_root/run.json。NotRun必须为0，Completed必须为1；null仅表示一次潜在执行未确认，必须Failed并包含LaunchUnverified，不允许再尝试；已确认后不得降级为0/null |
 | Result（B→管理） | contract_version:int=1，task_id:S，snapshot_id:H，task_manifest_sha256:H，plan_sha256:H或null，worker_status:Completed/Partial/Blocked或null，host_observations:{transport_state:上述枚举,scope_status:Pass/Fail/Unverified,outputs_status:Pass/Fail/Unverified,coverage_status:Complete/Incomplete/Invalid/NotRequired,test_observations:list[TestObservation],acceptance_observations:list[{id:S,result:Pass/Fail/Unrun/Unverified,evidence_refs:list[Evidence]}]}，changes:list[Change]，artifacts:list[Artifact]，blockers:list[S]，continuation:Continuation或null，management_decision:null；result_root/result.json，同值changes/artifacts另存changes.json/artifacts.json。未观测ID为Unrun/Unverified，不自动Pass |
@@ -252,6 +252,13 @@ def prepare_task(
 def collect_task(
     *, task_root: Path, run_root: Path | None, result_root: Path
 ) -> dict[str, object]: ...
+def verify_input_controls(
+    *,
+    task_root: Path,
+    task_manifest: dict[str, object],
+    deployment_profile: dict[str, object],
+    authorization: dict[str, object],
+) -> None: ...
 # task_run.py
 def plan_task(
     *,
@@ -271,12 +278,12 @@ def run_task(
 ) -> dict[str, object]: ...
 ```
 
-返回依次为SnapshotManifest、SnapshotManifest、TaskManifest、Result、Plan、RunReceipt。read_snapshot重验封存manifest/tree；prepare_task核对task_note原字节instructions_sha256并建副本；collect_task允许run_root=null用于未运行fixture，但transport=NotRun，management_decision=null。输出根都须全新；失败保留现场。各模块导出TaskInputError/TaskWorkspaceError/TaskRunError（RuntimeError子类，code:S、非敏感消息），已有BridgePathError在新入口映射并保留cause，旧入口异常不改；不自行再调用模型。C Ready/Blocked不等于管理业务裁决。CLI只包装固定入口，不开放caller-selected函数或任意工具链命令。
+返回依次为SnapshotManifest、SnapshotManifest、TaskManifest、Result、None、Plan、RunReceipt。read_snapshot重验封存manifest/tree；prepare_task核对task_note原字节instructions_sha256并建副本；verify_input_controls是B的只读Host导出，不授予执行权限；collect_task允许run_root=null用于未运行fixture，但transport=NotRun，management_decision=null。输出根都须全新；失败保留现场。各模块导出TaskInputError/TaskWorkspaceError/TaskRunError（RuntimeError子类，code:S、非敏感消息），已有BridgePathError在新入口映射并保留cause，旧入口异常不改；不自行再调用模型。C Ready/Blocked不等于管理业务裁决。CLI只包装固定入口，不开放caller-selected函数或任意工具链命令。
 
 
 ### 7.3 C 部署回执与可信输入（管理工程冻结，2026-10-06）
 
-TASK_ID=LAB-TASK-RUN-C-01；管理=019fe10b-df55-7b82-a9ba-3702dc08c55f。采用提案 SHA-256 `cde9efe36266a1b9c3ee3c40a9e35d3d33f87acef1e25cc205644d1cd13a6656` 第3–7节。以下是管理工程冻结，不是作者新增实际权限、部署或 R 接受。原提案保留不改。新增准确 DeploymentReceipt；原 TaskManifest/Profile/Authorization/Plan/RunReceipt 键集合不变。
+TASK_ID=LAB-TASK-RUN-C-01；管理=019fe10b-df55-7b82-a9ba-3702dc08c55f。采用提案 SHA-256 `cde9efe36266a1b9c3ee3c40a9e35d3d33f87acef1e25cc205644d1cd13a6656` 第3–7节。以下是管理工程冻结，不是作者新增实际权限、部署或 R 接受。原提案保留不改。该次冻结新增准确 DeploymentReceipt；后续§7.4仅给Authorization增加input_control_bindings，TaskManifest/Profile/Plan/RunReceipt键集合仍不变。
 
 #### 3. 准确 JSON 类型和摘要
 
@@ -372,7 +379,7 @@ def run_task(
 
 底层、共享 launcher 和 C 显式传递同一份生命周期事实（not_attempted/confirmed/unknown、固定阶段、持有句柄所得 PID/创建 FILETIME、逐项清理观察）。原生 ResumeThread 调用前先标记 unknown；观测返回 1 后立即标记 confirmed，后续线程关闭、交接、捕获或中断不得降级。恢复前的确证失败记0；调用/结果转换/记录被中断记null，即使回收成功也不能据此推断未执行。launch.json 保留此事实，包括没有返回包装器的路径；未观测的清理结果为null，child_exit_observed只说明持有子进程的退出观察，不证明全部后代回收。原始中断在清理后继续传播，元数据不包含 argv/prompt/配置正文。新增原生失败阶段 thread_close_failed 仅说明自持线程句柄关闭失败。
 
-消费者必须显式处理 launch_count=null，不得用真值判断将其当0，或接受为 Completed/成功；本次 C 修复不宣称 B/D/旧 slice 或 Cursor receipt 消费路径已完成适配，也不授权重试或恢复调度。
+消费者必须显式处理 launch_count=null，不得用真值判断将其当0，或接受为 Completed/成功。§7.4的B/C候选已补B消费与贯通离线测试，尚须新的独立Review；D和旧slice/Cursor回执兼容不在该候选接受范围，也不授权重试或恢复调度。
 
 管理变更授权或 R 接受时，必须另给当前可信材料与派工摘要；旧 Plan 随绑定漂移拒绝。没有后台监听、自动过期或自动刷新机制。此入口不自行恢复真实运行授权。
 
@@ -417,6 +424,24 @@ def run_task(
 C 启动前读取 B 保留的 `control/snapshot`，复用 A 的 `read_snapshot` 与树验证，核对 task 的 snapshot_id/manifest SHA、task 根 `SEALED` 和 work 原字节树；不导入 B 私有实现。plan→run 及配置写入前再次检查，漂移 launch=0。Coding 启动后的允许改动由 B collect 检查，C 不把它们当启动前完整性失败。write_roots 必须受 read_roots 覆盖，required_outputs 限于允许 out 路径且包含 out/progress.json；Cursor protected_paths 须预先覆盖 `.cursor` 或 `.cursor/cli.json`，固定目录只允许 cli.json。
 
 RunReceipt.evidence_refs 只登记本次 run_root 下的 Host 元数据和加密会话引用；外部管理/R 来源留在受 plan_sha256 绑定的 Plan，不冒充运行目录文件。加密引用准确使用 `session:<capture_uid>`，其 SHA 是认证会话清单规范字节摘要，capture_uid 字段仍为原 UID。B 按不合法相对路径的 opaque 引用处理，不复制或解密会话。原 capture v2 不改；C 封存 metadata.input_sources 准确记录 task=`control/TASK.md`、request=`fixed_task_v1`。CLI 输出中的测试声明只加密保留，不自动生成 HostObserved TestObservation；没有可独立核验的 recipe/tree/toolchain/时序证据时 test_observations 为空，业务接受仍须后续裁决。
+
+### 7.4 B/C 控制绑定与 nullable 回收（LAB-TASK-BC-INTEGRATION-01，2026-10-06）
+
+管理冻结来源为 `CONTROL_BINDING_PROPOSAL.md`，SHA-256 `0588f335cf2a85d6aa52f4fc6587e8ffcaf59332ac1e2e51f83f7bae6db14a8b`；原提案与C交接证据保留不改。本候选从C `a182dd1c2b07c97486c97df1daafefdebd1c0aee`、共同A `c79a725c917b0a93aea0e19ccc14154087909bb1` 选择性引入B `8dae5112ad58f0c15da06d348346dc65ae3cdd80` 的workspace实现和测试。它是离线接口候选，未经新的独立Review，不表示真实R/部署/发行接受。
+
+Authorization新增且仅新增必填 `input_control_bindings={task_fields_sha256:H,files:dict[P,H]}`。管理先填完TaskManifest的所有其他字段（包括完整deployment_profile_sha256和规则protected_paths），对仅排除authorization_sha256的规范任务对象求SHA，填入task_fields_sha256；再对完整Authorization求SHA填入task.authorization_sha256。Plan/Result仍绑定完整TaskManifest，三文件外部trusted bundle仍绑定完整Authorization，没有第四信任文件或新注册表。
+
+files须精确覆盖保留快照中所有原生规则文件：末分量为AGENTS.md/GEMINI.md/CLAUDE.md/.cursorrules，包括嵌套。发现使用既有身份比较，授权成员始终使用原始Unicode和大小写名字，不以NFC/casefold别名替代；每个SHA对应原始文件字节，且work对应路径受protected_paths覆盖。管理已核对其规则与role/capabilities/boundary/profile一致的声明才可进入可信bundle；软件只校验结构、身份与字节，不解释规则自然语言，也不从TASK.md或源码内授权文本自行取得信任。缺绑定、未登记/额外/名称/原字节/任务投影/保护漂移以InputControlConflict拒绝；底层路径、JSON、seal错误保留其错误契约。
+
+源包 `.cursor/cli.json`、`.gemini/settings.json`、`.claude/settings.json` 及其子路径仍拒绝，不能通过files字段豁免。task_root/.cursor/cli.json是独立的Host准备配置，由固定部署回执绑定并保护，不与work中的源配置混同。
+
+C先核验外部可信bundle摘要、严格schema和control副本/任务身份，再调用B的公共verify_input_controls；plan、run重读及捕获准备后配置写入前均复用同一导出，漂移在启动前停止。C继续用A核对完整work树，并将实际使用的task_workspace实现纳入产品文件身份集合。公共导出错误在生命周期内也保留原code；与B prepare授权不兼容的输入可在Plan生成前硬拒绝，不伪造Blocked计划。
+
+B明确校验launch_count为0/1/null（bool不是int）；null仅接受Failed且包含LaunchUnverified，Blocked计划只接受明确0。NotRun仍为0、Completed仍为1。有效未知回执、原测试声明、清理观察及opaque加密UID引用均保留；transport=Failed、continuation=null、management_decision=null。无效回执同样不给续接描述。collect规则漂移保留原始快照和当前候选字节，scope=Fail且continuation=null，不修复或自动继续。C的fake测试事件和WorkerReported、hash-null、opaque引用均不能提升为已核验测试。
+
+旧slice/Cursor的schema_version=1整数launches无法如实表示unknown。派工要求先冻结最小兼容变更，故旧adapter源码仍保持原状；归档OLD_RECEIPT_COMPATIBILITY_PROPOSAL.md仅为ProposedRecommended/authorConfirmed=false，建议已有launches扩为0/1/null、使用共享生命周期事实并保留原结果/退出码。它尚未采用，不能据本轮报告声称旧异常回执已修正。D的CLI/发行/Skill与真实R另行推进。
+
+本任务证据与保留清点入口：`C:/Users/user/Documents/Codex-Archive/2026-10-06-LAB-TASK-BC-INTEGRATION-01/INDEX.md`。归档包含修改前决策矩阵、冻结来源/原始Git blob、候选报告及各轮失败/通过验证引用；索引不替代事实真源或自动清理授权。
 
 ## 8. 有界复用核验与采用理由
 

@@ -21,7 +21,15 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Literal
 
-from local_agent_bridge.bridge import contract, cursor_run, paths, slice_run, task_input, winjob
+from local_agent_bridge.bridge import (
+    contract,
+    cursor_run,
+    paths,
+    slice_run,
+    task_input,
+    task_workspace,
+    winjob,
+)
 from local_agent_bridge.capture import keys, retention, session
 
 _CAPABILITIES = ("execute", "web_reference", "prepare_dependencies")
@@ -75,6 +83,7 @@ _AUTH_KEYS = {
     "write_roots",
     "web_scope",
     "dependency_scope",
+    "input_control_bindings",
 }
 _RECEIPT_KEYS = {
     "contract_version",
@@ -336,7 +345,7 @@ def _validate_task(task: dict) -> None:
 
 
 def _verify_prepared_tree(task_root: Path, task: dict) -> None:
-    """Consume B's fixed A snapshot through A, without a B private dependency."""
+    """Recheck the complete prepared source tree through A's frozen reader."""
     if _file(task_root / "SEALED").read_bytes() != _digest(_canonical(task)).encode("ascii"):
         raise TaskRunError("ControlChanged")
     if os.path.lexists(task_root / "WORKSPACE-FAILED"):
@@ -393,6 +402,8 @@ def _validate_profile(profile: dict) -> None:
 
 
 def _validate_authorization(auth: dict) -> None:
+    if "input_control_bindings" not in auth:
+        raise TaskRunError("InputControlConflict")
     _object(auth, _AUTH_KEYS)
     _version(auth)
     _text(auth["task_id"])
@@ -513,7 +524,6 @@ def _load_inputs(
     _validate_authorization(auth)
     task = _read(task_root / "task.json")
     _validate_task(task)
-    _verify_prepared_tree(task_root, task)
     for key, name, expected_hash in (
         ("deployment_profile", "deployment-profile.json", task["deployment_profile_sha256"]),
         ("authorization", "authorization.json", task["authorization_sha256"]),
@@ -551,6 +561,19 @@ def _load_inputs(
         )
     ):
         raise TaskRunError("InvalidScope")
+    # Trust comes from the external management bundle, never from source rules.
+    # Use B's public Host export for exact task/rule identity at every recheck.
+    try:
+        task_workspace.verify_input_controls(
+            task_root=task_root,
+            task_manifest=task,
+            deployment_profile=profile,
+            authorization=auth,
+        )
+    except task_workspace.TaskWorkspaceError as error:
+        # Rechecks inside the lifecycle must preserve the same public error code.
+        raise TaskRunError(error.code) from error
+    _verify_prepared_tree(task_root, task)
     return {"task": task, "bundle": bundle, "note": note, "task_root": task_root}
 
 
@@ -661,7 +684,9 @@ def _make_plan(context: dict, host: str) -> dict:
 
 
 def _map_error(error: Exception) -> TaskRunError:
-    if isinstance(error, (task_input.TaskInputError, paths.BridgePathError)):
+    if isinstance(
+        error, (task_input.TaskInputError, task_workspace.TaskWorkspaceError, paths.BridgePathError)
+    ):
         return TaskRunError(
             "PathRejected" if isinstance(error, paths.BridgePathError) else error.code
         )
@@ -694,6 +719,7 @@ def plan_task(
     except (
         OSError,
         task_input.TaskInputError,
+        task_workspace.TaskWorkspaceError,
         paths.BridgePathError,
         contract.BridgeContractError,
     ) as error:
@@ -702,7 +728,18 @@ def plan_task(
 
 def _runtime_files() -> set[Path]:
     """The actual imported implementation, not a version label or caller list."""
-    modules = (contract, cursor_run, paths, slice_run, task_input, winjob, keys, retention, session)
+    modules = (
+        contract,
+        cursor_run,
+        paths,
+        slice_run,
+        task_input,
+        task_workspace,
+        winjob,
+        keys,
+        retention,
+        session,
+    )
     return {
         Path(__file__),
         slice_run.PRIVATE_HELPER,
@@ -1193,6 +1230,7 @@ def run_task(
     except (
         OSError,
         task_input.TaskInputError,
+        task_workspace.TaskWorkspaceError,
         paths.BridgePathError,
         contract.BridgeContractError,
     ) as error:
