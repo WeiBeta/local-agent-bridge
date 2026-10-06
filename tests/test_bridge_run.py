@@ -117,8 +117,10 @@ def _main(arguments: list[str], capsys):
 
 
 def _install_fake_launch(monkeypatch, calls: list, behavior) -> None:
-    def fake_launch(exe, argv, cwd, stdout_path, stderr_path):
+    def fake_launch(exe, argv, cwd, stdout_path, stderr_path, *, lifecycle):
         calls.append({"exe": exe, "argv": list(argv), "cwd": cwd})
+        lifecycle.execution_state = "confirmed"
+        lifecycle.pid = 4242
         behavior(stdout_path, stderr_path)
         return {
             "pid": 4242,
@@ -440,7 +442,9 @@ def test_model_failure_and_missing_result_restore_settings(
 def test_timeout_restores_settings(case: Case, capsys, monkeypatch, tmp_path) -> None:
     settings = _new_settings(tmp_path, "settings.json")
 
-    def fake_launch(exe, argv, cwd, stdout_path, stderr_path):
+    def fake_launch(exe, argv, cwd, stdout_path, stderr_path, *, lifecycle):
+        lifecycle.execution_state = "confirmed"
+        lifecycle.pid = 4242
         stdout_path.write_bytes(b'{"type":"init"}\n')
         stderr_path.write_bytes(b"")
         return {
@@ -475,7 +479,7 @@ def test_capture_exception_restores_and_reports_failure(
 ) -> None:
     settings = _new_settings(tmp_path, "settings.json")
 
-    def fake_launch(exe, argv, cwd, stdout_path, stderr_path):
+    def fake_launch(exe, argv, cwd, stdout_path, stderr_path, *, lifecycle):
         raise RuntimeError("capture exploded")
 
     monkeypatch.setattr(runner, "_launch_and_capture", fake_launch)

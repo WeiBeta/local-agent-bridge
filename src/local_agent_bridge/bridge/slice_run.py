@@ -78,7 +78,7 @@ from local_agent_bridge.capture.session import (  # noqa: E402
     SessionStream,
 )
 
-RUN_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 2
 PRIVATE_HELPER = PACKAGE_ROOT / "resources" / "ag_slice_run_private.ps1"
 PWSH_CANDIDATES = (r"C:\Program Files\PowerShell\7\pwsh.exe",)
 ARGV_ELEMENT_COUNT = 11
@@ -792,7 +792,7 @@ def command_run(arguments: argparse.Namespace) -> int:
     if not arguments.execute:
         _emit_json(
             {
-                "schema_version": RUN_SCHEMA_VERSION,
+                "schema_version": 1,
                 "mode": "preflight",
                 "execute": False,
                 "task_root": str(task_root),
@@ -931,15 +931,20 @@ def command_run(arguments: argparse.Namespace) -> int:
     process_argv = [str(executable["path"]), *plan["argv"]]
     launch_record = None
     launch_attempted = False
+    lifecycle = LaunchLifecycle()
     lifecycle_exception = None
+    interrupted: BaseException | None = None
     evidence_write_failures: list[dict[str, str]] = []
 
     def write_evidence(stage: str, path: Path, document: object) -> None:
-        """One evidence write attempt; a failure is reported, never raised or retried."""
+        """Record one failed attempt; finish other writes before propagating interrupts."""
+        nonlocal interrupted
         try:
             _write_json_new(path, document)
-        except Exception as error:
+        except BaseException as error:
             evidence_write_failures.append({"stage": stage, "error": type(error).__name__})
+            if interrupted is None and not isinstance(error, Exception):
+                interrupted = error
 
     try:
         _apply_settings_patch(settings_path, settings_bytes, patched_bytes)
@@ -954,20 +959,37 @@ def command_run(arguments: argparse.Namespace) -> int:
                 str(plan["cwd"]),
                 stdout_sink,
                 stderr_sink,
+                lifecycle=lifecycle,
             )
         finally:
             if previous_auto_update is None:
                 os.environ.pop(AUTO_UPDATE_VARIABLE, None)
             else:
                 os.environ[AUTO_UPDATE_VARIABLE] = previous_auto_update
-    except Exception as error:
+    except BaseException as error:
         lifecycle_exception = type(error).__name__
+        if not isinstance(error, Exception):
+            interrupted = error
     finally:
-        restore_record = _restore_settings(
-            settings_path, settings_bytes, patched_bytes, private_dir
-        )
+        try:
+            restore_record = _restore_settings(
+                settings_path, settings_bytes, patched_bytes, private_dir
+            )
+        except BaseException as error:
+            # No observed restore result: retain failure, never infer restored bytes.
+            restore_record = {
+                "status": "restore_failed",
+                "restored_original_bytes": False,
+                "final_sha256": None,
+                "before_sha256": _sha256_hex(settings_bytes),
+                "patched_sha256": _sha256_hex(patched_bytes),
+                "error": type(error).__name__,
+            }
+            lifecycle_exception = lifecycle_exception or type(error).__name__
+            if interrupted is None and not isinstance(error, Exception):
+                interrupted = error
         write_evidence("config-restore.json", run_root / "config-restore.json", restore_record)
-    if launch_record is None:
+    if launch_record is None or lifecycle.launch_count != 1:
         coding = {"outcome": "launch_failed", "result_status": None}
     else:
         try:
@@ -975,7 +997,10 @@ def command_run(arguments: argparse.Namespace) -> int:
                 launch_record["capture_state"] = "incomplete"
                 launch_record["capture_error"] = writer.incomplete_reason
             coding = _classify_coding(stdout_sink, launch_record)
-        except Exception as error:
+        except BaseException as error:
+            lifecycle_exception = lifecycle_exception or type(error).__name__
+            if interrupted is None and not isinstance(error, Exception):
+                interrupted = error
             launch_record["capture_state"] = "incomplete"
             launch_record["capture_error"] = type(error).__name__
             for key in (
@@ -989,7 +1014,12 @@ def command_run(arguments: argparse.Namespace) -> int:
                 launch_record.pop(key, None)
             coding = {"outcome": "capture_incomplete", "result_status": None}
     restored = bool(restore_record["restored_original_bytes"])
-    capture_complete = bool(launch_record and launch_record.get("capture_state") == "complete")
+    capture_complete = bool(
+        launch_record
+        and launch_record.get("capture_state") == "complete"
+        and lifecycle.launch_count == 1
+        and interrupted is None
+    )
     if capture_complete:
         try:
             writer.seal(
@@ -1003,7 +1033,10 @@ def command_run(arguments: argparse.Namespace) -> int:
                     "restore_status": restore_record["status"],
                 }
             )
-        except (OSError, StorageError, SessionError) as error:
+        except BaseException as error:
+            lifecycle_exception = lifecycle_exception or type(error).__name__
+            if not isinstance(error, Exception):
+                interrupted = error
             capture_complete = False
             launch_record["capture_state"] = "incomplete"
             launch_record["capture_error"] = type(error).__name__
@@ -1023,14 +1056,14 @@ def command_run(arguments: argparse.Namespace) -> int:
             "patched_sha256": _sha256_hex(patched_bytes),
             "final_sha256": restore_record.get("final_sha256"),
         },
-        "launches": 1 if launch_record is not None else 0,
+        "launches": lifecycle.launch_count,
         "spawn_state": (
             "confirmed"
-            if launch_record is not None
+            if lifecycle.execution_state == "confirmed"
             else ("not_confirmed" if launch_attempted else "not_attempted")
         ),
         "launch_attempts": 1 if launch_attempted else 0,
-        "launch": launch_record,
+        "launch": launch_record if launch_record is not None else lifecycle.record(),
         "cwd": plan["cwd"],
         "argv_elements": len(plan["argv"]),
         "coding": coding,
@@ -1051,40 +1084,49 @@ def command_run(arguments: argparse.Namespace) -> int:
     receipt_persisted = True
     try:
         _write_json_new(run_root / "run.json", receipt)
-    except Exception as error:
+    except BaseException as error:
         receipt_persisted = False
         evidence_write_failures.append({"stage": "run.json", "error": type(error).__name__})
+        if interrupted is None and not isinstance(error, Exception):
+            interrupted = error
     exit_code = (
         EXIT_OK
         if lifecycle_exception is None
+        and lifecycle.launch_count == 1
+        and interrupted is None
         and restored
         and capture_complete
         and not evidence_write_failures
         else EXIT_LIFECYCLE_FAILED
     )
-    _emit_json(
-        {
-            "schema_version": RUN_SCHEMA_VERSION,
-            "mode": "execute",
-            "task_root": str(task_root),
-            "run_root": str(run_root),
-            "launches": receipt["launches"],
-            "spawn_state": receipt["spawn_state"],
-            "coding": coding,
-            "session": receipt["session"],
-            "restore": receipt["restore"],
-            "lifecycle_exception": lifecycle_exception,
-            "evidence_write_failures": list(evidence_write_failures),
-            "receipt_persisted": receipt_persisted,
-            "exit_code": exit_code,
-            "exit_code_label": EXIT_LABELS[exit_code],
-            "run_receipt": str(run_root / "run.json") if receipt_persisted else None,
-            "note": (
-                "exit 0 covers the run lifecycle and a verified restore only; "
-                "provider_completed is not candidate acceptance"
-            ),
-        }
-    )
+    document = {
+        "schema_version": RUN_SCHEMA_VERSION,
+        "mode": "execute",
+        "task_root": str(task_root),
+        "run_root": str(run_root),
+        "launches": receipt["launches"],
+        "spawn_state": receipt["spawn_state"],
+        "coding": coding,
+        "session": receipt["session"],
+        "restore": receipt["restore"],
+        "lifecycle_exception": lifecycle_exception,
+        "evidence_write_failures": list(evidence_write_failures),
+        "receipt_persisted": receipt_persisted,
+        "exit_code": exit_code,
+        "exit_code_label": EXIT_LABELS[exit_code],
+        "run_receipt": str(run_root / "run.json") if receipt_persisted else None,
+        "note": (
+            "exit 0 covers the run lifecycle and a verified restore only; "
+            "provider_completed is not candidate acceptance"
+        ),
+    }
+    try:
+        _emit_json(document)
+    except BaseException:
+        if interrupted is None:
+            raise
+    if interrupted is not None:
+        raise interrupted
     return exit_code
 
 

@@ -189,6 +189,7 @@ def test_preflight_reports_without_side_effects(cursor_case, capsys, monkeypatch
     code, document, err = _main(_run_arguments(cursor_case, run_root, execute=False), capsys)
     assert (code, err) == (0, "")
     assert document["execute"] is False
+    assert document["schema_version"] == 1
     assert document["execution_authorized"] is False
     assert document["model_requested"] == cursor.CURSOR_MODEL
     assert "fast" not in document["model_requested"].casefold()
@@ -239,6 +240,7 @@ def test_execute_spawns_once_with_fixed_argv_and_seals(cursor_case, capsys, monk
     assert (code, err) == (0, "")
     assert document["result"] == "lifecycle_complete_capture_sealed"
     assert document["launches"] == 1 and document["spawn_state"] == "confirmed"
+    assert document["schema_version"] == 2
     assert document["session"]["sealed"] is True
     assert document["receipt_persisted"] is True
     assert "not a" in document["note"] and "coding" in document["note"]
@@ -248,6 +250,7 @@ def test_execute_spawns_once_with_fixed_argv_and_seals(cursor_case, capsys, monk
     assert os.environ.get(runner.AUTO_UPDATE_VARIABLE) == env_before
     assert sorted(path.name for path in run_root.iterdir()) == ["plan.json", "run.json"]
     receipt = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+    assert receipt["schema_version"] == 2
     assert receipt["model_requested"] == cursor.CURSOR_MODEL
     assert PROMPT_TEXT not in json.dumps(receipt)
     assert PROMPT_TEXT not in (run_root / "plan.json").read_text(encoding="utf-8")

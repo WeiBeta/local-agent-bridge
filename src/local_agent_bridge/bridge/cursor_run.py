@@ -12,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from local_agent_bridge.bridge import slice_workspace
+from local_agent_bridge.bridge import slice_workspace, winjob
 from local_agent_bridge.bridge.contract import BridgeContractError, decode_strict_json_bytes
 from local_agent_bridge.bridge.slice_run import (
     CAPTURE_JOIN_SECONDS,
@@ -40,7 +40,7 @@ from local_agent_bridge.capture.keys import SessionKeyError
 from local_agent_bridge.capture.retention import StorageError
 from local_agent_bridge.capture.session import SessionError
 
-CURSOR_SCHEMA_VERSION = 1
+CURSOR_SCHEMA_VERSION = 2
 CURSOR_MODEL = "grok-4.7-high"
 CURSOR_CONFIG_RELATIVE = ".cursor/cli.json"
 CURSOR_SESSION_KIND = "cursor_cli_one_call"
@@ -194,7 +194,7 @@ def command_cursor_run(arguments: argparse.Namespace) -> int:
     if not arguments.execute:
         _emit_json(
             {
-                "schema_version": CURSOR_SCHEMA_VERSION,
+                "schema_version": 1,
                 "mode": "preflight",
                 "entry": "cursor",
                 "execute": False,
@@ -228,7 +228,7 @@ def command_cursor_run(arguments: argparse.Namespace) -> int:
             lambda: _write_json_new(
                 run_root / "plan.json",
                 {
-                    "schema_version": CURSOR_SCHEMA_VERSION,
+                    "schema_version": 1,
                     "kind": "cursor",
                     "plan_sha256": _sha256_hex(plan_bytes),
                     "manifest_sha256": plan["manifest_sha256"],
@@ -292,16 +292,25 @@ def command_cursor_run(arguments: argparse.Namespace) -> int:
     stdout_sink = writer.stream("stdout")
     stderr_sink = writer.stream("stderr")
     launch_record = None
+    lifecycle = winjob.LaunchLifecycle()
     lifecycle_exception = None
+    interrupted: BaseException | None = None
     evidence_write_failures: list[dict[str, str]] = []
     try:
         launch_record = _launch_and_capture(
-            argv[0], argv, str(plan["cwd"]), stdout_sink, stderr_sink
+            argv[0], argv, str(plan["cwd"]), stdout_sink, stderr_sink, lifecycle=lifecycle
         )
-    except Exception as error:
+    except BaseException as error:
         lifecycle_exception = type(error).__name__
+        if not isinstance(error, Exception):
+            interrupted = error
     sealed = False
-    if launch_record is not None and launch_record.get("capture_state") == "complete":
+    if (
+        launch_record is not None
+        and lifecycle.launch_count == 1
+        and launch_record.get("capture_state") == "complete"
+        and interrupted is None
+    ):
         try:
             writer.seal(
                 {
@@ -318,10 +327,13 @@ def command_cursor_run(arguments: argparse.Namespace) -> int:
                 }
             )
             sealed = True
-        except (OSError, StorageError, SessionError) as error:
+        except BaseException as error:
+            lifecycle_exception = lifecycle_exception or type(error).__name__
+            if not isinstance(error, Exception):
+                interrupted = error
             launch_record["capture_state"] = "incomplete"
             launch_record["capture_error"] = type(error).__name__
-    if launch_record is None:
+    if launch_record is None or lifecycle.launch_count != 1:
         result = "launch_failed"
     elif launch_record.get("timed_out"):
         result = "observation_timeout"
@@ -342,9 +354,9 @@ def command_cursor_run(arguments: argparse.Namespace) -> int:
         "workspace": plan["cwd"],
         "model_requested": CURSOR_MODEL,
         "argv_flags": list(CURSOR_ARGV_FLAGS),
-        "launches": 1 if launch_record is not None else 0,
-        "spawn_state": "confirmed" if launch_record is not None else "not_confirmed",
-        "launch": launch_record,
+        "launches": lifecycle.launch_count,
+        "spawn_state": "confirmed" if lifecycle.execution_state == "confirmed" else "not_confirmed",
+        "launch": launch_record if launch_record is not None else lifecycle.record(),
         "result": result,
         "session": {
             "session_id": writer.session_id,
@@ -358,38 +370,47 @@ def command_cursor_run(arguments: argparse.Namespace) -> int:
     receipt_persisted = True
     try:
         _write_json_new(run_root / "run.json", receipt)
-    except Exception as error:
+    except BaseException as error:
         receipt_persisted = False
         evidence_write_failures.append({"stage": "run.json", "error": type(error).__name__})
+        if interrupted is None and not isinstance(error, Exception):
+            interrupted = error
     exit_code = (
         EXIT_OK
         if lifecycle_exception is None
+        and lifecycle.launch_count == 1
+        and interrupted is None
         and launch_record is not None
         and sealed
         and not evidence_write_failures
         else EXIT_LIFECYCLE_FAILED
     )
-    _emit_json(
-        {
-            "schema_version": CURSOR_SCHEMA_VERSION,
-            "mode": "execute",
-            "entry": "cursor",
-            "task_root": str(task_root),
-            "run_root": str(run_root),
-            "launches": receipt["launches"],
-            "spawn_state": receipt["spawn_state"],
-            "result": result,
-            "process_exit_code": (launch_record or {}).get("exit_code"),
-            "session": receipt["session"],
-            "lifecycle_exception": lifecycle_exception,
-            "evidence_write_failures": list(evidence_write_failures),
-            "receipt_persisted": receipt_persisted,
-            "exit_code": exit_code,
-            "exit_code_label": EXIT_LABELS[exit_code],
-            "run_receipt": str(run_root / "run.json") if receipt_persisted else None,
-            "note": CURSOR_EXIT_NOTE,
-        }
-    )
+    document = {
+        "schema_version": CURSOR_SCHEMA_VERSION,
+        "mode": "execute",
+        "entry": "cursor",
+        "task_root": str(task_root),
+        "run_root": str(run_root),
+        "launches": receipt["launches"],
+        "spawn_state": receipt["spawn_state"],
+        "result": result,
+        "process_exit_code": (launch_record or {}).get("exit_code"),
+        "session": receipt["session"],
+        "lifecycle_exception": lifecycle_exception,
+        "evidence_write_failures": list(evidence_write_failures),
+        "receipt_persisted": receipt_persisted,
+        "exit_code": exit_code,
+        "exit_code_label": EXIT_LABELS[exit_code],
+        "run_receipt": str(run_root / "run.json") if receipt_persisted else None,
+        "note": CURSOR_EXIT_NOTE,
+    }
+    try:
+        _emit_json(document)
+    except BaseException:
+        if interrupted is None:
+            raise
+    if interrupted is not None:
+        raise interrupted
     return exit_code
 
 

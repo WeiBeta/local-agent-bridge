@@ -26,6 +26,16 @@ local-agent-bridge cursor run --task-root <dir> --run-root <new dir>
 - **退出码 0 只表示"单次启动生命周期完成且捕获完整封口"**，不表示模型任务成功，更不表示编码工作正确；子进程非零退出被如实记录（`process_exit_code`），生命周期完整时仍为 0。2=受控拒绝（启动前）；3=生命周期未完成或证据失败。
 - 事件级判定（工具配对、权限拒绝等）属冒烟探针范围，**不在本入口**；本入口不宣称任何工具包含或文件隔离能力。
 
+## 执行回执版本（离线候选）
+
+LAB-LEGACY-LAUNCH-RECEIPT-02新生成的execute stdout摘要及`run.json`使用`schema_version=2`；preflight、`plan.json`保留v1，sessions加密格式继续既有v2。历史v1回执保持原字节与原含义，不重写、不迁移或补出unknown。
+
+`launches=0/1/null`取自同一次调用方持有的共享生命周期事实：确证未执行/确认执行/潜在执行未确认。捕获返回存在与否不决定这个数，确认后失败仍为1；null不能当0、成功或自动再尝试。顶层`spawn_state`仍只用confirmed/not_confirmed，后者包括未知；准确区分以launches为准。正常`launch`capture记录形状保持，异常没有capture返回时使用既有生命周期记录作为fallback，保留stage/PID/cleanup及未观测的null。
+
+未知或启动后异常保留`result=launch_failed`及非成功退出，捕获失败仍为capture_incomplete；子进程非零退出在已确认、完整封口的正常路径仍保持原有退出码口径。原中断在尽力回执后传播，次生写入/封口错误不替换它。没有新增CLI参数、配置改写、调用或重试。
+
+仓内没有读取旧Cursor执行回执的产品解析器；task collect的独立合同明确拒绝此schema。外部读取器必须支持v2或明确拒绝未知版本，兼容性未核验。本包仍需新的独立Review，既有Cursor历史冒烟证据不自动接受这次变化；未运行真实CLI/provider/help/version/配置密钥/部署。归档入口见[BRIDGE_USAGE.md](BRIDGE_USAGE.md)的本任务索引。
+
 ## 边界（如实声明）
 
 - Shell/MCP/WebFetch 拒绝、一般文件隔离、上游模型真实身份、请求数与费用均未验证；`--force` 会放行未显式拒绝的命令（官方文档），不能把 `cwd`/Job 当文件隔离。

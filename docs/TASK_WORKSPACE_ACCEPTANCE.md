@@ -165,6 +165,19 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | BC-LAUNCH-02 / O | null与NotRun/Completed/TimedOut/缺LaunchUnverified、Blocked+null、bool/越界 | RunReceiptInvalid/Failed/continuation=null，不将null当0或成功 |
 | BC-FINALIZE-01 / O | agy语义漂移、Cursor project漂移及异常收尾 | 启动事实1保持、RestoreFailed/transportFailed，备份与当前配置保留；Cursor control漂移另记Fail |
 | BC-EVIDENCE-01 / O | C真实fake encrypted session refs、自报/opaque/hash-null测试、测试报告digest漂移 | UID为opaque Unverified，原声明/观测保留，不自动Pass；失配产物单独保留，未核验测试不能作last_test_run |
-| BC-COMPAT-01 / O | 全旧离线回归与旧异常回执合同审查 | 旧成功/未启动/fixed argv/退出码回归保持；legacy nullable方案尚未冻结，旧adapter修正依赖暂停，不冒充三项全部完成 |
+| BC-COMPAT-01 / O | 全旧离线回归与旧异常回执合同审查 | 旧成功/未启动/fixed argv/退出码回归保持；后续LEGACY包工程冻结新执行schema v2，单独候选与Review，不把B/C结论冒充旧adapter接受 |
 
 显式验收命令包含原pytest testpaths的12模块，再加test_task_run.py、test_task_launch_lifecycle.py、test_task_workspace.py及test_task_bc_integration.py；每轮全新Scratch basetemp/log/XML。完整结果须列出D的两个已知发行失败和平台skip，不能用忽略这些模块的绿色局部回归替代。ruff check和format check只验证代码规范，不替代独立Review、D或真实R。
+
+## 10. 旧adapter执行回执v2候选（LAB-LEGACY-LAUNCH-RECEIPT-02）
+
+仅新生成execute stdout/run.json为schema_version=2；preflight/plan v1、Task contract v1、加密session v2互不迁移。历史v1不改，不虚构unknown。只用offline fake，独立Review仍必需。
+
+| Gate | 操作 | 必须观察 |
+| --- | --- | --- |
+| LEGACY-VERSION-01 | 两adapter正常/拒绝/异常，旧v1原字节及旧根复用 | execute2，preflight/plan1；历史字节不变、旧根拒绝；不新增CLI参数 |
+| LEGACY-FACT-01 | fake原生恢复前、unknown、confirmed后异常与返回capture | caller-owned事实0/1/null；返回存在不自证1；原spawn_state词表；异常fallback保留原生命周期字段/观察，正常capture形状不变 |
+| LEGACY-INTERRUPT-01 | 原生/capture/封口中断及次生恢复、各回执写入/stdout错误 | 原始中断优先，独立尽力收尾、非成功、不重试；原stage/PID/cleanup/null保留，不降级确认计数 |
+| LEGACY-CONSUMER-01 | 严格task collect尝试读取旧schema v1/v2/未知3 | RunReceiptInvalid/Failed、continuation=null，不跨合同误读；外部消费者未核验，不声明通用向后兼容 |
+
+完整显式测试集合在上一节16模块外再加入test_legacy_launch_receipts.py（共17模块）；保留已知D失败和实际平台skip。新旧候选边界、独立审查和真实部署不能用这些离线总数合并宣布接受。

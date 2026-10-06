@@ -439,7 +439,7 @@ C先核验外部可信bundle摘要、严格schema和control副本/任务身份�
 
 B明确校验launch_count为0/1/null（bool不是int）；null仅接受Failed且包含LaunchUnverified，Blocked计划只接受明确0。NotRun仍为0、Completed仍为1。有效未知回执、原测试声明、清理观察及opaque加密UID引用均保留；transport=Failed、continuation=null、management_decision=null。无效回执同样不给续接描述。collect规则漂移保留原始快照和当前候选字节，scope=Fail且continuation=null，不修复或自动继续。C的fake测试事件和WorkerReported、hash-null、opaque引用均不能提升为已核验测试。
 
-旧slice/Cursor的schema_version=1整数launches无法如实表示unknown。派工要求先冻结最小兼容变更，故旧adapter源码仍保持原状；归档OLD_RECEIPT_COMPATIBILITY_PROPOSAL.md仅为ProposedRecommended/authorConfirmed=false，建议已有launches扩为0/1/null、使用共享生命周期事实并保留原结果/退出码。它尚未采用，不能据本轮报告声称旧异常回执已修正。D的CLI/发行/Skill与真实R另行推进。
+上述B/C候选e75ba428未修改旧slice/Cursor整数回执；后续LAB-LEGACY-LAUNCH-RECEIPT-02在独立工作树收到工程冻结：新产生的旧adapter执行回执统一schema_version=2、launches=0/1/null，使用共享caller-owned生命周期、原顶层spawn_state词表及异常时原生命周期fallback结构；正常capture记录形状保持，异常/null非成功、原中断优先、无重试。preflight/plan仍v1，task的contract_version=1及加密session格式不变。历史v1回执绝不重写或虚构unknown；task collect严格拒绝旧schema_version v1/v2，不能跨合同读取。细节见BRIDGE_USAGE/CURSOR_USAGE；此旧adapter候选仍需独立Review，B/C审查不覆盖它，真实/外部消费者兼容与D另行推进。
 
 本任务证据与保留清点入口：`C:/Users/user/Documents/Codex-Archive/2026-10-06-LAB-TASK-BC-INTEGRATION-01/INDEX.md`。归档包含修改前决策矩阵、冻结来源/原始Git blob、候选报告及各轮失败/通过验证引用；索引不替代事实真源或自动清理授权。
 

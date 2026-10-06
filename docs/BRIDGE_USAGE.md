@@ -65,3 +65,15 @@ SHA-256 一致（`f8db8c3a99d02e99bcd9034a13beb43d26d642bec84ba34ce7df2e9af1627a
 - 候选补丁未应用到任何仓库；该次运行未被当作模型能力或候选接受证据。
 - 真实主机部署、MCP 客户端接入与服务化部署未验收；并发运行、超大切片与失败恢复的真实语义未实测。
 - 只覆盖既有文本文件的小切片；不支持新增/删除文件、跨根 diff、二进制内容或 Zcode。
+
+## 6. 执行回执版本（离线候选，LAB-LEGACY-LAUNCH-RECEIPT-02）
+
+本候选新生成的 `run --execute` stdout摘要及 `run.json` 使用 `schema_version=2`，包括执行阶段的受控拒绝摘要；preflight与`plan.json`保持各自的v1，sessions加密格式仍为既有v2。没有新增命令参数。历史v1回执不重写、不迁移：旧`launches=0`只能按当时记录解释，不能据它推断未知原生执行，也不把历史字段补成新观测。
+
+v2的`launches`是`0/1/null`，来自本次调用方持有的同一份LaunchLifecycle：确证未执行=0，观测确认执行=1，潜在执行尚未确认=null。后续捕获、配置恢复或回执写入失败不能把1降成0/null；不能把null按真值规则当0，亦不能当成功或自动再启动。`launch_attempts`仍只记录是否调用过共享启动入口，不能替代执行计数。
+
+顶层`spawn_state`保留原词表：confirmed（已确认）、not_confirmed（调用过但未确认，包括unknown）、not_attempted（尚未调用）。未知与确知零由`launches`准确区分。正常返回的`launch`仍为原capture记录；异常未返回capture记录时，`launch`是既有生命周期记录（spawn_state/launch_count/stage/pid/pid_created_filetime/cleanup），未观测清理结果保留null，不推断全部后代已退出。没有新增顶层字段。
+
+未知或启动后异常仍为既有`launch_failed`/非成功退出；捕获不完整保留`capture_incomplete`，已知正常结果与0/2/3退出码语义保持。原始中断在独立尽力收尾/回执尝试后继续传播，次生恢复/写入错误不替换它，不重试任何启动或写入。
+
+仓内CLI只转发结果，没有读取旧执行回执的产品解析器；task collect使用独立`contract_version=1`合同并明确拒绝这两种旧adapter回执，不能跨合同误读。外部读取器须显式支持v2或拒绝未知版本；外部兼容、真实CLI/部署与本候选独立Review尚未验收。归档索引：`C:/Users/user/Documents/Codex-Archive/2026-10-06-LAB-LEGACY-LAUNCH-RECEIPT-02/INDEX.md`。
