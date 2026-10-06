@@ -951,6 +951,7 @@ def command_run(arguments: argparse.Namespace) -> int:
         _write_json_new(run_root / "config-patch.json", patch_record)
         previous_auto_update = os.environ.get(AUTO_UPDATE_VARIABLE)
         os.environ[AUTO_UPDATE_VARIABLE] = AUTO_UPDATE_VALUE
+        launch_error: BaseException | None = None
         try:
             launch_attempted = True
             launch_record = _launch_and_capture(
@@ -961,11 +962,25 @@ def command_run(arguments: argparse.Namespace) -> int:
                 stderr_sink,
                 lifecycle=lifecycle,
             )
+        except BaseException as error:
+            # Saved before the environment cleanup so its secondary failure can
+            # never replace the original launch error, including an interruption.
+            launch_error = error
+            raise
         finally:
-            if previous_auto_update is None:
-                os.environ.pop(AUTO_UPDATE_VARIABLE, None)
-            else:
-                os.environ[AUTO_UPDATE_VARIABLE] = previous_auto_update
+            try:
+                if previous_auto_update is None:
+                    os.environ.pop(AUTO_UPDATE_VARIABLE, None)
+                else:
+                    os.environ[AUTO_UPDATE_VARIABLE] = previous_auto_update
+            except BaseException as error:
+                if launch_error is None or isinstance(launch_error, Exception):
+                    raise
+                # An original interruption keeps priority; the environment result
+                # is recorded once and never retried, and is never claimed restored.
+                evidence_write_failures.append(
+                    {"stage": "environment-restore", "error": type(error).__name__}
+                )
     except BaseException as error:
         lifecycle_exception = type(error).__name__
         if not isinstance(error, Exception):

@@ -395,3 +395,184 @@ def test_slice_failure_before_launch_keeps_known_zero(slice_case, tmp_path, monk
     assert receipt["spawn_state"] == "not_attempted"
     assert receipt["launch"]["spawn_state"] == "not_attempted"
     assert settings.read_bytes() == slice_fixtures.SETTINGS_BYTES
+
+
+def install_failing_environment(monkeypatch, events, *, present, error):
+    """Fixture-only environment mapping whose restore attempt raises once.
+
+    The real process environment is never reached: ``slice_runner.os`` is
+    replaced by a proxy that keeps the genuine module attributes but exposes a
+    synthetic mapping. The initial patch (the fixed value) still succeeds; only
+    the later restore operation raises, exactly as the frozen defect describes.
+    """
+
+    class Environment(dict):
+        def __setitem__(self, key, value):
+            events.append(["set", key, value])
+            if key == slice_runner.AUTO_UPDATE_VARIABLE and value != slice_runner.AUTO_UPDATE_VALUE:
+                raise error
+            super().__setitem__(key, value)
+
+        def pop(self, key, default=None):
+            events.append(["pop", key])
+            if key == slice_runner.AUTO_UPDATE_VARIABLE:
+                raise error
+            return super().pop(key, default)
+
+    mapping = Environment(
+        {slice_runner.AUTO_UPDATE_VARIABLE: "synthetic-existing"} if present else {}
+    )
+    real_os = slice_runner.os
+
+    class OSProxy:
+        environ = mapping
+
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+    monkeypatch.setattr(slice_runner, "os", OSProxy())
+    return mapping
+
+
+def install_slice_interrupt(monkeypatch, boundary, original):
+    """Frozen shared fake-native seam, plus the adapter's own lifecycle binding."""
+    process, trace, oracle = native_fixtures.install_native(monkeypatch, boundary, original)
+    monkeypatch.setattr(slice_runner, "LaunchLifecycle", winjob.LaunchLifecycle)
+    return process, trace, oracle
+
+
+@pytest.mark.parametrize("present", [False, True])
+@pytest.mark.parametrize(
+    "boundary,expected", [("assign", 0), ("native_effect", None), ("after_record", 1)]
+)
+@pytest.mark.parametrize("secondary_interrupt", [False, True])
+def test_original_interrupt_survives_environment_restore_failure(
+    slice_case, tmp_path, monkeypatch, capsys, present, boundary, expected, secondary_interrupt
+):
+    settings = slice_fixtures._new_settings(tmp_path, "synthetic-settings.json")
+    original = KeyboardInterrupt("synthetic original launch interrupt")
+    secondary = (
+        KeyboardInterrupt("synthetic environment restore interrupt")
+        if secondary_interrupt
+        else OSError("synthetic environment restore failure")
+    )
+    _process, trace, oracle = install_slice_interrupt(monkeypatch, boundary, original)
+    events = []
+    mapping = install_failing_environment(monkeypatch, events, present=present, error=secondary)
+    run_root = tmp_path / "run"
+    with pytest.raises(KeyboardInterrupt) as caught:
+        slice_runner.main(
+            slice_fixtures._run_arguments(slice_case, run_root, settings, execute=True)
+        )
+    assert caught.value is original
+    output = read_output(capsys)
+    receipt = json.loads((run_root / "run.json").read_bytes())
+    assert output["schema_version"] == receipt["schema_version"] == 2
+    assert output["launches"] == receipt["launches"] == expected
+    assert receipt["launch"]["launch_count"] == expected
+    assert output["exit_code"] == 3 and output["receipt_persisted"] is True
+    assert receipt["lifecycle_exception"] == "KeyboardInterrupt"
+    diagnostic = [{"stage": "environment-restore", "error": type(secondary).__name__}]
+    assert receipt["evidence_write_failures"] == diagnostic
+    assert output["evidence_write_failures"] == diagnostic
+    # One bounded best-effort attempt only: the fixed initial patch, then the
+    # failing restore. The mapping still holds the patched value, so nothing
+    # observed a completed restoration and nothing claims one.
+    assert len(events) == 2 and events[-1][0] == ("pop" if not present else "set")
+    assert mapping.get(slice_runner.AUTO_UPDATE_VARIABLE) == slice_runner.AUTO_UPDATE_VALUE
+    assert trace.count("spawn") == 1 and oracle["resume_calls"] <= 1
+    assert receipt["restore"]["restored_original_bytes"] is True
+    assert settings.read_bytes() == slice_fixtures.SETTINGS_BYTES
+    assert "SECRET" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("present", [False, True])
+@pytest.mark.parametrize("secondary_interrupt", [False, True])
+def test_environment_restore_failure_without_original_interrupt_is_not_a_success(
+    slice_case, tmp_path, monkeypatch, capsys, present, secondary_interrupt
+):
+    settings = slice_fixtures._new_settings(tmp_path, "synthetic-settings.json")
+    secondary = (
+        KeyboardInterrupt("synthetic environment restore interrupt")
+        if secondary_interrupt
+        else OSError("synthetic environment restore failure")
+    )
+    install_slice_interrupt(monkeypatch, "completed", KeyboardInterrupt("unused"))
+    events = []
+    mapping = install_failing_environment(monkeypatch, events, present=present, error=secondary)
+    run_root = tmp_path / "run"
+    if secondary_interrupt:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            slice_runner.main(
+                slice_fixtures._run_arguments(slice_case, run_root, settings, execute=True)
+            )
+        assert caught.value is secondary
+    else:
+        assert (
+            slice_runner.main(
+                slice_fixtures._run_arguments(slice_case, run_root, settings, execute=True)
+            )
+            == 3
+        )
+    output = read_output(capsys)
+    receipt = json.loads((run_root / "run.json").read_bytes())
+    assert output["schema_version"] == receipt["schema_version"] == 2
+    assert output["launches"] == receipt["launches"] == 1
+    assert output["exit_code"] == 3 and output["receipt_persisted"] is True
+    # No original error was in flight, so the environment failure keeps its own
+    # pre-repair semantics: never swallowed, never a success claim.
+    assert receipt["lifecycle_exception"] == type(secondary).__name__
+    assert receipt["evidence_write_failures"] == []
+    assert len(events) == 2 and events[-1][0] == ("pop" if not present else "set")
+    assert mapping.get(slice_runner.AUTO_UPDATE_VARIABLE) == slice_runner.AUTO_UPDATE_VALUE
+    assert settings.read_bytes() == slice_fixtures.SETTINGS_BYTES
+
+
+@pytest.mark.parametrize(
+    "boundary,expected", [("assign", 0), ("native_effect", None), ("after_record", 1)]
+)
+@pytest.mark.parametrize("secondary_interrupt", [False, True])
+def test_simultaneous_finalization_failures_preserve_original_interrupt(
+    slice_case, tmp_path, monkeypatch, capsys, boundary, expected, secondary_interrupt
+):
+    settings = slice_fixtures._new_settings(tmp_path, "synthetic-settings.json")
+    original = KeyboardInterrupt("synthetic original launch interrupt")
+    secondary = (
+        KeyboardInterrupt("synthetic environment restore interrupt")
+        if secondary_interrupt
+        else OSError("synthetic environment restore failure")
+    )
+    _process, trace, _oracle = install_slice_interrupt(monkeypatch, boundary, original)
+    events = []
+    install_failing_environment(monkeypatch, events, present=False, error=secondary)
+    write = slice_runner._write_json_new
+    attempts = []
+
+    def fail_write(path, document):
+        attempts.append(path.name)
+        if path.name in {"config-restore.json", "run.json"}:
+            raise OSError("synthetic evidence write failure")
+        return write(path, document)
+
+    monkeypatch.setattr(slice_runner, "_write_json_new", fail_write)
+    run_root = tmp_path / "run"
+    with pytest.raises(KeyboardInterrupt) as caught:
+        slice_runner.main(
+            slice_fixtures._run_arguments(slice_case, run_root, settings, execute=True)
+        )
+    assert caught.value is original
+    output = read_output(capsys)
+    assert attempts.count("config-restore.json") == 1 and attempts.count("run.json") == 1
+    assert not (run_root / "run.json").exists()
+    assert output["schema_version"] == 2 and output["launches"] == expected
+    assert output["exit_code"] == 3 and output["receipt_persisted"] is False
+    assert output["run_receipt"] is None and output["lifecycle_exception"] == "KeyboardInterrupt"
+    assert output["evidence_write_failures"] == [
+        {"stage": "environment-restore", "error": type(secondary).__name__},
+        {"stage": "config-restore.json", "error": "OSError"},
+        {"stage": "run.json", "error": "OSError"},
+    ]
+    assert trace.count("spawn") == 1
+    assert len(events) == 2 and events[-1][0] == "pop"
+    assert settings.read_bytes() == slice_fixtures.SETTINGS_BYTES
+    assert "SECRET" not in json.dumps(output)
