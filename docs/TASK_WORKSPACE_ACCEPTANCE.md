@@ -167,4 +167,4 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | BC-EVIDENCE-01 / O | C真实fake encrypted session refs、自报/opaque/hash-null测试、测试报告digest漂移 | UID为opaque Unverified，原声明/观测保留，不自动Pass；失配产物单独保留，未核验测试不能作last_test_run |
 | BC-COMPAT-01 / O | 全旧离线回归与旧异常回执合同审查 | 旧成功/未启动/fixed argv/退出码回归保持；legacy nullable方案尚未冻结，旧adapter修正依赖暂停，不冒充三项全部完成 |
 
-显式验收命令包含原pytest testpaths的12模块（含test_bridge_winjob.py生命周期回归），再加test_task_run.py、test_task_workspace.py及test_task_bc_integration.py；每轮全新Scratch basetemp/log/XML。完整结果须列出D的两个已知发行失败和平台skip，不能用忽略这些模块的绿色局部回归替代。ruff check和format check只验证代码规范，不替代独立Review、D或真实R。
+显式验收命令包含原pytest testpaths的12模块，再加test_task_run.py、test_task_launch_lifecycle.py、test_task_workspace.py及test_task_bc_integration.py；每轮全新Scratch basetemp/log/XML。完整结果须列出D的两个已知发行失败和平台skip，不能用忽略这些模块的绿色局部回归替代。ruff check和format check只验证代码规范，不替代独立Review、D或真实R。
