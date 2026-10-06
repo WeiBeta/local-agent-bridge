@@ -67,9 +67,9 @@ def test_assign_happens_before_resume(monkeypatch):
         order.append("assign")
         return real_assign(job, proc)
 
-    def recording_resume(proc):
+    def recording_resume(proc, *, lifecycle):
         order.append("resume")
-        return real_resume(proc)
+        return real_resume(proc, lifecycle=lifecycle)
 
     monkeypatch.setattr(winjob, "assign_to_job", recording_assign)
     monkeypatch.setattr(winjob, "resume_verified", recording_resume)
@@ -224,7 +224,7 @@ def test_wrapper_construction_exception_reclaims_everything(monkeypatch):
     class ExplodingWrapper:
         uses_job = True
 
-        def __init__(self, proc, job):
+        def __init__(self, proc, job, *, lifecycle):
             raise RuntimeError("SECRET-wrapper-construction")
 
     monkeypatch.setattr(winjob, "spawn_suspended", tracked_spawn)
@@ -254,7 +254,7 @@ def test_wrapper_handle_missing_reclaims_via_job(monkeypatch):
     def handle_failing_on_wrapper(counter):
         def process_handle(proc):
             counter["count"] += 1
-            if counter["count"] == 3:  # assign(1), resume(2), wrapper init(3)
+            if counter["count"] == 2:  # assign(1), wrapper init(2), before resume
                 raise winjob.AgWinJobError("handle_unavailable")
             return real_process_handle(proc)
 

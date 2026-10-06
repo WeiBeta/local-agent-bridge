@@ -106,6 +106,9 @@ class _FakeStream:
     def read(self, size: int = -1) -> bytes:
         return self._chunks.pop(0) if self._chunks else b""
 
+    def close(self) -> None:
+        self.closed = True
+
 
 class _FakeProcess:
     def __init__(self, exit_code: int = 0, stdout_chunks=(), stderr_chunks=()) -> None:
@@ -223,9 +226,11 @@ def test_missing_cursor_project_config_refuses(cursor_case, capsys, monkeypatch,
 def test_execute_spawns_once_with_fixed_argv_and_seals(cursor_case, capsys, monkeypatch, tmp_path):
     spawn_calls: list = []
 
-    def fake_spawn(argv, cwd):
+    def fake_spawn(argv, cwd, *, lifecycle):
         spawn_calls.append((list(argv), cwd))
-        return _FakeProcess(stdout_chunks=[b'{"type":"result","subtype":"success"}\n'])
+        return _confirmed_spawn(
+            _FakeProcess(stdout_chunks=[b'{"type":"result","subtype":"success"}\n']), lifecycle
+        )
 
     monkeypatch.setattr(runner, "spawn_suspended_in_job", fake_spawn)
     env_before = os.environ.get(runner.AUTO_UPDATE_VARIABLE)
@@ -257,7 +262,9 @@ def test_child_nonzero_exit_is_recorded_not_claimed(cursor_case, capsys, monkeyp
     monkeypatch.setattr(
         runner,
         "spawn_suspended_in_job",
-        lambda argv, cwd: _FakeProcess(exit_code=2, stdout_chunks=[b"partial\n"]),
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(
+            _FakeProcess(exit_code=2, stdout_chunks=[b"partial\n"]), lifecycle
+        ),
     )
     run_root = tmp_path / "run-root"
     code, document, _err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
@@ -329,9 +336,9 @@ def test_capture_failure_drains_and_stays_unsealed(cursor_case, capsys, monkeypa
     )
     spawned: list = []
 
-    def fake_spawn(argv, cwd):
+    def fake_spawn(argv, cwd, *, lifecycle):
         spawned.append(argv)
-        return _FakeProcess(stdout_chunks=[b"z" * 2000])
+        return _confirmed_spawn(_FakeProcess(stdout_chunks=[b"z" * 2000]), lifecycle)
 
     monkeypatch.setattr(runner, "spawn_suspended_in_job", fake_spawn)
     run_root = tmp_path / "run-root"
@@ -374,7 +381,9 @@ def test_run_root_reuse_and_task_overlap_refused(cursor_case, capsys, monkeypatc
     monkeypatch.setattr(
         runner,
         "spawn_suspended_in_job",
-        lambda argv, cwd: _FakeProcess(stdout_chunks=[b"{}\n"]),
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(
+            _FakeProcess(stdout_chunks=[b"{}\n"]), lifecycle
+        ),
     )
     run_root = tmp_path / "run-root"
     first = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
@@ -580,7 +589,11 @@ def test_valid_prepared_config_still_passes(cursor_case, capsys, monkeypatch, tm
     configured = _prepare_task_with_config_bytes(tmp_path, CONFIG_BYTES)
     cursor_case.task_root = configured
     monkeypatch.setattr(
-        runner, "spawn_suspended_in_job", lambda argv, cwd: _FakeProcess(stdout_chunks=[b"{}\n"])
+        runner,
+        "spawn_suspended_in_job",
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(
+            _FakeProcess(stdout_chunks=[b"{}\n"]), lifecycle
+        ),
     )
     run_root = tmp_path / "run-root"
     code, document, err = _main(_run_arguments(cursor_case, run_root, execute=True), capsys)
@@ -610,3 +623,10 @@ def test_duplicate_key_manifest_that_verifies_is_a_controlled_refusal(
     assert "manifest_version" not in err
     assert not calls
     assert not run_root.exists()
+
+
+def _confirmed_spawn(process, lifecycle):
+    """Fake successful spawner supplies the same confirmation as its native contract."""
+    lifecycle.execution_state = "confirmed"
+    lifecycle.pid = process.pid
+    return process

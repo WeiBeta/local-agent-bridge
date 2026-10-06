@@ -160,6 +160,9 @@ class _FakeStream:
             return self._chunks.pop(0)
         return b""
 
+    def close(self) -> None:
+        self.closed = True
+
 
 class _StalledStream:
     def __init__(self, delay: float) -> None:
@@ -701,7 +704,11 @@ def test_capture_failure_drains_pipe_and_restores(
     monkeypatch.setattr(runner, "_session_store", lambda: store)
     output = b"z" * 2000
     process = _FakeProcess(_FakeStream(chunks=[output]), _FakeStream())
-    monkeypatch.setattr(runner, "spawn_suspended_in_job", lambda argv, cwd: process)
+    monkeypatch.setattr(
+        runner,
+        "spawn_suspended_in_job",
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(process, lifecycle),
+    )
     if failure == "disk_write":
         original_reserve = store.domain.reserve
         calls = {"count": 0}
@@ -912,7 +919,11 @@ def test_spawn_confirmed_capture_failure_reports_one_launch(
 ) -> None:
     settings = _new_settings(tmp_path, "settings.json")
     process = _FakeProcess(_FakeStream(error=OSError("broken pipe")), _FakeStream(chunks=[b""]))
-    monkeypatch.setattr(runner, "spawn_suspended_in_job", lambda argv, cwd: process)
+    monkeypatch.setattr(
+        runner,
+        "spawn_suspended_in_job",
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(process, lifecycle),
+    )
     run_root = tmp_path / "run-root"
     code, document, _err = _main(_run_arguments(case, run_root, settings, execute=True), capsys)
     assert code == 3
@@ -932,7 +943,11 @@ def test_stalled_reader_is_reported_incomplete_without_hash(
 ) -> None:
     settings = _new_settings(tmp_path, "settings.json")
     process = _FakeProcess(_StalledStream(0.5), _StalledStream(0.5))
-    monkeypatch.setattr(runner, "spawn_suspended_in_job", lambda argv, cwd: process)
+    monkeypatch.setattr(
+        runner,
+        "spawn_suspended_in_job",
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(process, lifecycle),
+    )
     monkeypatch.setattr(runner, "CAPTURE_JOIN_SECONDS", 0.1)
     run_root = tmp_path / "run-root"
     code, document, _err = _main(_run_arguments(case, run_root, settings, execute=True), capsys)
@@ -960,7 +975,11 @@ def test_reader_start_failure_closes_job_and_reports(case, capsys, monkeypatch, 
         def __getattr__(self, name):
             return getattr(self._real, name)
 
-    monkeypatch.setattr(runner, "spawn_suspended_in_job", lambda argv, cwd: process)
+    monkeypatch.setattr(
+        runner,
+        "spawn_suspended_in_job",
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(process, lifecycle),
+    )
     monkeypatch.setattr(threading, "Thread", _FailingThread)
     run_root = tmp_path / "run-root"
     code, _document, _err = _main(_run_arguments(case, run_root, settings, execute=True), capsys)
@@ -1003,7 +1022,11 @@ def test_final_capture_hash_failure_preserves_confirmed_spawn(
         _FakeStream(chunks=[b'{"type":"result","status":"SUCCESS"}\n']),
         _FakeStream(),
     )
-    monkeypatch.setattr(runner, "spawn_suspended_in_job", lambda argv, cwd: process)
+    monkeypatch.setattr(
+        runner,
+        "spawn_suspended_in_job",
+        lambda argv, cwd, *, lifecycle: _confirmed_spawn(process, lifecycle),
+    )
     original_hash = SessionStream.sha256.fget
 
     def fail_capture_hash(path: SessionStream) -> str:
@@ -1404,3 +1427,10 @@ def test_run_receipt_write_failure_emits_minimal_result(
     assert not blocked.exists()
     assert (run_root / "config-patch.json").exists()
     assert (run_root / "config-restore.json").exists()
+
+
+def _confirmed_spawn(process, lifecycle):
+    """Fake successful spawner supplies the same confirmation as its native contract."""
+    lifecycle.execution_state = "confirmed"
+    lifecycle.pid = process.pid
+    return process

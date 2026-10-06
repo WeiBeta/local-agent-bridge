@@ -323,8 +323,10 @@ class FakeProcess:
 def fake_spawn(case, monkeypatch, behavior=None, **process_args):
     process = FakeProcess(**process_args)
 
-    def spawn(argv, cwd):
+    def spawn(argv, cwd, *, lifecycle):
         case.calls.append((argv, cwd))
+        lifecycle.execution_state = "confirmed"
+        lifecycle.pid = process.pid
         if behavior:
             behavior()
         return process

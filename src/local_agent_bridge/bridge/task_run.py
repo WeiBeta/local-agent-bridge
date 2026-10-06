@@ -922,6 +922,7 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
     config = receipt["configuration"]["agy_settings"]
     lease = _configuration_lease(Path(config["path"])) if config else contextlib.nullcontext()
     writer = launch = None
+    lifecycle = winjob.LaunchLifecycle()
     interrupted: BaseException | None = None
     with lease:
         try:
@@ -949,27 +950,37 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
             if settings_path:
                 # Restoration is required even if a partial write raises.
                 result["restore_state"] = "Failed"
+                launch_error: BaseException | None = None
                 try:
                     slice_run._apply_settings_patch(settings_path, before, after)
-                    launch = _launch(context, writer, request, started, result)
+                    launch = _launch(context, writer, request, started, lifecycle)
+                except BaseException as error:
+                    launch_error = error
+                    raise
                 finally:
-                    restored = slice_run._restore_settings(settings_path, before, after, private)
-                    result["restore_state"] = (
-                        "Restored" if restored["restored_original_bytes"] else "Failed"
-                    )
-                    _persist(run_root / "config-restore.json", restored)
-                    result["evidence_refs"].append(
-                        {
-                            "ref": "config-restore.json",
-                            "sha256": _digest(_canonical(restored)),
-                            "origin": "HostObserved",
-                        }
-                    )
+                    try:
+                        restored = slice_run._restore_settings(
+                            settings_path, before, after, private
+                        )
+                        result["restore_state"] = (
+                            "Restored" if restored["restored_original_bytes"] else "Failed"
+                        )
+                        _persist(run_root / "config-restore.json", restored)
+                        result["evidence_refs"].append(
+                            {
+                                "ref": "config-restore.json",
+                                "sha256": _digest(_canonical(restored)),
+                                "origin": "HostObserved",
+                            }
+                        )
+                    except BaseException:
+                        if launch_error is None:
+                            raise
             else:
                 result["restore_state"] = "Unchanged"
                 launch_error: BaseException | None = None
                 try:
-                    launch = _launch(context, writer, request, started, result)
+                    launch = _launch(context, writer, request, started, lifecycle)
                 except BaseException as error:
                     launch_error = error
                     raise
@@ -986,12 +997,12 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
                         result["blockers"].append("CursorConfigurationUnverified")
                         if launch_error is None and not isinstance(error, Exception):
                             raise
-            result["launch_count"] = 1 if launch.get("spawn_state") == "confirmed" else 0
+            result["launch_count"] = lifecycle.launch_count
             result["transport_state"] = (
                 "TimedOut"
                 if launch["timed_out"]
                 else "Completed"
-                if launch.get("exit_code") == 0
+                if launch.get("exit_code") == 0 and lifecycle.launch_count == 1
                 else "Failed"
             )
             if launch.get("capture_state") != "complete" or writer.incomplete_reason:
@@ -1020,6 +1031,7 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
                     }
                 )
         except BaseException as error:
+            result["launch_count"] = lifecycle.launch_count
             if not isinstance(error, Exception):
                 interrupted = error
             result["transport_state"] = "Failed"
@@ -1039,8 +1051,9 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
                 }
             )
         finally:
-            if launch is not None:
-                result["launch_count"] = 1 if launch.get("spawn_state") == "confirmed" else 0
+            result["launch_count"] = lifecycle.launch_count
+            if launch is not None or lifecycle.stage != "not_attempted":
+                launch = {**(launch or {}), **lifecycle.record()}
                 _persist(run_root / "launch.json", launch)
                 result["evidence_refs"].append(
                     {
@@ -1057,6 +1070,9 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
                 result["transport_state"] = (
                     "Failed" if result["transport_state"] != "TimedOut" else "TimedOut"
                 )
+            if lifecycle.launch_count is None:
+                result["transport_state"] = "Failed"
+                result["blockers"].append("LaunchUnverified")
             result["blockers"] = sorted(set(result["blockers"]))
             result["evidence_refs"] = _combine_evidence(
                 *([item] for item in result["evidence_refs"])
@@ -1068,7 +1084,11 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
 
 
 def _launch(
-    context: dict, writer: session.SessionWriter, request: str, started: float, result: dict
+    context: dict,
+    writer: session.SessionWriter,
+    request: str,
+    started: float,
+    lifecycle: winjob.LaunchLifecycle,
 ) -> dict:
     receipt = context["bundle"]["deployment_receipt"]
     entry = receipt["host_entry"]["path"]
@@ -1080,9 +1100,6 @@ def _launch(
     if remaining <= 0:
         raise TaskRunError("DeadlineExceeded")
 
-    def confirmed(_pid: int) -> None:
-        result["launch_count"] = 1
-
     return slice_run._launch_and_capture(
         entry,
         argv,
@@ -1090,7 +1107,7 @@ def _launch(
         writer.stream("stdout"),
         writer.stream("stderr"),
         timeout_seconds=remaining,
-        on_spawn=confirmed,
+        lifecycle=lifecycle,
     )
 
 

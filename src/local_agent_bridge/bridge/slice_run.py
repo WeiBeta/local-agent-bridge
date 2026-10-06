@@ -64,7 +64,11 @@ from local_agent_bridge.bridge.contract import (  # noqa: E402
     deep_equal_strict,
 )
 from local_agent_bridge.bridge.paths import _is_reparse, _is_within  # noqa: E402
-from local_agent_bridge.bridge.winjob import spawn_suspended_in_job  # noqa: E402
+from local_agent_bridge.bridge.winjob import (  # noqa: E402
+    LaunchLifecycle,
+    _close_child_pipes,
+    spawn_suspended_in_job,
+)
 from local_agent_bridge.capture.keys import SessionKeyError, load_key  # noqa: E402
 from local_agent_bridge.capture.retention import StorageError  # noqa: E402
 from local_agent_bridge.capture.session import (  # noqa: E402
@@ -517,24 +521,25 @@ def _launch_and_capture(
     *,
     timeout_seconds: float = OBSERVATION_TIMEOUT_SECONDS,
     on_spawn: Callable[[int], None] | None = None,
+    lifecycle: LaunchLifecycle | None = None,
 ) -> dict[str, object]:
     """Exactly one bounded launch; post-spawn failures are reported, never hidden.
 
-    A returned spawner result confirms a resumed process. A spawner exception
-    alone does not prove that no process existed or executed: resume and its
-    later bookkeeping may fail or be interrupted. The callback below observes
-    only a returned result; it cannot attest to those earlier failure windows.
-    Ordinary post-return capture failures use the record; BaseException still
-    propagates after the own Job is closed. Stalled readers get no final hash.
+    The caller and native spawner share one execution fact, including failures
+    before a process is returned. The callback remains a post-return observer.
+    Interrupts propagate unchanged after cleanup. Stalled readers get no hash.
     """
     if isinstance(timeout_seconds, bool) or not 0 < timeout_seconds <= OBSERVATION_TIMEOUT_SECONDS:
         raise SliceRunError("observation deadline is outside the fixed limit")
     started = time.monotonic()
     started_utc = datetime.now(UTC).isoformat()
-    process = spawn_suspended_in_job(argv, cwd)
+    lifecycle = lifecycle if lifecycle is not None else LaunchLifecycle()
+    process = spawn_suspended_in_job(argv, cwd, lifecycle=lifecycle)
     statistics: dict[str, dict[str, object]] = {}
     readers: list[threading.Thread] = []
     capture_error: str | None = None
+    launch_error: BaseException | None = None
+    join_deadline: float | None = None
     timed_out = False
 
     def collect(stream, destination: SessionStream, prefix: str) -> None:
@@ -544,6 +549,7 @@ def _launch_and_capture(
             statistics[prefix] = {"error": type(error).__name__}
 
     try:
+        lifecycle.stage = "capture_start"
         if on_spawn is not None:
             on_spawn(process.pid)
         for prefix, stream, destination in (
@@ -556,26 +562,55 @@ def _launch_and_capture(
             readers.append(reader)
             reader.start()
         try:
+            lifecycle.stage = "capture_wait"
             process.wait(timeout=timeout_seconds)
+            lifecycle.child_exit_observed = True
         except subprocess.TimeoutExpired:
             timed_out = True
             process.terminate_once()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=KILL_GRACE_SECONDS)
-        deadline = time.monotonic() + CAPTURE_JOIN_SECONDS
+                lifecycle.child_exit_observed = True
+        join_deadline = time.monotonic() + CAPTURE_JOIN_SECONDS
         for reader in readers:
-            reader.join(timeout=max(0.0, deadline - time.monotonic()))
+            reader.join(timeout=max(0.0, join_deadline - time.monotonic()))
         if any(reader.is_alive() for reader in readers):
             capture_error = "reader_join_timeout"
-    except Exception as error:  # includes reader start and wait failures
+    except BaseException as error:  # includes interrupts after confirmed resume
+        launch_error = error
         capture_error = capture_error or type(error).__name__
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(BaseException):
             process.terminate_once()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(BaseException):
             process.wait(timeout=KILL_GRACE_SECONDS)
+            lifecycle.child_exit_observed = True
+        if not isinstance(error, Exception):
+            raise
     finally:
-        with contextlib.suppress(Exception):
-            process.close_job()
+        cleanup_error: BaseException | None = None
+        try:
+            closed = process.close_job()
+            lifecycle.job_closed = closed if type(closed) is bool else None
+            if closed is False:
+                capture_error = capture_error or "job_close_failed"
+        except BaseException as error:
+            cleanup_error = error
+        if join_deadline is None:
+            join_deadline = time.monotonic() + CAPTURE_JOIN_SECONDS
+        try:
+            for reader in readers:
+                if reader.ident is not None:
+                    reader.join(timeout=max(0.0, join_deadline - time.monotonic()))
+            if not any(reader.is_alive() for reader in readers):
+                lifecycle.pipes_closed = _close_child_pipes(process)
+                if lifecycle.pipes_closed is False:
+                    capture_error = capture_error or "pipe_close_failed"
+        except BaseException as error:
+            cleanup_error = cleanup_error or error
+        if cleanup_error is not None:
+            capture_error = capture_error or type(cleanup_error).__name__
+            if launch_error is None and not isinstance(cleanup_error, Exception):
+                raise cleanup_error
     for prefix in ("stdout", "stderr"):
         error = statistics.get(prefix, {}).get("error")
         if error and capture_error is None:
@@ -583,8 +618,7 @@ def _launch_and_capture(
     if stdout_path.writer.incomplete_reason or stderr_path.writer.incomplete_reason:
         capture_error = capture_error or stdout_path.writer.incomplete_reason
     record: dict[str, object] = {
-        "pid": process.pid,
-        "spawn_state": "confirmed",
+        **lifecycle.record(),
         "capture_state": "complete" if capture_error is None else "incomplete",
         "capture_error": capture_error,
         "timed_out": timed_out,

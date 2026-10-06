@@ -24,6 +24,8 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from ctypes import wintypes
+from dataclasses import dataclass, field
+from typing import Literal
 
 _WIN32 = sys.platform == "win32"
 
@@ -146,8 +148,64 @@ AG_WINJOB_ERROR_STAGES = frozenset(
         "thread_ownership_mismatch",
         "thread_resume_failed",
         "unexpected_suspend_count",
+        "thread_close_failed",
     }
 )
+
+
+@dataclass
+class LaunchLifecycle:
+    """One spawn's execution fact, shared across native calls and receipt writing.
+
+    Unknown reserves the single execution attempt; it is never permission to
+    retry. Cleanup observations concern our own handles, not non-execution.
+    """
+
+    execution_state: Literal["not_attempted", "confirmed", "unknown"] = "not_attempted"
+    stage: str = "not_attempted"
+    pid: int | None = None
+    pid_created_filetime: int | None = None
+    child_exit_observed: bool | None = None
+    pipes_closed: bool | None = None
+    job_closed: bool | None = None
+    thread_close_observations: list[bool | None] = field(default_factory=list)
+
+    @property
+    def launch_count(self) -> int | None:
+        return {"not_attempted": 0, "confirmed": 1, "unknown": None}[self.execution_state]
+
+    def begin_resume(self) -> str:
+        previous_state = self.execution_state
+        if previous_state != "confirmed":
+            self.execution_state = "unknown"
+        self.stage = "resume_call"
+        return previous_state
+
+    def observe_resume(self, previous_count: int, previous_state: str) -> None:
+        if previous_count == 1:
+            self.execution_state = "confirmed"
+        elif self.execution_state != "confirmed" and (
+            previous_count == _RESUME_FAILED or previous_count > 1
+        ):
+            # A reported failure or still-positive suspend count proves this
+            # call did not resume the thread. A return of zero does not.
+            self.execution_state = previous_state
+        self.stage = "resume_observed"
+
+    def record(self) -> dict[str, object]:
+        return {
+            "spawn_state": self.execution_state,
+            "launch_count": self.launch_count,
+            "stage": self.stage,
+            "pid": self.pid,
+            "pid_created_filetime": self.pid_created_filetime,
+            "cleanup": {
+                "child_exit_observed": self.child_exit_observed,
+                "pipes_closed": self.pipes_closed,
+                "job_closed": self.job_closed,
+                "thread_close_observations": list(self.thread_close_observations),
+            },
+        }
 
 
 class AgWinJobError(RuntimeError):
@@ -160,6 +218,7 @@ class AgWinJobError(RuntimeError):
         super().__init__(message)
         self.stage = stage
         self.detail = detail
+        self.lifecycle: LaunchLifecycle | None = None
 
 
 def _process_handle(proc: subprocess.Popen) -> int:
@@ -266,7 +325,7 @@ def _snapshot_thread_ids(pid: int) -> list[int]:
     return identifiers
 
 
-def resume_verified(proc: subprocess.Popen) -> None:
+def resume_verified(proc: subprocess.Popen, *, lifecycle: LaunchLifecycle | None = None) -> None:
     """Resume the suspended child after proving safe ownership.
 
     Every thread located through the snapshot is re-verified through its own
@@ -276,6 +335,8 @@ def resume_verified(proc: subprocess.Popen) -> None:
     liveness is rechecked from the held handle at each failure boundary and a
     dead process is reported as such instead of being treated as an error.
     """
+    lifecycle = lifecycle if lifecycle is not None else LaunchLifecycle()
+    lifecycle.stage = "resume_verify"
     handle = _process_handle(proc)
     pid = handle_pid(handle)
     if _liveness(handle) != "alive":
@@ -292,28 +353,54 @@ def resume_verified(proc: subprocess.Popen) -> None:
             if _liveness(handle) == "exited":
                 raise AgWinJobError("process_dead_before_resume")
             raise AgWinJobError("thread_open_failed", f"last_error={ctypes.get_last_error()}")
+        resume_error: BaseException | None = None
         try:
             owner_pid = int(_kernel.GetProcessIdOfThread(thread))
             if owner_pid != pid:
                 raise AgWinJobError("thread_ownership_mismatch")
+            previous_state = lifecycle.begin_resume()
             previous = int(_kernel.ResumeThread(thread))
+            lifecycle.observe_resume(previous, previous_state)
             if previous == _RESUME_FAILED:
                 raise AgWinJobError("thread_resume_failed", f"last_error={ctypes.get_last_error()}")
             if previous != 1:
                 # The initial CREATE_SUSPENDED thread must present suspend count 1;
                 # anything else means another actor already manipulated it. Fail closed.
                 raise AgWinJobError("unexpected_suspend_count", f"prev={previous}")
+        except BaseException as error:
+            resume_error = error
+            raise
         finally:
-            _kernel.CloseHandle(thread)
+            closed = None
+            try:
+                if resume_error is None:
+                    lifecycle.stage = "resume_thread_close"
+                closed = bool(_kernel.CloseHandle(thread))
+                if not closed and resume_error is None:
+                    raise AgWinJobError("thread_close_failed")
+            except BaseException:
+                if resume_error is None:
+                    raise
+            finally:
+                lifecycle.thread_close_observations.append(closed)
 
 
-def _close_child_pipes(proc: subprocess.Popen) -> None:
-    """Close a failed spawn's parent pipe ends; no readers exist on them yet."""
+def _close_child_pipes(proc: subprocess.Popen) -> bool:
+    """Close each parent pipe independently after its readers have stopped."""
+    closed = True
+    interrupted: BaseException | None = None
     for stream in (proc.stdout, proc.stderr):
         if stream is None:
             continue
-        with contextlib.suppress(OSError):
+        try:
             stream.close()
+        except BaseException as error:
+            closed = False
+            if not isinstance(error, OSError) and interrupted is None:
+                interrupted = error
+    if interrupted is not None:
+        raise interrupted
+    return closed
 
 
 def _reclaim_assigned(proc: subprocess.Popen, job: int) -> bool:
@@ -328,7 +415,7 @@ def _reclaim_assigned(proc: subprocess.Popen, job: int) -> bool:
         handle = _process_handle(proc)
     except AgWinJobError:
         handle = None
-    if _liveness(handle) == "exited":
+    if handle is not None and _liveness(handle) == "exited":
         with contextlib.suppress(Exception):
             proc.wait(timeout=_RECLAIM_WAIT_SECONDS)
         return True
@@ -343,7 +430,7 @@ def _reclaim_assigned(proc: subprocess.Popen, job: int) -> bool:
         return False
     if handle is None:
         return terminated
-    return _liveness(handle) != "alive"
+    return _liveness(handle) == "exited"
 
 
 class AgSuspendedJobProcess:
@@ -351,13 +438,18 @@ class AgSuspendedJobProcess:
 
     uses_job = True
 
-    def __init__(self, proc: subprocess.Popen, job: int) -> None:
+    def __init__(
+        self, proc: subprocess.Popen, job: int, *, lifecycle: LaunchLifecycle | None = None
+    ) -> None:
         self._proc = proc
         self._job = job
         self._job_closed = False
-        self.pid = proc.pid
+        self.lifecycle = lifecycle if lifecycle is not None else LaunchLifecycle()
         handle = _process_handle(proc)
+        self.pid = handle_pid(handle)
+        self.lifecycle.pid = self.pid
         self.pid_created_filetime = process_created_filetime(handle)
+        self.lifecycle.pid_created_filetime = self.pid_created_filetime
 
     @property
     def stdout(self):
@@ -402,7 +494,9 @@ class AgSuspendedJobProcess:
         return closed
 
 
-def spawn_suspended_in_job(argv: Sequence[str], cwd: str) -> AgSuspendedJobProcess:
+def spawn_suspended_in_job(
+    argv: Sequence[str], cwd: str, *, lifecycle: LaunchLifecycle | None = None
+) -> AgSuspendedJobProcess:
     """Production spawner: suspended spawn -> pre-execution Job ownership -> verified resume.
 
     Failures attempt reclamation through our own handle and close the Job.
@@ -410,29 +504,34 @@ def spawn_suspended_in_job(argv: Sequence[str], cwd: str) -> AgSuspendedJobProce
     native resume can have an unobserved result. Neither an exception nor
     successful reclamation proves non-execution. No normal-spawn fallback.
     """
-    job = create_kill_on_close_job()
+    lifecycle = lifecycle if lifecycle is not None else LaunchLifecycle()
+    job = proc = None
     try:
+        lifecycle.stage = "job_create"
+        job = create_kill_on_close_job()
+        lifecycle.stage = "suspended_spawn"
         proc = spawn_suspended(argv, cwd)
-    except BaseException:
-        _kernel.CloseHandle(job)
-        raise
-    try:
+        lifecycle.stage = "assign_job"
         assign_to_job(job, proc)
-        resume_verified(proc)
-        wrapper = AgSuspendedJobProcess(proc, job)
-    except AgWinJobError as error:
-        reclaimed = _reclaim_assigned(proc, job)
-        _close_child_pipes(proc)
-        _kernel.CloseHandle(job)
-        detail = f"reclaimed={reclaimed}"
-        if error.detail:
-            detail = f"{error.detail};{detail}"
-        raise AgWinJobError(error.stage, detail) from error
-    except BaseException:
-        # Covers wrapper construction and any unexpected failure: reclaim via
-        # the own Popen/Job, close the pipes, then re-raise unchanged.
-        _reclaim_assigned(proc, job)
-        _close_child_pipes(proc)
-        _kernel.CloseHandle(job)
+        lifecycle.stage = "prepare_identity"
+        wrapper = AgSuspendedJobProcess(proc, job, lifecycle=lifecycle)
+        resume_verified(proc, lifecycle=lifecycle)
+        lifecycle.stage = "wrapper_handoff"
+        return wrapper
+    except BaseException as error:
+        # Every cleanup is independent and must preserve the original failure,
+        # including an interrupt. None means the result was not observed.
+        if proc is not None:
+            with contextlib.suppress(BaseException):
+                lifecycle.child_exit_observed = _reclaim_assigned(proc, job)
+            with contextlib.suppress(BaseException):
+                lifecycle.pipes_closed = _close_child_pipes(proc)
+        if job is not None:
+            with contextlib.suppress(BaseException):
+                lifecycle.job_closed = bool(_kernel.CloseHandle(job))
+        if isinstance(error, AgWinJobError):
+            error.lifecycle = lifecycle
+            error.detail = (
+                f"{error.detail};" if error.detail else ""
+            ) + f"reclaimed={lifecycle.child_exit_observed}"
         raise
-    return wrapper
