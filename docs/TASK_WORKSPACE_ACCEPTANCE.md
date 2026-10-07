@@ -117,7 +117,7 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | --- | --- |
 | DOC-01 / D→I | 当前能力与候选功能明确区分；旧slice仍有原限制；新task允许完整任务内调试；CLI/README/usage/Skill/AGENTS不互相矛盾 |
 | DOC-02 / D→I | Skill明确读取部署回执的位置/字段/entry验证顺序；agy gemini-3.8-flash-high/high与Cursor grok-4.7-high非Fast均有文字；不把本机路径当通用安装路径 |
-| DOC-03 / I | sdist only-include加入新模块/新测试/两份文档及相关Skill引用；wheel/sdist独立环境只做fixture prepare/plan/collect；不误带旧MCP、运行目录、配置或秘密 |
+| DOC-03 / I | sdist only-include加入新模块/新测试/两份文档及相关Skill引用；wheel/sdist独立环境只做fixture prepare/plan/collect；不误带旧MCP、运行目录、配置或秘密。已审 LAB-TASK-D-PACKAGING-01 的精确集合断言含 task_run.py/task_workspace.py（含反例证明非包含式）；LAB-TASK-DELIVERY-INTEGRATION-01 选择性集成后，sdist 清单含三份 TASK 文档与全部17测试模块（含 legacy），wheel 仅 runtime 包与许可实体；新树构建/安装须重新验证，不复用 D wheel |
 | COMPAT-01 / O→I | 全部旧slice/Cursor/restore/capture/H3离线回归；固定模型与旧退出码语义未静默改变；缺--execute不启动/改设置 |
 | REVIEW-03 / I | 每个实现包有独立Review；不能仅实现者切模型自证；P0/P1按管理Repair规则处理，不在Review自行修复 |
 | RECEIPT-01 / D→I | 一次终态回执：TASK_ID/status/commit/证据引用/验证/下一步；发送失败最终留ReceiptDeliveryFailed，不轮询补偿 |
@@ -151,7 +151,7 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | CURSOR-FINALIZE-01 / O | 正常/异常/KeyboardInterrupt；project/global漂移、只读核验故障及核验中断 | 所有启动路径只读核验；Failed及RestoreFailed如实记录；原中断保留、配置不覆盖 |
 | EVIDENCE-ORDER-01 / O | 各输入引用、caller Plan乱序/重复；跨清单精确ref相同或hash/origin冲突；不同Unicode/大小写ref | 输入有序唯一；完全相同声明可合并，不同声明拒绝；输出按精确ref UTF-8排序，不折叠丢失 |
 
-原CONFIG/restore/capture/timeout和R02/R03回归保持。D尚未更新pytest testpaths/发行清单，新B/C和贯通测试显式加入验收命令。下节补B消费null与真实B产物贯通候选；D/旧receipt兼容仍待独立处理。本矩阵不表示独立Review通过。首次新task R入口留后续单独授权，production Ready仍须对应有效R。
+原CONFIG/restore/capture/timeout和R02/R03回归保持。选择性集成已审 D 的 pytest testpaths/发行清单后，默认 `uv run pytest` 按目录级 `tests/` 发现全部17模块（含新 B/C、贯通与 legacy 测试），sdist 清单携带三份 TASK 文档与全部测试模块。下节补B消费null与真实B产物贯通候选；旧receipt独立候选边界见第10节。本矩阵不表示新集成候选独立Review通过。首次新task R入口留后续单独授权，production Ready仍须对应有效R。
 
 ## 9. B/C 接口贯通候选（LAB-TASK-BC-INTEGRATION-01）
 
@@ -167,7 +167,7 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | BC-EVIDENCE-01 / O | C真实fake encrypted session refs、自报/opaque/hash-null测试、测试报告digest漂移 | UID为opaque Unverified，原声明/观测保留，不自动Pass；失配产物单独保留，未核验测试不能作last_test_run |
 | BC-COMPAT-01 / O | 全旧离线回归与旧异常回执合同审查 | 旧成功/未启动/fixed argv/退出码回归保持；后续LEGACY包工程冻结新执行schema v2，单独候选与Review，不把B/C结论冒充旧adapter接受 |
 
-显式验收命令包含原pytest testpaths的12模块，再加test_task_run.py、test_task_launch_lifecycle.py、test_task_workspace.py及test_task_bc_integration.py；每轮全新Scratch basetemp/log/XML。完整结果须列出D的两个已知发行失败和平台skip，不能用忽略这些模块的绿色局部回归替代。ruff check和format check只验证代码规范，不替代独立Review、D或真实R。
+验收命令为默认 `uv run pytest`（目录级 `tests/` 发现，当前17模块），并以显式 `pytest tests` 复核完整有序 nodeids 相同且无重复；新增同约定模块自动发现，发行清单与精确集合断言仍须同步。每轮全新Scratch basetemp/log/XML。完整结果须列出实际平台skip，不能用绿色局部回归替代；D两项已知发行清单失败须在本集成树重新验证。ruff check和format check只验证代码规范，不替代新集成候选独立发行复核或真实R。
 
 ## 10. 旧adapter执行回执v2候选（LAB-LEGACY-LAUNCH-RECEIPT-02）
 
@@ -180,4 +180,4 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | LEGACY-INTERRUPT-01 | 原生/capture/封口中断及次生恢复、各回执写入/stdout错误 | 原始中断优先，独立尽力收尾、非成功、不重试；原stage/PID/cleanup/null保留，不降级确认计数 |
 | LEGACY-CONSUMER-01 | 严格task collect尝试读取旧schema v1/v2/未知3 | RunReceiptInvalid/Failed、continuation=null，不跨合同误读；外部消费者未核验，不声明通用向后兼容 |
 
-完整显式测试集合在上一节16模块外再加入test_legacy_launch_receipts.py（共17模块）；保留已知D失败和实际平台skip。新旧候选边界、独立审查和真实部署不能用这些离线总数合并宣布接受。
+默认与显式测试集合均含test_legacy_launch_receipts.py（共17模块），sdist与精确发行测试清单同样登记；完整结果保留实际失败与平台skip。新旧候选边界、独立审查和真实部署不能用这些离线总数合并宣布接受。

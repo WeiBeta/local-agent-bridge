@@ -36,6 +36,8 @@ EXPECTED_PACKAGE_FILES = {
     "bridge/winjob.py",
     "bridge/cursor_run.py",
     "bridge/task_input.py",
+    "bridge/task_run.py",
+    "bridge/task_workspace.py",
     "capture/__init__.py",
     "capture/keys.py",
     "capture/retention.py",
@@ -48,6 +50,28 @@ EXPECTED_PACKAGE_FILES = {
     "resources/__init__.py",
     "resources/ag_slice_run_private.ps1",
     "resources/start_comfyui_h3.ps1",
+}
+
+# Every shipped test module, discovered through the directory-level testpaths
+# configuration rather than a hand-written module list.
+EXPECTED_TEST_MODULES = {
+    "tests/test_bridge_contract.py",
+    "tests/test_bridge_run.py",
+    "tests/test_bridge_slice.py",
+    "tests/test_bridge_winjob.py",
+    "tests/test_cursor_run.py",
+    "tests/test_distribution.py",
+    "tests/test_h3_adapter.py",
+    "tests/test_h3_mcp.py",
+    "tests/test_legacy_launch_receipts.py",
+    "tests/test_session_capture.py",
+    "tests/test_session_retention.py",
+    "tests/test_shadow_replay.py",
+    "tests/test_task_bc_integration.py",
+    "tests/test_task_input.py",
+    "tests/test_task_launch_lifecycle.py",
+    "tests/test_task_run.py",
+    "tests/test_task_workspace.py",
 }
 
 # Git blob object names of the license material restored verbatim from the
@@ -278,6 +302,9 @@ def test_source_archive_carries_the_new_product_documents_only() -> None:
         "docs/RELEASE_CHECKLIST.md",
         "docs/LICENSE_PROVENANCE.md",
         "docs/LOCAL_AGENT_BRIDGE_MIGRATION_PLAN.md",
+        "docs/TASK_PATH_DECISION.md",
+        "docs/TASK_WORKSPACE_CONTRACT.md",
+        "docs/TASK_WORKSPACE_ACCEPTANCE.md",
     ]
 
 
@@ -360,6 +387,60 @@ def test_source_archive_carries_the_license_material() -> None:
     assert "LICENSES" in only_include
     assert "docs/legal/PROVENANCE.zh-CN.md" in only_include
     assert "docs/legal/jimmy-mit-permission.png" in only_include
+
+
+def test_default_discovery_collects_every_shipped_test_module() -> None:
+    """Directory-level testpaths must equal explicit ``pytest tests`` discovery."""
+    document = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    options = document["tool"]["pytest"]["ini_options"]
+
+    assert options["testpaths"] == ["tests"]
+    shipped = {
+        path.relative_to(REPOSITORY_ROOT).as_posix()
+        for path in (REPOSITORY_ROOT / "tests").rglob("test_*.py")
+    }
+    assert shipped == EXPECTED_TEST_MODULES
+
+
+def test_package_inventory_gate_detects_an_injected_module(tmp_path) -> None:
+    """Exact set equality still rejects an extra file; the gate is not a subset check."""
+    probe_root = tmp_path / "local_agent_bridge"
+    probe_root.mkdir()
+    for relative in EXPECTED_PACKAGE_FILES:
+        target = probe_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"synthetic")
+    (probe_root / "audit_notes.py").write_bytes(b"synthetic")
+
+    relative = {
+        path.relative_to(probe_root).as_posix()
+        for path in probe_root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+
+    assert relative != EXPECTED_PACKAGE_FILES
+    assert relative - EXPECTED_PACKAGE_FILES == {"audit_notes.py"}
+
+
+def test_source_archive_carries_every_shipped_test_module() -> None:
+    document = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    only_include = document["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
+
+    for relative in sorted(EXPECTED_TEST_MODULES):
+        assert relative in only_include, relative
+
+
+def test_source_archive_carries_both_task_contract_documents() -> None:
+    document = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    only_include = document["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
+
+    for relative in (
+        "docs/TASK_WORKSPACE_CONTRACT.md",
+        "docs/TASK_WORKSPACE_ACCEPTANCE.md",
+        "docs/TASK_PATH_DECISION.md",
+    ):
+        assert relative in only_include, relative
+        assert (REPOSITORY_ROOT / relative).is_file(), relative
 
 
 def test_packaged_license_text_is_not_the_retired_products_readme_or_metadata() -> None:
