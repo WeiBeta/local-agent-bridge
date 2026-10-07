@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_task_run import digest, fake_spawn, identity, plan, prepare, sync, write_json
+from test_task_run import FakeProcess, digest, fake_spawn, identity, plan, prepare, sync, write_json
 
 from local_agent_bridge.bridge import slice_run, task_run, task_workspace, winjob
 from local_agent_bridge.capture.session import SessionWriter
@@ -53,6 +53,13 @@ def freeze(case):
 
 @pytest.fixture
 def case(tmp_path, monkeypatch):
+    original_close = FakeProcess.close_job
+
+    def close_job(process):
+        original_close(process)
+        return True  # The fake explicitly reports its already recorded successful owned close.
+
+    monkeypatch.setattr(FakeProcess, "close_job", close_job)
     value = prepare(
         tmp_path,
         monkeypatch,
@@ -167,6 +174,308 @@ def complete_output(case):
 
 def observations(case):
     return task_run._read(Path(case.sheet["run_root"]) / "validation.json")
+
+
+def retain_and_write(path, raw, *, retained_root=None):
+    root = path.parent if retained_root is None else retained_root
+    root.mkdir(exist_ok=True)
+    retained = root / (path.name + ".retained-" + str(len(list(root.glob("*.retained-*")))))
+    path.rename(retained)
+    path.write_bytes(raw)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "noncanonical",
+        "returned",
+        "task",
+        "plan",
+        "none_return",
+        "launch_missing",
+        "restore_missing",
+        "launch_hash",
+        "restore_hash",
+        "launch_ref_missing",
+        "restore_ref_missing",
+        "duplicate_bad",
+        "duplicate_good",
+        "launch_fact",
+        "restore_fact",
+        "restored_settings",
+        "unknown_ref",
+        "session_binding",
+    ],
+)
+def test_saved_lifecycle_and_every_local_declaration_are_required(case, monkeypatch, fault):
+    fake_spawn(case, monkeypatch, lambda: complete_output(case))
+    original_execute = task_run._execute_once
+    forbidden = case.base / "unrelated-evidence.json"
+    forbidden.write_bytes(b"not authorized evidence")
+    original_reader = task_run.read_host_input_bytes
+
+    def reader(*, path):
+        assert Path(path) != forbidden, "unknown evidence ref must not be read"
+        return original_reader(path=path)
+
+    monkeypatch.setattr(task_run, "read_host_input_bytes", reader)
+
+    def execute(*args, **kwargs):
+        returned = original_execute(*args, **kwargs)
+        root = Path(case.sheet["run_root"])
+        path = root / "run.json"
+        if fault == "none_return":
+            return None
+        if fault == "missing":
+            path.rename(root / "run.json.retained-original")
+        elif fault == "noncanonical":
+            retain_and_write(path, path.read_bytes() + b" ")
+        elif fault == "returned":
+            returned = {**returned, "restore_state": "Failed"}
+        elif fault == "restored_settings":
+            retain_and_write(case.settings, b'{"changed":true}')
+        else:
+            if fault in {"task", "plan"}:
+                returned["task_id" if fault == "task" else "plan_sha256"] = (
+                    "other-task" if fault == "task" else "e" * 64
+                )
+            elif fault in {"launch_ref_missing", "restore_ref_missing"}:
+                name = "launch.json" if fault.startswith("launch") else "config-restore.json"
+                returned["evidence_refs"] = [
+                    e for e in returned["evidence_refs"] if e["ref"] != name
+                ]
+            elif fault.startswith("duplicate"):
+                reference = next(e for e in returned["evidence_refs"] if e["ref"] == "launch.json")
+                returned["evidence_refs"].append(
+                    {**reference, "sha256": "f" * 64}
+                    if fault == "duplicate_bad"
+                    else reference.copy()
+                )
+            elif fault == "unknown_ref":
+                returned["evidence_refs"].append(
+                    {"ref": str(forbidden), "sha256": "a" * 64, "origin": "HostObserved"}
+                )
+            elif fault == "session_binding":
+                next(e for e in returned["evidence_refs"] if e["ref"].startswith("session:"))[
+                    "ref"
+                ] = "session:other"
+            else:
+                name = "launch.json" if fault.startswith("launch") else "config-restore.json"
+                evidence_path = root / name
+                if fault.endswith("missing"):
+                    evidence_path.rename(root / (name + ".retained-original"))
+                elif fault.endswith("hash"):
+                    retain_and_write(evidence_path, task_run._canonical({"drifted": True}))
+                else:
+                    value = task_run._read(evidence_path)
+                    value["launch_count" if name == "launch.json" else "final_sha256"] = (
+                        0 if name == "launch.json" else "a" * 64
+                    )
+                    retain_and_write(evidence_path, task_run._canonical(value))
+                    next(e for e in returned["evidence_refs"] if e["ref"] == name)["sha256"] = (
+                        digest(value)
+                    )
+            retain_and_write(path, task_run._canonical(returned))
+        return returned
+
+    monkeypatch.setattr(task_run, "_execute_once", execute)
+    result = invoke(case)
+    assert result["launch_count"] == 1 and len(case.calls) == 1
+    assert result == observations(case) and result["runtime_acceptance"] == "Unverified"
+    assert result["status"] == (
+        "ObservationRecorded" if fault in {"none_return", "duplicate_good"} else "Failed"
+    )
+    if fault in {"missing", "noncanonical", "returned", "task", "plan"}:
+        assert result["run_receipt_sha256"] is None
+    if fault == "duplicate_good":
+        assert len([e for e in result["run_evidence_checks"] if e["ref"] == "launch.json"]) == 2
+    if result["status"] == "ObservationRecorded":
+        assert result["run_receipt_sha256"] == task_run._digest(
+            (Path(case.sheet["run_root"]) / "run.json").read_bytes()
+        )
+        assert any(e["check"] == "OpaqueDeclarationOnly" for e in result["run_evidence_checks"])
+    if fault == "unknown_ref":
+        assert result["error_code"] == "RunEvidenceRefRejected"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "bytes",
+        "returned",
+        "task",
+        "artifact_manifest",
+        "artifact_missing",
+        "artifact_changed",
+        "extra_file",
+        "control",
+        "source_after_collect",
+        "directory_after_collect",
+        "environment",
+        "run_after_collect",
+    ],
+)
+def test_actual_collection_artifacts_and_final_binding_are_required(case, monkeypatch, fault):
+    fake_spawn(case, monkeypatch, lambda: complete_output(case))
+    original_collect = task_workspace.collect_task
+
+    def collect(**kwargs):
+        result = original_collect(**kwargs)
+        root = Path(case.sheet["result_root"])
+        path = root / "result.json"
+
+        def retain(target, raw):
+            retain_and_write(target, raw, retained_root=case.base / "retained-collected-files")
+
+        if fault == "missing":
+            path.rename(root / "result.json.retained-original")
+        elif fault == "bytes":
+            retain(path, path.read_bytes() + b" ")
+        elif fault == "returned":
+            result = {**result, "task_id": "other-return"}
+        elif fault == "task":
+            result["task_id"] = "other-task"
+            retain(path, task_run._canonical(result))
+        elif fault == "artifact_manifest":
+            manifest = root / "artifacts.json"
+            retain(manifest, manifest.read_bytes() + b" ")
+        elif fault in {"artifact_missing", "artifact_changed"}:
+            artifact = next(a for a in result["artifacts"] if a["origin"] == "CandidateTree")
+            target = root / artifact["path"]
+            if fault == "artifact_missing":
+                target.rename(case.base / "retained-candidate-file")
+            else:
+                retain(target, target.read_bytes() + b"changed")
+        elif fault == "extra_file":
+            (root / "undeclared.bin").write_bytes(b"synthetic")
+        elif fault == "control":
+            target = root / "host/control/plan.json"
+            value = task_run._read(target)
+            value["task_id"] = "wrong-control-task"
+            retain(target, task_run._canonical(value))
+            artifact = next(a for a in result["artifacts"] if a["path"] == "host/control/plan.json")
+            artifact.update({"bytes": target.stat().st_size, "sha256": digest(value)})
+            artifact_raw = task_run._canonical(result["artifacts"])
+            retain(root / "artifacts.json", artifact_raw)
+            result["continuation"]["artifact_manifest_sha256"] = task_run._digest(artifact_raw)
+            retain(path, task_run._canonical(result))
+        elif fault == "source_after_collect":
+            retain_and_write(case.root / "work/source.py", b"post-collection source drift")
+        elif fault == "directory_after_collect":
+            (case.root / "work/post-collect-authored").mkdir()
+        elif fault == "environment":
+            environment = Path(case.sheet["environment"]["path"])
+            retain_and_write(environment, environment.read_bytes() + b" ")
+        else:
+            run = Path(case.sheet["run_root"]) / "run.json"
+            run.rename(case.base / "retained-run-after-collect.json")
+        return result
+
+    monkeypatch.setattr(task_workspace, "collect_task", collect)
+    result = invoke(case)
+    assert result["status"] == "Failed" and result["launch_count"] == 1
+    assert len(case.calls) == 1 and result == observations(case)
+    assert (case.base / "fixture-permit.consumed.json").exists()
+
+
+def test_legitimate_authored_source_change_is_collected(case, monkeypatch):
+    def output():
+        complete_output(case)
+        (case.root / "work/source.py").write_bytes(b"answer = 30\n")
+        (case.root / "work/new-authored-directory").mkdir()
+
+    fake_spawn(case, monkeypatch, output)
+    result = invoke(case)
+    assert result["status"] == "ObservationRecorded" and result["launch_count"] == 1
+    assert (
+        Path(case.sheet["result_root"]) / "candidate/source.py"
+    ).read_bytes() == b"answer = 30\n"
+    assert (Path(case.sheet["result_root"]) / "candidate/new-authored-directory").is_dir()
+
+
+@pytest.mark.parametrize("fault", ["limit", "identity"])
+def test_saved_run_uses_bounded_stable_descriptor_read(case, monkeypatch, fault):
+    fake_spawn(case, monkeypatch, lambda: complete_output(case))
+    target = Path(case.sheet["run_root"]) / "run.json"
+    if fault == "limit":
+        original_reader = task_run.read_host_input_bytes
+
+        def reader(*, path):
+            if Path(path) == target:
+                with monkeypatch.context() as patches:
+                    patches.setattr(task_run, "_JSON_LIMIT", target.stat().st_size - 1)
+                    return original_reader(path=path)
+            return original_reader(path=path)
+
+        monkeypatch.setattr(task_run, "read_host_input_bytes", reader)
+    else:
+        original_stat = Path.stat
+        observations = 0
+
+        def stat_file(path, *args, **kwargs):
+            nonlocal observations
+            observed = original_stat(path, *args, **kwargs)
+            if path == target and kwargs.get("follow_symlinks", True):
+                observations += 1
+                if observations == 2:
+                    # The real descriptor stays open. Inject only the final path identity
+                    # observation, since this Windows file handle denies actual rename.
+                    changed = SimpleNamespace(
+                        **{
+                            key: getattr(observed, key)
+                            for key in (
+                                "st_dev",
+                                "st_ino",
+                                "st_size",
+                                "st_mtime_ns",
+                                "st_nlink",
+                                "st_mode",
+                                "st_file_attributes",
+                                "st_ctime_ns",
+                            )
+                        }
+                    )
+                    changed.st_ino += 1
+                    return changed
+            return observed
+
+        monkeypatch.setattr(Path, "stat", stat_file)
+    result = invoke(case)
+    assert result["status"] == "Failed" and result["launch_count"] == 1
+    assert result["run_receipt_sha256"] is None and len(case.calls) == 1
+    assert result["error_code"] == ("ResourceLimitExceeded" if fault == "limit" else "InputChanged")
+
+
+@pytest.mark.parametrize("fault", ["missing_run", "local_evidence", "collection"])
+def test_saved_evidence_cleanup_never_replaces_original_interrupt(case, monkeypatch, fault):
+    interrupt = KeyboardInterrupt("original private interrupt")
+    fake_spawn(case, monkeypatch, wait_error=interrupt)
+    original_execute = task_run._execute_once
+
+    def execute(*args, **kwargs):
+        try:
+            return original_execute(*args, **kwargs)
+        finally:
+            root = Path(case.sheet["run_root"])
+            name = "run.json" if fault == "missing_run" else "launch.json"
+            if fault != "collection":
+                (root / name).rename(root / (name + ".retained-original"))
+
+    monkeypatch.setattr(task_run, "_execute_once", execute)
+    if fault == "collection":
+
+        def fail(**kwargs):
+            raise OSError("secondary collection detail")
+
+        monkeypatch.setattr(task_workspace, "collect_task", fail)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        invoke(case)
+    assert caught.value is interrupt and len(case.calls) == 1
+    observed = observations(case)
+    assert observed["status"] == "Interrupted"
+    assert observed["launch_count"] == 1
 
 
 def test_fake_lifecycle_records_observation_and_keeps_production_blocked(case, monkeypatch):

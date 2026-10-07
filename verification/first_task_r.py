@@ -8,6 +8,7 @@ approved management permit and a non-editable, frozen wheel installation.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import json
 import os
@@ -282,13 +283,16 @@ def _verify_installation(sheet: dict, receipt: dict) -> None:
     task_run._verify_runtime_identity(receipt)
 
 
-def _verify_context(sheet: dict, roots: dict, environment: dict) -> tuple[dict, dict]:
-    context = task_run._load_inputs(
-        roots["task_root"],
-        roots["trusted_control_root"],
-        sheet["trusted_inputs_sha256"],
-        run_root=roots["run_root"],
-    )
+def _verify_context(
+    sheet: dict, roots: dict, environment: dict, *, context: dict | None = None
+) -> tuple[dict, dict]:
+    if context is None:
+        context = task_run._load_inputs(
+            roots["task_root"],
+            roots["trusted_control_root"],
+            sheet["trusted_inputs_sha256"],
+            run_root=roots["run_root"],
+        )
     task = context["task"]
     receipt = context["bundle"]["deployment_receipt"]
     profile = context["bundle"]["deployment_profile"]
@@ -385,7 +389,8 @@ def _checked_lifecycle_receipt(value: dict, sheet: dict) -> dict:
     task_run._enum(value["capture_state"], {"NotRun", "Sealed", "Incomplete"})
     task_run._enum(value["restore_state"], {"NotRun", "Unchanged", "Restored", "Failed"})
     task_run._strings(value["blockers"])
-    task_run._evidence(value["evidence_refs"])
+    # B's shape checker preserves duplicate declarations for individual verification.
+    task_workspace._evidence(value["evidence_refs"])
     task_workspace._tests(value["test_observations"])
     _require(
         count is not None
@@ -401,6 +406,268 @@ def _checked_lifecycle_receipt(value: dict, sheet: dict) -> dict:
     return value
 
 
+def _saved_json(path: Path) -> tuple[object, bytes]:
+    """C's bounded, descriptor-identity-checked read; hashes use these raw bytes."""
+    raw = task_run.read_host_input_bytes(path=str(path))
+    value = contract.decode_strict_json_bytes(raw, label="saved validation evidence")
+    _require(raw == task_run._canonical(value), "EvidenceNotCanonical")
+    return value, raw
+
+
+def _launch_fact(value: object, fallback: int | None) -> int | None:
+    if type(value) is dict and set(value) == task_workspace._RUN_KEYS:
+        count = value["launch_count"]
+        if count is None or (type(count) is int and count in {0, 1}):
+            return count
+    return fallback
+
+
+def _saved_launch_fact(roots: dict) -> int | None:
+    value, _ = _saved_json(roots["run_root"] / "launch.json")
+    task_run._enum(value.get("spawn_state"), {"not_attempted", "confirmed", "unknown"})
+    count = task_run.winjob.LaunchLifecycle(execution_state=value["spawn_state"]).launch_count
+    _require(contract.deep_equal_strict(count, value.get("launch_count")), "LaunchEvidenceMismatch")
+    # A fixed-root local launch fact is not a verified task-bound run receipt.
+    return count
+
+
+def _local_facts(ref: str, value: dict, run: dict, context: dict, roots: dict) -> None:
+    _require(type(value) is dict, "RunEvidenceInvalid")
+    if ref == "launch.json":
+        task_run._enum(value.get("spawn_state"), {"not_attempted", "confirmed", "unknown"})
+        lifecycle = task_run.winjob.LaunchLifecycle(execution_state=value["spawn_state"])
+        _require(
+            contract.deep_equal_strict(value.get("launch_count"), run["launch_count"])
+            and lifecycle.launch_count == run["launch_count"],
+            "LaunchEvidenceMismatch",
+        )
+        if run["transport_state"] == "Completed":
+            cleanup = value.get("cleanup", {})
+            _require(
+                type(value.get("exit_code")) is int
+                and value["exit_code"] == 0
+                and value.get("timed_out") is False
+                and value.get("capture_state") == "complete"
+                and type(cleanup) is dict
+                and all(
+                    cleanup.get(key) is True
+                    for key in ("child_exit_observed", "pipes_closed", "job_closed")
+                )
+                and type(cleanup.get("thread_close_observations")) is list
+                and all(item is True for item in cleanup["thread_close_observations"]),
+                "LaunchEvidenceMismatch",
+            )
+        if run["transport_state"] == "TimedOut":
+            _require(value.get("timed_out") is True, "LaunchEvidenceMismatch")
+    elif ref == "config-restore.json":
+        restored = run["restore_state"] == "Restored"
+        _require(value.get("restored_original_bytes") is restored, "RestoreEvidenceMismatch")
+        if restored:
+            config = context["bundle"]["deployment_receipt"]["configuration"]["agy_settings"]
+            _require(config is not None, "RestoreEvidenceMismatch")
+            _require(
+                value.get("status")
+                in {"restored", "restored_already_original", "restored_json_legal_layout_drift"}
+                and value.get("before_sha256") == config["sha256"]
+                and value.get("final_sha256") == config["sha256"],
+                "RestoreEvidenceMismatch",
+            )
+            _read_pinned(config)
+            for filename, expected in (
+                ("settings.original.bin", config["sha256"]),
+                ("settings.patched.bin", value.get("patched_sha256")),
+            ):
+                _read_pinned(
+                    {"path": str(roots["run_root"] / "private" / filename), "sha256": expected}
+                )
+    else:
+        task_run._object(value, {"exception_type", "launch_count"})
+        task_run._text(value["exception_type"])
+        _require(
+            contract.deep_equal_strict(value["launch_count"], run["launch_count"]),
+            "FailureEvidenceMismatch",
+        )
+
+
+def _saved_run(
+    sheet: dict, roots: dict, context: dict, returned: dict | None
+) -> tuple[dict, str, list]:
+    value, raw = _saved_json(roots["run_root"] / "run.json")
+    run = _checked_lifecycle_receipt(value, sheet)
+    _require(returned is None or contract.deep_equal_strict(returned, run), "RunReturnMismatch")
+    checks = []
+    local_refs = set()
+    opaque_refs = set()
+    refs = list(run["evidence_refs"])
+    refs.extend(evidence for test in run["test_observations"] for evidence in test["evidence_refs"])
+    for evidence in refs:
+        ref = evidence["ref"]
+        if evidence["origin"] != "HostObserved":
+            checks.append({**evidence, "check": "WorkerReportedUnverified"})
+            continue
+        task_run._hash(evidence["sha256"])
+        if ref.startswith("session:"):
+            _require(ref == "session:" + (run["capture_uid"] or ""), "SessionBindingMismatch")
+            opaque_refs.add(ref)
+            checks.append({**evidence, "check": "OpaqueDeclarationOnly"})
+            continue
+        # Never join unknown refs to a filesystem root, even when syntactically relative.
+        _require(
+            ref in {"launch.json", "config-restore.json", "lifecycle-failure.json"},
+            "RunEvidenceRefRejected",
+        )
+        evidence_value, evidence_raw = _saved_json(roots["run_root"] / ref)
+        _require(task_run._digest(evidence_raw) == evidence["sha256"], "RunEvidenceDigestMismatch")
+        _local_facts(ref, evidence_value, run, context, roots)
+        local_refs.add(ref)
+        checks.append(
+            {**evidence, "actual_sha256": task_run._digest(evidence_raw), "check": "Match"}
+        )
+    if run["launch_count"] != 0 or run["transport_state"] == "Completed":
+        _require("launch.json" in local_refs, "LaunchEvidenceMissing")
+    if run["restore_state"] in {"Restored", "Failed"}:
+        _require("config-restore.json" in local_refs, "RestoreEvidenceMissing")
+    if run["capture_state"] == "Sealed":
+        _require(bool(opaque_refs), "SessionBindingMismatch")
+    return run, task_run._digest(raw), checks
+
+
+def _saved_collection(sheet: dict, roots: dict, context: dict, returned: dict) -> str:
+    result, result_raw = _saved_json(roots["result_root"] / "result.json")
+    _require(contract.deep_equal_strict(result, returned), "CollectionReturnMismatch")
+    task_workspace._version(result)
+    task = context["task"]
+    _require(
+        result["task_id"] == task["task_id"]
+        and result["snapshot_id"] == task["snapshot_id"]
+        and result["task_manifest_sha256"] == sheet["task_manifest_sha256"]
+        and result["plan_sha256"] is None
+        and result["management_decision"] is None,
+        "CollectionBindingMismatch",
+    )
+    artifacts, artifact_raw = _saved_json(roots["result_root"] / "artifacts.json")
+    changes, changes_raw = _saved_json(roots["result_root"] / "changes.json")
+    _require(
+        contract.deep_equal_strict(artifacts, result["artifacts"])
+        and contract.deep_equal_strict(changes, result["changes"]),
+        "ArtifactBindingMismatch",
+    )
+    expected = {
+        "result.json": (len(result_raw), task_run._digest(result_raw)),
+        "artifacts.json": (len(artifact_raw), task_run._digest(artifact_raw)),
+        "changes.json": (len(changes_raw), task_run._digest(changes_raw)),
+    }
+    for artifact in task_run._list(artifacts):
+        task_workspace._object(artifact, {"path", "bytes", "sha256", "origin"})
+        relative = task_workspace._path(artifact["path"])
+        task_workspace._integer(
+            artifact["bytes"], 0, task["source_output_bytes_limit"] + task_run._JSON_LIMIT
+        )
+        task_workspace._hash(artifact["sha256"])
+        task_workspace._enum(
+            artifact["origin"], {"HostValidation", "WorkerOutput", "CandidateTree"}
+        )
+        _require(relative not in expected, "ArtifactBindingMismatch")
+        expected[relative] = (artifact["bytes"], artifact["sha256"])
+    deadline = task_run.task_input._Deadline.starting_now(sheet["deadline_seconds"])
+    # The actual set and byte total must equal B's already bounded publication.
+    files, _ = task_workspace._inventory(
+        roots["result_root"], sum(size for size, _ in expected.values()), deadline
+    )
+    _require(files == expected, "ArtifactBindingMismatch")
+    for relative, value in (
+        ("host/control/plan.json", context["plan"]),
+        ("host/control/deployment-receipt.json", context["bundle"]["deployment_receipt"]),
+    ):
+        frozen = task_run._canonical(value)
+        _require(
+            files.get(relative) == (len(frozen), task_run._digest(frozen)),
+            "CollectedControlChanged",
+        )
+    candidate, directories = task_workspace._inventory(
+        roots["result_root"] / "candidate", task["source_output_bytes_limit"], deadline
+    )
+    continuation = result["continuation"]
+    _require(
+        type(continuation) is dict
+        and continuation["snapshot_id"] == task["snapshot_id"]
+        and continuation["task_manifest_sha256"] == sheet["task_manifest_sha256"]
+        and continuation["artifact_manifest_sha256"] == task_run._digest(artifact_raw)
+        and continuation["candidate_tree_sha256"]
+        == task_workspace._tree_sha(candidate, directories),
+        "CollectionBindingMismatch",
+    )
+    snapshot = task_run.task_input.read_snapshot(
+        snapshot_root=roots["task_root"] / "control" / "snapshot"
+    )
+    baseline, baseline_dirs, _ = task_run.task_input._validate_snapshot_manifest(snapshot)
+    work, work_dirs = task_workspace._inventory(
+        roots["task_root"] / "work", task["source_output_bytes_limit"], deadline
+    )
+    generated = task_workspace._generated_work_roots(work_dirs, baseline, baseline_dirs)
+    authored_work = {
+        path: stamp for path, stamp in work.items() if not task_workspace._under(path, generated)
+    }
+    authored_directories = {
+        path for path in work_dirs if not task_workspace._under(path, generated)
+    }
+    _require(
+        task_workspace._tree_sha(authored_work, authored_directories)
+        == continuation["candidate_tree_sha256"],
+        "CollectedSourceChanged",
+    )
+    source_files = {
+        ("generated/work/" if task_workspace._under(path, generated) else "candidate/")
+        + path: stamp
+        for path, stamp in work.items()
+    }
+    for name in ("out", "scratch"):
+        source, _ = task_workspace._inventory(
+            roots["task_root"] / name, task["source_output_bytes_limit"], deadline
+        )
+        source_files.update({name + "/" + path: stamp for path, stamp in source.items()})
+    collected_source = {
+        artifact["path"]: files[artifact["path"]]
+        for artifact in artifacts
+        if artifact["origin"] in {"CandidateTree", "WorkerOutput"}
+    }
+    _require(source_files == collected_source, "CollectedSourceChanged")
+    return task_run._digest(result_raw)
+
+
+def _final_context(
+    sheet: dict, roots: dict, environment: dict, path: Path, expected: str, context: dict
+) -> None:
+    current = _sheet(path, expected)
+    current_environment = _environment(current)
+    _require(
+        current == sheet
+        and current_environment == environment
+        and _roots(current, current_environment, path, initial=False) == roots,
+        "PermitChanged",
+    )
+    _require(os.environ.get("LOCALAPPDATA") == str(roots["local_appdata"]), "EnvironmentUnverified")
+    bundle = task_run.load_trusted_inputs(
+        trusted_control_root=roots["trusted_control_root"],
+        trusted_inputs_sha256=sheet["trusted_inputs_sha256"],
+        task_root=roots["task_root"],
+        run_root=roots["run_root"],
+    )
+    _require(
+        contract.deep_equal_strict(bundle, context["bundle"])
+        and task_run._read(roots["task_root"] / "task.json") == context["task"],
+        "ControlChanged",
+    )
+    # Public B checks frozen controls/rules; Worker-authored source may legitimately change.
+    task_workspace.verify_input_controls(
+        task_root=roots["task_root"],
+        task_manifest=context["task"],
+        deployment_profile=bundle["deployment_profile"],
+        authorization=bundle["authorization"],
+    )
+    _verify_context(sheet, roots, environment, context=context)
+
+
 def _observation(
     sheet: dict,
     expected: str,
@@ -408,10 +675,15 @@ def _observation(
     collection: dict | None,
     error: BaseException | None,
     *,
-    called: bool,
+    launch_count: int | None,
+    run_sha256: str | None,
+    collection_sha256: str | None,
+    evidence_checks: list,
 ) -> dict:
     recorded = (
         error is None
+        and run_sha256 is not None
+        and collection_sha256 is not None
         and run is not None
         and run["launch_count"] == 1
         and run["transport_state"] == "Completed"
@@ -438,9 +710,10 @@ def _observation(
         else "ObservationRecorded"
         if recorded
         else "Failed",
-        "launch_count": run["launch_count"] if run is not None else None if called else 0,
-        "run_receipt_sha256": _digest(run) if run is not None else None,
-        "collection_sha256": _digest(collection) if collection is not None else None,
+        "launch_count": launch_count,
+        "run_receipt_sha256": run_sha256,
+        "collection_sha256": collection_sha256,
+        "run_evidence_checks": evidence_checks,
         "collection_mode": "ArtifactsOnlyNullRun",
         "error_code": _error_code(error) if error is not None else None,
         "runtime_acceptance": "Unverified",
@@ -455,7 +728,8 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
     sheet = _sheet(sheet_path, expected_sha256)
     environment = _environment(sheet)
     roots = _roots(sheet, environment, sheet_path, initial=True)
-    _verify_context(sheet, roots, environment)
+    initial_context, initial_plan = _verify_context(sheet, roots, environment)
+    initial_context["plan"] = initial_plan
     marker = {
         "kind": "ConsumedTaskRuntimeValidationPermit",
         "permit_sha256": expected_sha256,
@@ -473,6 +747,9 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
         raise ValidationError("PermitConsumed") from error
 
     run = collection = None
+    run_sha256 = collection_sha256 = None
+    evidence_checks = []
+    launch_count = 0
     error = None
     called = owned_run = False
     previous_appdata = os.environ.get("LOCALAPPDATA")
@@ -501,22 +778,29 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
         context = recheck()
         plan = task_run._read(roots["task_root"] / "control" / "plan.json")
         called = True
+        launch_count = None
         run = task_run._execute_once(context, plan, roots["run_root"], recheck, started)
     except BaseException as caught:
         error = caught
     finally:
         try:
             if owned_run:
+                launch_count = _launch_fact(run, launch_count)
                 try:
-                    if run is None and (roots["run_root"] / "run.json").exists():
-                        run = task_run._read(roots["run_root"] / "run.json")
-                    if run is not None:
-                        run = _checked_lifecycle_receipt(run, sheet)
+                    if run is None:
+                        saved, _ = _saved_json(roots["run_root"] / "run.json")
+                        launch_count = _launch_fact(saved, launch_count)
+                    run, run_sha256, evidence_checks = _saved_run(
+                        sheet, roots, initial_context, run
+                    )
                 except BaseException as secondary:
-                    run = None
+                    if called and run is None and launch_count is None:
+                        # Unknown evidence cannot mask the original lifecycle error.
+                        with contextlib.suppress(BaseException):
+                            launch_count = _saved_launch_fact(roots)
                     if error is None:
                         error = secondary
-                if run is not None:
+                if called:
                     try:
                         collection = task_workspace.collect_task(
                             task_root=roots["task_root"],
@@ -526,11 +810,32 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
                             run_root=None,
                             result_root=roots["result_root"],
                         )
+                        collection_sha256 = _saved_collection(
+                            sheet, roots, initial_context, collection
+                        )
+                        _final_context(
+                            sheet, roots, environment, sheet_path, expected_sha256, initial_context
+                        )
+                        # Collect must not create a window in which run/evidence can drift.
+                        saved_run, saved_sha256, saved_checks = _saved_run(
+                            sheet, roots, initial_context, run
+                        )
+                        _require(saved_sha256 == run_sha256, "RunEvidenceChanged")
+                        run, evidence_checks = saved_run, saved_checks
                     except BaseException as secondary:
+                        run_sha256 = collection_sha256 = None
                         if error is None:
                             error = secondary
                 observation = _observation(
-                    sheet, expected_sha256, run, collection, error, called=called
+                    sheet,
+                    expected_sha256,
+                    run,
+                    collection,
+                    error,
+                    launch_count=launch_count,
+                    run_sha256=run_sha256,
+                    collection_sha256=collection_sha256,
+                    evidence_checks=evidence_checks,
                 )
                 try:
                     task_run._persist(roots["run_root"] / "validation.json", observation)
@@ -544,7 +849,17 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
                 os.environ["LOCALAPPDATA"] = previous_appdata
     if error is not None and not isinstance(error, Exception):
         raise error
-    return _observation(sheet, expected_sha256, run, collection, error, called=called)
+    return _observation(
+        sheet,
+        expected_sha256,
+        run,
+        collection,
+        error,
+        launch_count=launch_count,
+        run_sha256=run_sha256,
+        collection_sha256=collection_sha256,
+        evidence_checks=evidence_checks,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

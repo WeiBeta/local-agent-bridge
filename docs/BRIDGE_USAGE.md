@@ -96,3 +96,5 @@ stdout 是原业务 JSON 加一个传输 LF，固定错误在 stderr；CLI 退�
 许可排他消费后失败也不重用；正常Plan保持Blocked，生命周期调用明确标作验证程序所得。validation.json的ObservationRecorded仅表示观测已保存，Failed/Interrupted保存缺口；R始终Unverified，独立核验与管理接受另做。程序不覆盖旧控制或删除失败，不读取历史会话/导出key/解密。专用LOCALAPPDATA只在该进程内临时设置并恢复，真实agy会继承，其兼容性、登录和Worker Shell实际使用未验；后续普通入口复用R须管理核对同环境适用范围，不自动验收默认生产state根。
 
 B只在既有null-run模式回收本验证候选，transport仍NotRun，验收项Unrun。独立生命周期事实另存，不能作为Blocked Plan下的普通run回执交B。正常B对此回执仍返回RunReceiptInvalid；验证程序不更改该门禁，也不宣称正常run真实贯通。
+
+45a22cf的落盘缺失P1已被独立Review拒绝；LAB-FIRST-TASK-R-REPAIR-01仅提出修复候选。修复程序重读固定run与本地launch/restore证据、实际B result/artifacts及同任务控制/环境，不用C/B返回对象哈希替代保存证明。缺失/漂移/错绑定失败也保留原0/1/null启动事实和原中断；opaque会话引用只记录声明，不能据此断言密文或命令已实测，不解密。修复自检不批准ArtifactsOnlyNullRun模式，仍须新的独立Review及另行真实许可；本轮没有runtime安装、完整发行复建或真实调用。

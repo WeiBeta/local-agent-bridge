@@ -248,3 +248,17 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | RDIST-01 | 新测试模块纳入默认/显式/JUnit完整有序发现与sdist；验证程序仅进sdist，不进wheel、不新增console/MCP/依赖；实际新sdist→wheel核对全部包内payload |
 
 自检不替代独立 Review。首次R-a/R-b、真实安装/权限/费用/模型可用性、原生命令取证、默认生产capture根和current-main选择性整合全部待各自冻结和验收；不能从本表或fake Approved验收单继承实际许可。
+
+### 第一轮落盘证据 Repair 矩阵（LAB-FIRST-TASK-R-REPAIR-01）
+
+先固定短决策及成组矩阵，再实现；原独立缺失反例修前复现，修后仍用其只读helper副本、既有审查测试安装与合成边界复核。本轮不安装runtime、不复建完整发行包；自检不得宣称独立接受。
+
+| 组 | 离线缺失/变更/错绑定与正常对照 |
+| --- | --- |
+| RSAVED-01 | C返回dict/None均重读固定run；缺失、非规范raw、返回差异、task/plan错绑定失败；合法None返回但存在文件正常；SHA来自文件，0/1/null事实不重置 |
+| RLOCAL-01 | launch/restore文件及必需引用缺失、hash不符、事实错绑定、恢复后实际设置漂移失败；重复引用逐项验，任一重复hash错失败；未知ref不得被读取；opaque只标声明范围 |
+| RRESULT-01 | result缺失/非规范/返回差异/task错绑定，artifact清单或文件漂移、缺失/额外文件、重新自洽但错误的host控制均失败；核实际文件、树和来源Task |
+| RFINAL-01 | 回收后源树、环境和run漂移拒绝；合法Worker业务源码修改与实际回收对照通过；同任务控制和外部许可仍冻结 |
+| RINT-01 | 原中断叠加run/local证据缺失或collect失败仍传播原对象；固定launch可保留已发生计数，缺回执不生成run SHA；场景和许可不清理、不重试 |
+
+完整pytest、Ruff、format按常规运行。其结果只属于Repair自检；新的独立Review补齐此前因P1停止的矩阵与发行审计，真实Task R仍未验。

@@ -558,3 +558,15 @@ Caps.execute 是 Worker 测试/命令能力，`--execute` 是宿主是否启动�
 独立 `validation.json` 标明kind=TaskRuntimeValidation、普通Plan=Blocked、R=Unverified、management_decision=null；状态仅ObservationRecorded/Failed/Interrupted。C run.json与B result完整保留，其Completed/Pass不提升为R或业务接受。生命周期只调用一次；launch_count=0/1/null来自C事实，无回执的执行异常保守记null；中断尽力保存观测后传播原异常，不用次生写入/collect异常替换。前置拒绝仅返回固定非敏感错误，可信调用方保留自己的失败回执。程序不解密、不判断命令业务质量、不产出Accepted；后续R-a/R-b及独立核验、管理接受另行授权。
 
 B的普通run回执规则明确拒绝Blocked Plan且launch_count非0，本程序不改变该规则。独立验证只用既有 `collect_task(run_root=None)` 回收候选，仍核完整receipt/plan控制、范围和必需产物；B.transport=NotRun、acceptance=Unrun、management_decision=null。validation.collection_mode=ArtifactsOnlyNullRun，C生命周期run.json/hash单独保存，不能把它交B当作已接受的普通run。ObservationRecorded还要求生命周期完整、B.scope=Pass及outputs=Pass；它不表示普通run贯通或R通过。此数据分离是离线候选协议，真实路径仍待独立Review和作者批准。
+
+### 首次验证落盘证据修复候选（LAB-FIRST-TASK-R-REPAIR-01）
+
+45a22cf因缺失固定run.json仍ObservationRecorded被独立P1拒绝，本修复自检不撤销该裁定、不接受null-run协议。无论C返回dict或None，均经C既有有界、普通单链接、保持句柄到最终身份观察的读取重读固定run.json，核strict JSON/canonical、冻结task/plan与返回对象严格一致。run_receipt_sha256只来自已核验的raw文件，最终复核或关联失败时保守置null；collection_sha256同样来自实际result.json，不能用内存对象摘要冒充落盘。
+
+run中的HostObserved与test_observations中的引用逐项核验，包括同名重复引用。只准读run根固定launch.json/config-restore.json/lifecycle-failure.json；未知或绝对/穿越ref拒绝，不按ref值任意读盘。启动声明核LaunchLifecycle计数与spawn状态、Completed/TimedOut及清理事实；恢复声明核原配置摘要、状态、实际恢复文件及专用original/patched备份。必要launch/restore声明或文件缺失、hash不符、事实矛盾均阻断ObservationRecorded。
+
+session:UID仅核声明与同run.capture_uid相等，run_evidence_checks标记OpaqueDeclarationOnly。它不证明密文/manifest存在、seal内容或真实host/命令实测，不从opaque hash推断成功；不读历史会话、不新增key读取或解密。WorkerReported保持未验证。launch_count与证据完成度分开：可信C返回或合法固定回执保留0/1/null；原中断且run缺失时可从固定launch文件保留一致的计数事实，但这不成为同Task/Plan的已核验run，缺口仍失败/中断且hash=null，无计数证据保守null。
+
+回收后重读固定B result/artifacts/changes规范文件，核与实际返回对象、task/snapshot/manifest绑定一致；复用B inventory、路径、生成目录与树摘要函数核实际文件集合、原字节长度/hash、candidate树、continuation摘要、host复制的原Plan/receipt及同Task当前work/out/scratch。最终复验许可、外部可信bundle、控制/规则、protected recipe和环境身份，不把Worker合法修改的业务源码重新当初始快照拒绝；最终再次重读run与每项local证据，回收期间漂移也不能完整观测。保存原launch事实、原中断和失败现场，不重试、覆盖或清理。
+
+仍只五文件离线Repair。普通B的Blocked+launch拒绝、普通run/R门禁、src、发行配置及入口不变；真实R为Unverified、真实方案ProposedRecommended/authorConfirmed=false。重新独立Review必须裁定这些落盘及关联门禁和协议模式，自检不是接受。
