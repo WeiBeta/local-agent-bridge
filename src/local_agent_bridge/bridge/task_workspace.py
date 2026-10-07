@@ -1139,16 +1139,19 @@ def _control_observations(
             _fail("ControlChanged")
         receipt_path = root / "control" / "deployment-receipt.json"
         receipt = None
-        if os.path.lexists(receipt_path):
+        receipt_present = os.path.lexists(receipt_path)
+        if receipt_present:
             receipt = _json(receipt_path, canonical=True)
             raw = inputs._canonical_json_bytes(receipt)
             if inputs._sha256_bytes(raw) != profile["receipt_sha256"]:
                 _fail("ControlChanged")
             files["control/deployment-receipt.json"] = (len(raw), inputs._sha256_bytes(raw))
         plan_path = root / "control" / "plan.json"
-        if os.path.lexists(plan_path):
-            if receipt is None:
-                _fail("ControlChanged")
+        plan_present = os.path.lexists(plan_path)
+        # Pure prepare has neither record; a plan publication requires both.
+        if receipt_present != plan_present or (plan_present and receipt is None):
+            _fail("ControlChanged")
+        if plan_present:
             plan = _json(plan_path, canonical=True)
             _plan(plan, task, inputs._sha256_bytes(inputs._canonical_json_bytes(task)))
             if (

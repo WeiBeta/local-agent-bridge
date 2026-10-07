@@ -84,3 +84,5 @@ v2的`launches`是`0/1/null`，来自本次调用方持有的同一份LaunchLife
 
 `prepare/plan/run` 的可信根和 bundle 摘要必须由管理作为单独 CLI 参数供给；不能写进 spec 或从 Worker/任务内容自算接受。Cursor 仅 task plan 可准备管理绑定的固定项目文件，原始模板字节保留。task run 默认在新运行根保存 NotRun，不初始化 key、不启动；显式 --execute 仍须原 C 全部门禁，无新 Task R 合法 Blocked。
 stdout 是原业务 JSON 加一个传输 LF，固定错误在 stderr；CLI 退出码不构成业务接受。离线 fake/self-check、独立 Review、首次真实 R 与部署分别记录，本候选没有实机声明。
+
+普通计划写入异常退出 2，原中断退出 130，材料原样保留。receipt 存在但 plan 缺失，或 Cursor 材料存在而计划不完整时，原 B collect 必须报告 ControlChanged、scope_status=Fail、continuation=null；纯 prepare 无这些材料仍合法。读取句柄保持有效到最终路径复核及最后一次句柄变化观察；这是有限观察，不保证观察后文件不变。LAB-TASK-CLI-REPAIR-01 自检仍须新的独立 Review。

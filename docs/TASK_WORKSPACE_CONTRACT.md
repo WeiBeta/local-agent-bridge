@@ -505,14 +505,14 @@ spec 是严格 UTF-8、无 BOM 的单个 JSON 文档；允许 JSON 空白，拒�
 
 source/policy 原样交给 A：Git 须精确 40 位提交与文件列表；ZIP 须明确摘要和 strip_prefix（可为 null）；目录须清单文件和明确摘要。policy 的 source_paths、excluded_paths、sensitive_paths、trusted_control_files 四项必填，原九项数值上限及缺省值保持。A 的目录清单预读取/条目解析资源风险仍为单独依赖，本阶段没有修复。task_manifest_path 严格 JSON 解码后由 B 校验原业务 schema；task_note_path 按原字节交给 B，保留 BOM、CRLF 和末尾换行状态。
 
-C 公开 `checked_host_path`、`read_host_input_bytes`、`load_trusted_inputs`、`prepare_cursor_project`。固定 64 MiB 的 Host 文件读取检查读取前大小、实际读取长度、普通单链接文件身份及读取前后稳定性；不增加可配置上限。Windows 路径查询与句柄查询的 ctime 各自作前后比较，其余身份信息跨查询核对。
+C 公开 `checked_host_path`、`read_host_input_bytes`、`load_trusted_inputs`、`prepare_cursor_project`。固定 64 MiB 的 Host 文件读取检查读取前大小、实际读取长度、普通单链接文件身份及读取前后稳定性；不增加可配置上限。读取句柄保持打开，完成最终路径检查后再查询同一句柄，作为本次最终变化观察点；opened/after/final 的 fstat ctime 相互比较，path-before/path-current 的 stat ctime 相互比较，其余身份信息跨查询核对。固定有限观察覆盖读后句柄查询至最终路径检查期间的变化；不重读或循环重试，不保证最后一次句柄观察之后的文件不可变，既有路径链点时检查限制保持。
 共享加载只从可信根读取 deployment-receipt.json、deployment-profile.json、authorization.json 三个 canonical JSON；bundle 与管理另外供给的摘要相等才继续。共享 receipt/profile/auth 绑定校验复用 C，完整 input_control_bindings 和 task/规则语义继续由 B 校验。尚未创建的 task_root 可以加载可信材料，但不得据此创建任务或读取 task.json。已知 task/snapshot/run/product 根与可信根不能相交；管理仍须供给业务及来源根以外的可信根，CLI 不扫描整机发现其他根。
 
 plan/run 的 C 入口和紧前复核继续重读可信材料、B 输入控制与原 work 树；不缓存接受、自动重 plan 或修复输入。运行身份的必需文件增加实际 cli.py 和 task_cli.py，旧 receipt 缺少它们会 Blocked，不能删减必需集合兼容旧证据。
 
 Cursor 仅在 task plan 前由 C 准备固定 task_root/.cursor/cli.json：原字节来自 trusted-control-root/cursor-project.json，摘要绑定于 receipt.configuration.cursor_project.sha256。这是固定原生模板，不是第四个通用合同对象。校验原 permissions.allow/deny 字符串数组 schema，不生成或合并权限；task/B 控制、原始 work、准确目标及保护范围均先核对。缺目录排他创建；已有目录只能包含普通单链接 cli.json，且必须同字节，只读复验。冲突、额外文件、链接、模板缺失或不符均拒绝。run 不准备配置，不读写全局配置来补救；未通过 R 仍 Blocked。
 
-Cursor 文件准备与原 C receipt/plan 持久化不是原子事务。后段失败返回 2，保留先前写入和失败现场；不删除、覆盖、回滚或自动重做，B collect 可能报告 ControlChanged。
+Cursor 文件准备与原 C receipt/plan 持久化不是原子事务。普通持久化异常返回 2，原中断返回 130，保留先前写入和失败现场，不删除、覆盖、回滚或自动重做。存在 deployment-receipt 但缺 plan，或存在 Cursor 准备材料而计划不完整，B collect 必须报告 ControlChanged，并将 scope_status=Fail、continuation=null；agy 与 Cursor 一致。纯 prepare 无 receipt/plan/Cursor 材料保持合法；完整计划仍按原 schema/摘要/保护范围核验。
 
 stdout 保持原 SnapshotManifest、TaskManifest、Plan、RunReceipt 或 ResultManifest 的单个 canonical UTF-8 JSON 对象，并增加一个传输 LF；落盘 canonical JSON 不带该 LF，文件摘要不包含传输换行。异常 stdout 为空，stderr 仅固定 `local-agent-bridge task: <stable-code>`，不输出路径、输入、异常正文或 traceback。
 
@@ -530,4 +530,4 @@ stdout 保持原 SnapshotManifest、TaskManifest、Plan、RunReceipt 或 ResultM
 CLI 退出 0 不接受 Worker 业务结果；collect 的 worker_status 不决定进程退出码，management_decision 仍为 null。
 Caps.execute 是 Worker 测试/命令能力，`--execute` 是宿主是否启动：静态 Review 可在 Caps.execute=false 且适用真实 R 下启动；prepare_dependencies=true 仍要求 Caps.execute=true；默认 dry run 即使 Caps.execute=true 也不启动。
 
-本候选的 synthetic Accepted/fake launch 只证明离线分支。首次真实 Task R/bootstrap、真实 agy/Cursor、独立 Review 和部署分别待验；本阶段无 Skill、H3/MCP、A/B 或真实配置变更。
+本候选的 synthetic Accepted/fake launch 只证明离线分支。首次真实 Task R/bootstrap、真实 agy/Cursor、独立 Review 和部署分别待验；无 Skill、H3/MCP、A 或真实配置变更。LAB-TASK-CLI-REPAIR-01 按管理扩大的范围，仅调整 B 对不完整计划的观察，不变更 Result schema。

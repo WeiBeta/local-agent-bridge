@@ -261,9 +261,12 @@ def read_host_input_bytes(*, path: str) -> bytes:
             opened = os.fstat(stream.fileno())
             raw = stream.read(_JSON_LIMIT + 1)
             after = os.fstat(stream.fileno())
-        if len(raw) > _JSON_LIMIT:
-            raise TaskRunError("ResourceLimitExceeded")
-        current = _file(target).stat()
+            if len(raw) > _JSON_LIMIT:
+                raise TaskRunError("ResourceLimitExceeded")
+            current = _file(target).stat()
+            # Keep this descriptor usable throughout the final path observation.
+            # This is the last bounded observation, not a lasting filesystem lock.
+            final = os.fstat(stream.fileno())
 
         def identity(info: os.stat_result) -> tuple:
             return (
@@ -276,11 +279,19 @@ def read_host_input_bytes(*, path: str) -> bytes:
                 getattr(info, "st_file_attributes", 0),
             )
 
-        if not identity(before) == identity(opened) == identity(after) == identity(current):
+        if not (
+            identity(before)
+            == identity(opened)
+            == identity(after)
+            == identity(current)
+            == identity(final)
+        ):
             raise TaskRunError("InputChanged")
         # Windows Python can report birth time through stat and change time
         # through fstat under the ctime name. Compare each clock with itself.
-        if before.st_ctime_ns != current.st_ctime_ns or opened.st_ctime_ns != after.st_ctime_ns:
+        if before.st_ctime_ns != current.st_ctime_ns or not (
+            opened.st_ctime_ns == after.st_ctime_ns == final.st_ctime_ns
+        ):
             raise TaskRunError("InputChanged")
         if len(raw) != before.st_size:
             raise TaskRunError("InputChanged")

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -392,6 +393,63 @@ def fake_spawn(case, monkeypatch, behavior=None, **process_args):
 
     monkeypatch.setattr(slice_run, "spawn_suspended_in_job", spawn)
     return process
+
+
+@pytest.mark.parametrize("moment", ["after_read_observation", "after_path_observation"])
+def test_reader_observes_changes_until_final_handle_check(tmp_path, monkeypatch, moment):
+    """Review R01 equivalent: actual same-length writes, with mtime restored."""
+    target = tmp_path / "spec.json"
+    original, changed = b'{"v":1}', b'{"v":2}'
+    target.write_bytes(original)
+    before = target.stat()
+    real_fstat, real_stat = os.fstat, Path.stat
+    handles, facts = [], []
+
+    def mutate():
+        time.sleep(0.05)  # Separate actual filesystem change clocks in this fixture.
+        target.write_bytes(changed)
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    def observe(descriptor):
+        info = real_fstat(descriptor)
+        handles.append(descriptor)
+        facts.append({"call": len(handles), "ctime_ns": info.st_ctime_ns})
+        if moment == "after_read_observation" and len(handles) == 2:
+            mutate()
+        return info
+
+    def path_observation(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if path == target and len(handles) == 2:
+            # The reader must retain the same usable descriptor through this observation.
+            real_fstat(handles[0])
+            if moment == "after_path_observation":
+                mutate()
+        return info
+
+    monkeypatch.setattr(os, "fstat", observe)
+    monkeypatch.setattr(Path, "stat", path_observation)
+    returned, code = None, None
+    try:
+        returned = runner.read_host_input_bytes(path=str(target))
+    except runner.TaskRunError as error:
+        code = error.code
+    (tmp_path / "reader-facts.json").write_text(
+        json.dumps(
+            {
+                "moment": moment,
+                "code": code,
+                "returned": None if returned is None else returned.decode(),
+                "current": target.read_bytes().decode(),
+                "mtime_restored": real_stat(target).st_mtime_ns == before.st_mtime_ns,
+                "handle_observations": facts,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    assert code == "InputChanged", facts
+    assert returned is None and len(handles) == 3
 
 
 @pytest.mark.parametrize("host", ["agy", "cursor"])

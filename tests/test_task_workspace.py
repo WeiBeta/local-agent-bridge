@@ -1552,6 +1552,20 @@ def cursor_host_fixture(tmp_path):
     )
     # Only the fixed post-prepare C/D additions; no native config is read.
     (root / "control" / "deployment-receipt.json").write_bytes(canonical(opaque_receipt))
+    plan = {
+        "contract_version": 1,
+        "task_id": task["task_id"],
+        "task_manifest_sha256": sha(canonical(task)),
+        "deployment_receipt_sha256": profile["receipt_sha256"],
+        "host": "cursor",
+        "route": {"model": "grok-4.7-high", "effort": None},
+        "execution_boundary": task["execution_boundary"],
+        "capabilities": task["capabilities"],
+        "preflight_status": "Ready",
+        "blockers": [],
+        "evidence_refs": [],
+    }
+    (root / "control" / "plan.json").write_bytes(canonical(plan))
     (root / ".cursor").mkdir()
     (root / ".cursor" / "cli.json").write_bytes(raw_config)
     progress(root, task)
@@ -1566,6 +1580,65 @@ def test_cursor_fixed_host_control_is_retained_as_host_validation(tmp_path):
     assert artifact["origin"] == "HostValidation" and artifact["sha256"] == sha(raw)
     assert (tmp_path / "result" / artifact["path"]).read_bytes() == raw
     assert all(not item["path"].startswith(".cursor") for item in result["changes"])
+
+
+@pytest.mark.parametrize("host", ["agy", "cursor"])
+@pytest.mark.parametrize(
+    "state", ["prepare_only", "receipt_only", "plan_only", "cursor_only", "full_plan"]
+)
+def test_control_publication_requires_a_complete_plan(tmp_path, host, state):
+    if host == "cursor":
+        root, task, _ = cursor_host_fixture(tmp_path)
+    else:
+        root, task, _ = prepare(tmp_path)
+        progress(root, task)
+        receipt_fixture(root, task)
+    retained = tmp_path / "retained-controls"
+    retained.mkdir()
+    for name, keep in (
+        ("deployment-receipt.json", state in {"receipt_only", "full_plan"}),
+        ("plan.json", state in {"plan_only", "full_plan"}),
+    ):
+        if not keep:
+            (root / "control" / name).rename(retained / name)
+    cursor = root / ".cursor"
+    if host == "cursor" and state == "prepare_only":
+        cursor.rename(retained / ".cursor")
+    elif host == "agy" and state == "cursor_only":
+        cursor.mkdir()
+        (cursor / "cli.json").write_bytes(b"synthetic unexpected Host material")
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    result = collect(root, run_root=None)
+    valid = state in {"prepare_only", "full_plan"}
+    assert result["host_observations"]["scope_status"] == ("Pass" if valid else "Fail")
+    assert ("ControlChanged" in result["blockers"]) is not valid
+    assert (result["continuation"] is None) is not valid
+    assert result["management_decision"] is None and result["worker_status"] == "Completed"
+    for path, raw in before.items():
+        assert path.read_bytes() == raw
+
+
+def test_null_receipt_file_does_not_become_pure_prepare(tmp_path):
+    source, snapshot = snapshot_fixture(tmp_path)
+    task, note, profile, auth = documents(snapshot)
+    # B owns presence/digest observation, while C owns the full receipt schema.
+    profile["receipt_sha256"] = sha(b"null")
+    bind(task, profile, auth)
+    root = tmp_path / "task"
+    prepare_task(
+        snapshot_root=source,
+        task_manifest=task,
+        task_note=note,
+        deployment_profile=profile,
+        authorization=auth,
+        task_root=root,
+    )
+    progress(root, task)
+    (root / "control/deployment-receipt.json").write_bytes(b"null")
+    result = collect(root, run_root=None)
+    assert "ControlChanged" in result["blockers"]
+    assert result["host_observations"]["scope_status"] == "Fail"
+    assert result["continuation"] is None
 
 
 @pytest.mark.parametrize("mutation", ["changed", "missing", "extra", "receipt-drift"])

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -631,3 +633,170 @@ def test_unexpected_failure_has_no_trace_or_raw_text(tmp_path, monkeypatch, caps
         },
     )
     assert code == 2 and result is None and error == "local-agent-bridge task: CliInternalError\n"
+
+
+def test_import_rejects_spec_changed_after_read_observation(tmp_path, monkeypatch, capsys):
+    """R01 actual CLI equivalent to the independently reviewed ZIP spec change."""
+    case = cli_case(tmp_path, monkeypatch, capsys)
+    source = tmp_path / "input.zip"
+    old_root, new_root = tmp_path / "out-one", tmp_path / "out-two"
+    fields = {
+        "source": input_fixtures._zip_source(source, runner._digest(source.read_bytes()), None),
+        "policy": input_fixtures._policy(trusted_control_files={"AGENTS.md": runner._digest(RULE)}),
+        "snapshot_root": str(old_root),
+    }
+    original = fixtures.canonical({"cli_contract_version": 1, **fields})
+    changed = fixtures.canonical(
+        {"cli_contract_version": 1, **fields, "snapshot_root": str(new_root)}
+    )
+    assert len(original) == len(changed)
+    spec = tmp_path / "invocation.json"
+    real_fstat, observations = os.fstat, []
+
+    def observe(descriptor):
+        info = real_fstat(descriptor)
+        observations.append(info.st_ctime_ns)
+        if len(observations) == 2:
+            before = spec.stat()
+            time.sleep(0.05)
+            spec.write_bytes(changed)
+            os.utime(spec, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return info
+
+    monkeypatch.setattr(os, "fstat", observe)
+    code, result, error = invoke(tmp_path, capsys, "import", fields, raw=original)
+    facts = {
+        "exit": code,
+        "result": result,
+        "error": error,
+        "old_published": old_root.exists(),
+        "new_published": new_root.exists(),
+        "current_spec_sha256": runner._digest(spec.read_bytes()),
+        "observations": observations,
+        "prepared_task_published": case.root.exists(),
+    }
+    (tmp_path / "spec-change-facts.json").write_text(json.dumps(facts, indent=2), encoding="utf-8")
+    assert code == 2 and result is None and error.endswith("InputChanged\n"), facts
+    assert not old_root.exists() and not new_root.exists()
+
+
+@pytest.mark.parametrize("host", ["agy", "cursor"])
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "receipt_before",
+        "receipt_partial",
+        "receipt_after",
+        "plan_before",
+        "plan_partial",
+        "plan_after",
+    ],
+)
+def test_partial_plan_persistence_is_observed_by_b(
+    tmp_path, monkeypatch, capsys, host, failure, stage
+):
+    case = prepared(tmp_path, monkeypatch, capsys, host=host)
+    original = runner._persist
+    filename, moment = stage.split("_")
+    expected_name = "deployment-receipt.json" if filename == "receipt" else "plan.json"
+
+    def persist(path, value, **options):
+        if path.name != expected_name:
+            return original(path, value, **options)
+        if moment == "partial":
+            with path.open("xb") as stream:
+                stream.write(fixtures.canonical(value)[:5])
+        elif moment == "after":
+            original(path, value, **options)
+        raise failure("synthetic fixed publication failure")
+
+    monkeypatch.setattr(runner, "_persist", persist)
+    code, result, _ = planned(tmp_path, capsys, case)
+    assert code == (130 if failure is KeyboardInterrupt else 2) and result is None
+    controls = [
+        case.root / "control/deployment-receipt.json",
+        case.root / "control/plan.json",
+        case.root / ".cursor/cli.json",
+    ]
+    retained = {path: path.read_bytes() for path in controls if path.exists()}
+    workspace_fixtures.progress(case.root, case.task)
+    code, result, _ = invoke(
+        tmp_path,
+        capsys,
+        "collect",
+        {"task_root": str(case.root), "run_root": None, "result_root": str(tmp_path / "collected")},
+    )
+    # A failure before agy writes anything still leaves exactly a pure prepare.
+    complete = stage == "plan_after" or (host == "agy" and stage == "receipt_before")
+    assert code == (0 if complete else 2), result["blockers"]
+    assert result["host_observations"]["scope_status"] == ("Pass" if complete else "Fail")
+    assert ("ControlChanged" in result["blockers"]) is not complete
+    assert (result["continuation"] is None) is not complete
+    assert result["management_decision"] is None and result["plan_sha256"] is None
+    assert not case.calls
+    for path, raw in retained.items():
+        assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt])
+@pytest.mark.parametrize(
+    "stage", ["mkdir_before", "mkdir_after", "file_before", "file_partial", "file_after"]
+)
+def test_cursor_preparation_failure_is_observed_by_b(tmp_path, monkeypatch, capsys, failure, stage):
+    case = prepared(tmp_path, monkeypatch, capsys, host="cursor")
+    directory, target = case.root / ".cursor", case.root / ".cursor/cli.json"
+    original_mkdir, original_open = Path.mkdir, Path.open
+
+    def fail():
+        raise failure("synthetic fixed Cursor preparation failure")
+
+    def mkdir(path, *args, **kwargs):
+        if path == directory and stage == "mkdir_before":
+            fail()
+        value = original_mkdir(path, *args, **kwargs)
+        if path == directory and stage == "mkdir_after":
+            fail()
+        return value
+
+    class PartialWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def write(self, raw):
+            self.stream.write(raw[:5])
+            fail()
+
+    @contextmanager
+    def failing_open(path, *args, **kwargs):
+        if stage == "file_before":
+            fail()
+        with original_open(path, *args, **kwargs) as stream:
+            yield PartialWriter(stream) if stage == "file_partial" else stream
+        if stage == "file_after":
+            fail()
+
+    def open_file(path, *args, **kwargs):
+        if path == target and args == ("xb",):
+            return failing_open(path, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(Path, "open", open_file)
+    code, value, _ = planned(tmp_path, capsys, case)
+    assert code == (130 if failure is KeyboardInterrupt else 2) and value is None
+    before = target.read_bytes() if target.exists() else None
+    workspace_fixtures.progress(case.root, case.task)
+    code, result, _ = invoke(
+        tmp_path,
+        capsys,
+        "collect",
+        {"task_root": str(case.root), "run_root": None, "result_root": str(tmp_path / "collected")},
+    )
+    incomplete = stage != "mkdir_before"
+    assert code == (2 if incomplete else 0)
+    assert ("ControlChanged" in result["blockers"]) is incomplete
+    assert (result["continuation"] is None) is incomplete
+    assert not case.calls and result["management_decision"] is None
+    if before is not None:
+        assert target.read_bytes() == before

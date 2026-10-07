@@ -189,11 +189,11 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | 组 | 必须验证 |
 | --- | --- |
 | CLI-01 | task 与五条 help 无输入访问；必填/重复/缩写/多余参数拒绝，错误无原始文本 |
-| CLI-02 | 严格 spec JSON、原路径拼写、64 MiB 读取前/后边界、身份变化、单链接 |
+| CLI-02 | 严格 spec JSON、原路径拼写、64 MiB 读取前/后边界、身份变化、单链接；真实 Windows 第二次 fstat 后及最终路径观察后的等长改写+恢复 mtime 必须 InputChanged，句柄持续有效 |
 | CLI-03 | 实际 Git/ZIP/目录经 CLI→A；源类型精确字段、摘要、strip_prefix 与 policy 必填 |
 | CLI-04 | 新 task_root 共享加载；管理固定摘要、canonical、receipt/profile/auth 绑定和根不交 |
 | CLI-05 | CLI→B prepare；task/note/规则原字节与 input_control_bindings；错误不发布任务 |
-| CLI-06 | Cursor 固定模板和只读复验；字节/schema/目录冲突及部分持久化失败原位保留 |
+| CLI-06 | Cursor 固定模板和只读复验；字节/schema/目录冲突及部分持久化失败原位保留；不完整计划收集必须 ControlChanged/Fail、continuation=null |
 | CLI-07 | 无适用 R 为 Blocked；Caps.execute 与 --execute 分离；静态 Review 不误禁宿主 |
 | CLI-08 | 实际 A→B→fake C→B；默认 dry run 不读 key/不启动，允许启动只一次 |
 | CLI-09 | trust/task note/source/rule/plan/runtime 身份漂移；run 不准备或修复 Cursor 配置 |
@@ -203,3 +203,19 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 
 本轮报告须给出实际 JUnit、失败轮日志、平台 skip、发行清单/RECORD/metadata/源文件字节核对和安装来源。只检查本产品静态帮助，不启动真实宿主帮助或版本命令。
 首次真实 Task R/bootstrap 未定义，目录 manifest 的既有资源风险未修复；不以合成测试或安装自检替代独立 Review、真实运行与部署。
+
+## 12. CLI 首轮修复验证（LAB-TASK-CLI-REPAIR-01）
+
+原独立 Review 的 LAB-CLI-R01/R02 是两个 P2，拒绝 ff3b5ed；完整回归绿色不替代该裁决。修复自检必须保留原失败及相同反例，随后由未参与修复的独立 Review 复核。
+
+| 组 | 必须观察 |
+| --- | --- |
+| R01-01 | 原审查实际 Windows 读后改写用例在修复前失败、修复后拒绝；普通已重写文件仍可读 |
+| R01-02 | 第2次fstat后、最终路径stat后等长改写并恢复mtime，最终同来源句柄观察拒绝；整个路径观察期句柄有效，无循环重读/无限stat |
+| R01-03 | 实际ZIP import spec目标等长变化：InputChanged/空stdout，旧/新目标都不发布 |
+| R02-01 | agy/Cursor receipt/plan各写入阶段的普通异常/原中断；receipt-only/截断材料一律ControlChanged/Fail、continuation=null，原字节保留 |
+| R02-02 | Cursor mkdir/file写入前、部分、完成后失败；只有完全没有发布控制材料才等同纯prepare；存在材料而计划不完整必拒绝 |
+| R02-03 | B直接检查prepare-only、receipt-only、plan-only、Cursor-only、full-plan，null JSON receipt文件不能当文件不存在；null-run结果schema不变、management_decision=null |
+| FULL | 全18模块当前树pytest/JUnit、ruff/format；本修复轮不复建整套发行安装，后续独立Review按风险复验 |
+
+完整计划即使CLI在最后写入后传播异常，B也按真实完整控制材料观察，不伪称缺失或业务接受。最终句柄查询之后的外部变化和原路径链点时限制如实保留；本轮没有长期文件锁或永久TOCTOU消除声明。首次真实R和目录manifest资源依赖仍未闭合。
