@@ -376,7 +376,7 @@ def _error_code(error: BaseException) -> str:
 
 
 def _checked_lifecycle_receipt(value: dict, sheet: dict) -> dict:
-    """Check independent lifecycle facts, without claiming B accepts a normal run."""
+    """Bind the run body before using facts; attached evidence is checked separately."""
     task_run._object(value, task_workspace._RUN_KEYS)
     task_run._version(value)
     _require(
@@ -388,16 +388,25 @@ def _checked_lifecycle_receipt(value: dict, sheet: dict) -> dict:
     task_run._enum(value["transport_state"], {"NotRun", "Completed", "Failed", "TimedOut"})
     task_run._enum(value["capture_state"], {"NotRun", "Sealed", "Incomplete"})
     task_run._enum(value["restore_state"], {"NotRun", "Unchanged", "Restored", "Failed"})
+    if value["capture_uid"] is not None:
+        task_run._text(value["capture_uid"])
     task_run._strings(value["blockers"])
-    # B's shape checker preserves duplicate declarations for individual verification.
-    task_workspace._evidence(value["evidence_refs"])
-    task_workspace._tests(value["test_observations"])
     _require(
         count is not None
         or (value["transport_state"] == "Failed" and "LaunchUnverified" in value["blockers"]),
         "RunReceiptInvalid",
     )
     _require(value["transport_state"] != "Completed" or count == 1, "RunReceiptInvalid")
+    _require(value["transport_state"] != "TimedOut" or count == 1, "RunReceiptInvalid")
+    if value["transport_state"] == "NotRun":
+        _require(
+            count == 0
+            and value["capture_state"] == "NotRun"
+            and value["restore_state"] == "NotRun"
+            and value["capture_uid"] is None
+            and value["test_observations"] == [],
+            "RunReceiptInvalid",
+        )
     _require(
         value["capture_state"] != "Sealed"
         or (type(value["capture_uid"]) is str and bool(value["capture_uid"])),
@@ -415,6 +424,7 @@ def _saved_json(path: Path) -> tuple[object, bytes]:
 
 
 def _launch_fact(value: object, fallback: int | None) -> int | None:
+    """Use only this invocation's C return, never an unchecked saved run."""
     if type(value) is dict and set(value) == task_workspace._RUN_KEYS:
         count = value["launch_count"]
         if count is None or (type(count) is int and count in {0, 1}):
@@ -424,6 +434,7 @@ def _launch_fact(value: object, fallback: int | None) -> int | None:
 
 def _saved_launch_fact(roots: dict) -> int | None:
     value, _ = _saved_json(roots["run_root"] / "launch.json")
+    _require(type(value) is dict, "LaunchEvidenceMismatch")
     task_run._enum(value.get("spawn_state"), {"not_attempted", "confirmed", "unknown"})
     count = task_run.winjob.LaunchLifecycle(execution_state=value["spawn_state"]).launch_count
     _require(contract.deep_equal_strict(count, value.get("launch_count")), "LaunchEvidenceMismatch")
@@ -495,6 +506,10 @@ def _saved_run(
     value, raw = _saved_json(roots["run_root"] / "run.json")
     run = _checked_lifecycle_receipt(value, sheet)
     _require(returned is None or contract.deep_equal_strict(returned, run), "RunReturnMismatch")
+    # Reference gaps must not erase the count from an otherwise bound run body.
+    # B's shape checker preserves duplicate declarations for individual verification.
+    task_workspace._evidence(run["evidence_refs"])
+    task_workspace._tests(run["test_observations"])
     checks = []
     local_refs = set()
     opaque_refs = set()
@@ -786,18 +801,22 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
         try:
             if owned_run:
                 launch_count = _launch_fact(run, launch_count)
-                try:
-                    if run is None:
+                if called and launch_count is None:
+                    # No definite C return: only a bound, valid body may supply a count.
+                    with contextlib.suppress(BaseException):
                         saved, _ = _saved_json(roots["run_root"] / "run.json")
-                        launch_count = _launch_fact(saved, launch_count)
+                        launch_count = _checked_lifecycle_receipt(saved, sheet)["launch_count"]
+                    # Either checked source can confirm execution. A local zero/unknown
+                    # or an evidence gap cannot erase a bound body's confirmed launch.
+                    with contextlib.suppress(BaseException):
+                        local_count = _saved_launch_fact(roots)
+                        if local_count == 1 or launch_count is None:
+                            launch_count = local_count
+                try:
                     run, run_sha256, evidence_checks = _saved_run(
                         sheet, roots, initial_context, run
                     )
                 except BaseException as secondary:
-                    if called and run is None and launch_count is None:
-                        # Unknown evidence cannot mask the original lifecycle error.
-                        with contextlib.suppress(BaseException):
-                            launch_count = _saved_launch_fact(roots)
                     if error is None:
                         error = secondary
                 if called:

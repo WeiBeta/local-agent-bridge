@@ -570,3 +570,13 @@ session:UID仅核声明与同run.capture_uid相等，run_evidence_checks标记Op
 回收后重读固定B result/artifacts/changes规范文件，核与实际返回对象、task/snapshot/manifest绑定一致；复用B inventory、路径、生成目录与树摘要函数核实际文件集合、原字节长度/hash、candidate树、continuation摘要、host复制的原Plan/receipt及同Task当前work/out/scratch。最终复验许可、外部可信bundle、控制/规则、protected recipe和环境身份，不把Worker合法修改的业务源码重新当初始快照拒绝；最终再次重读run与每项local证据，回收期间漂移也不能完整观测。保存原launch事实、原中断和失败现场，不重试、覆盖或清理。
 
 仍只五文件离线Repair。普通B的Blocked+launch拒绝、普通run/R门禁、src、发行配置及入口不变；真实R为Unverified、真实方案ProposedRecommended/authorConfirmed=false。重新独立Review必须裁定这些落盘及关联门禁和协议模式，自检不是接受。
+
+### 启动事实来源修复候选（LAB-FIRST-TASK-R-REPAIR-02）
+
+首轮修复因错误task/plan的saved run零计数覆盖已发生的一次启动，再被独立Review-02以P1拒绝。本轮为同缺陷链第2且最后自动Repair，尚待fresh Review，不能据自检接受协议或真实R。
+
+本调用可信C返回的明确0/1优先；返回缺失、畸形或null时才采用磁盘事实。固定run须先经过version/task/plan及基本生命周期校验；固定launch.json须经规范、有界读取且spawn_state/launch_count自洽。两者任一明确记录启动1就保留1，不以相反零或附属证据缺口抹去已确认启动；没有1时保留已核来源的明确0，无法确认则null。未经校验的saved run不贡献0/1，错误/缺失本身不能证明0。未调用C的前置失败仍保留程序自身已知的0。
+
+基本run校验与附属证据完整性分开：严格计数类型、transport/capture/restore、capture_uid、NotRun/Completed/TimedOut和LaunchUnverified关系先核，再逐项核引用与收集。run本体有效且明确已启动，即使launch引用/文件或其他附属证据缺失，仍保留1并报告Failed/Interrupted。错绑定、错误状态或畸形run不能贡献0/1；与固定launch矛盾由既有完整证据检查拒绝。可信C的明确返回不能被相反磁盘摘要覆盖。
+
+来源选择不是证据接受。无效run的hash仍null，原KeyboardInterrupt对象优先于所有次生错误，consumed标记和原字节保留；没有重试、恢复或新生产B/C门禁。

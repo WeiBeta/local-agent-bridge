@@ -262,3 +262,19 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | RINT-01 | 原中断叠加run/local证据缺失或collect失败仍传播原对象；固定launch可保留已发生计数，缺回执不生成run SHA；场景和许可不清理、不重试 |
 
 完整pytest、Ruff、format按常规运行。其结果只属于Repair自检；新的独立Review补齐此前因P1停止的矩阵与发行审计，真实Task R仍未验。
+
+## 启动事实来源交叉矩阵（LAB-FIRST-TASK-R-REPAIR-02）
+
+本轮关闭Review-02新增的启动计数P1候选，不重置缺陷链两轮上限。计数来源规则见合同“启动事实来源修复候选”。
+
+| 组 | 必须观察 |
+| --- | --- |
+| RFACT-01 | 原Review-02真实A/B/C离线反例：正常中断及错task/plan零回执均保留实际launch=1；原KeyboardInterrupt对象相同，错回执hash=null |
+| RFACT-02 | 原Review-01缺run正常/缺失对照继续通过；可信返回1不因缺文件变0/null |
+| RFACT-03 | 错task/plan、错误状态、NotRun/Completed/TimedOut不一致、bool/越界计数及未知缺blocker不能贡献0/1；固定launch自洽0/1/null才提供对应事实 |
+| RFACT-04 | 缺run及缺launch/无效launch、未知run，无法确认则null，不能以异常或文件缺失推定0 |
+| RFACT-05 | 可信C明确0/1与不可信saved相反，保留可信返回；无明确返回时有效run本体与固定launch中任一明确1保留1，完整证据冲突仍拒绝 |
+| RFACT-06 | 已绑定run本体明确1，launch相反零/缺失/不自洽/unknown或引用畸形仍保留1；实际A/B/C附属零漂移反例修前失败/修后通过，原中断不被替换 |
+| FULL | fresh basetemp完整pytest/JUnit、Ruff及格式检查；失败和成功材料分别保留，不重复发行重建，fresh Review补停止矩阵 |
+
+只离线fake与合成安装核验，不执行真实host/provider/凭据解密/配置、新R-a/H3或部署；自检不是独立接受，真实Task R仍Unverified。

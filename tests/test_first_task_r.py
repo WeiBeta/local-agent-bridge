@@ -185,6 +185,151 @@ def retain_and_write(path, raw, *, retained_root=None):
 
 
 @pytest.mark.parametrize(
+    "returned,saved,local,expected_count",
+    [
+        ("interrupt", "task-zero", 1, 1),
+        ("interrupt", "task-one", 0, 0),
+        ("interrupt", "plan-zero", 1, 1),
+        ("none", "plan-one", 0, 0),
+        ("interrupt", "plan-unknown", 1, 1),
+        ("interrupt", "state-zero", 1, 1),
+        ("interrupt", "state-one", "missing", None),
+        ("interrupt", "capture-zero", 1, 1),
+        ("none", "capture-one", "missing", None),
+        ("interrupt", "restore-zero", 1, 1),
+        ("none", "restore-one", "missing", None),
+        ("interrupt", "version-zero", 1, 1),
+        ("none", "version-one", "missing", None),
+        ("none", "notrun-one", "missing", None),
+        ("interrupt", "notrun-sealed-zero", 1, 1),
+        ("none", "completed-zero", 1, 1),
+        ("interrupt", "timeout-zero", 1, 1),
+        ("interrupt", "unknown-no-blocker", 1, 1),
+        ("none", "count-bool", "missing", None),
+        ("interrupt", "count-two", 1, 1),
+        ("interrupt", "uid-number", "missing", None),
+        ("interrupt", "missing", 1, 1),
+        ("none", "missing", 0, 0),
+        ("interrupt", "missing", None, None),
+        ("interrupt", "missing", "missing", None),
+        ("none", "malformed", "mismatch", None),
+        ("interrupt", "noncanonical", 1, 1),
+        ("interrupt", "zero", "missing", 0),
+        ("interrupt", "one", "missing", 1),
+        ("interrupt", "one", "mismatch", 1),
+        ("none", "one", None, 1),
+        ("interrupt", "bad-ref-one", "missing", 1),
+        ("interrupt", "bad-tests-one", "missing", 1),
+        ("interrupt", "zero", 1, 1),
+        ("interrupt", "one", 0, 1),
+        ("interrupt", "unknown", "missing", None),
+        ("interrupt", "unknown", 0, 0),
+        (None, "task-zero", 1, 1),
+        (None, "one", "missing", 1),
+        (None, "one", 0, 1),
+        (0, "task-one", 1, 0),
+        (1, "plan-zero", 0, 1),
+        (0, "one", 1, 0),
+        (1, "zero", 0, 1),
+        ("malformed", "task-zero", 1, 1),
+        ("bool", "task-zero", 1, 1),
+        ("two", "task-zero", 1, 1),
+    ],
+)
+def test_launch_count_sources_are_bound_and_ordered(
+    case, monkeypatch, returned, saved, local, expected_count
+):
+    interrupt = KeyboardInterrupt("original synthetic interrupt")
+    calls = []
+    preserved = {}
+
+    def body(count):
+        value = task_run._receipt(case.frozen_plan)
+        value.update(transport_state="Failed", launch_count=count)
+        value["blockers"] = ["LaunchUnverified"] if count is None else []
+        return value
+
+    def execute(*args):
+        calls.append(args)
+        complete_output(case)
+        root = Path(case.sheet["run_root"])
+        count = 1 if saved.endswith("one") else None if "unknown" in saved else 0
+        value = body(count)
+        if local != "missing":
+            local_value = {
+                "spawn_state": {0: "not_attempted", 1: "confirmed", None: "unknown"}.get(
+                    local, "confirmed"
+                ),
+                "launch_count": local if local != "mismatch" else 0,
+            }
+            write_json(root / "launch.json", local_value)
+            value["evidence_refs"] = [
+                {"ref": "launch.json", "sha256": digest(local_value), "origin": "HostObserved"}
+            ]
+        if saved.startswith("task"):
+            value["task_id"] = "wrong-task"
+        elif saved.startswith("plan"):
+            value["plan_sha256"] = "e" * 64
+        elif saved.startswith("state"):
+            value["transport_state"] = "invalid"
+        elif saved.startswith("capture"):
+            value["capture_state"] = "invalid"
+        elif saved.startswith("restore"):
+            value["restore_state"] = "invalid"
+        elif saved.startswith("version"):
+            value["contract_version"] = 2
+        elif saved.startswith("notrun"):
+            value["transport_state"] = "NotRun"
+            if saved == "notrun-sealed-zero":
+                value.update(capture_state="Sealed", capture_uid="fake-session")
+        elif saved == "completed-zero":
+            value["transport_state"] = "Completed"
+        elif saved == "timeout-zero":
+            value["transport_state"] = "TimedOut"
+        elif saved == "unknown-no-blocker":
+            value["blockers"] = []
+        elif saved.startswith("count"):
+            value["launch_count"] = True if saved == "count-bool" else 2
+        elif saved == "uid-number":
+            value["capture_uid"] = 42
+        elif saved == "bad-ref-one":
+            value["evidence_refs"] = [None]
+        elif saved == "bad-tests-one":
+            value["test_observations"] = [None]
+        elif saved == "malformed":
+            value = {"launch_count": 0}
+        raw = task_run._canonical(value) + (b" " if saved == "noncanonical" else b"")
+        preserved["raw"] = raw
+        # Missing fixed run keeps the original bytes at a separate retained name.
+        (root / ("run.retained.json" if saved == "missing" else "run.json")).write_bytes(raw)
+        if returned == "interrupt":
+            raise interrupt
+        if returned == "none":
+            return None
+        if returned == "malformed":
+            return {"launch_count": 0}
+        return body(True if returned == "bool" else 2 if returned == "two" else returned)
+
+    monkeypatch.setattr(task_run, "_execute_once", execute)
+    if returned == "interrupt":
+        with pytest.raises(KeyboardInterrupt) as caught:
+            invoke(case)
+        assert caught.value is interrupt
+    else:
+        assert invoke(case)["status"] == "Failed"
+    observed = observations(case)
+    assert observed["launch_count"] is expected_count and len(calls) == 1
+    assert observed["status"] == ("Interrupted" if returned == "interrupt" else "Failed")
+    assert observed["runtime_acceptance"] == "Unverified"
+    assert (case.base / "fixture-permit.consumed.json").exists()
+    root = Path(case.sheet["run_root"])
+    retained = root / ("run.retained.json" if saved == "missing" else "run.json")
+    assert retained.read_bytes() == preserved["raw"]
+    if saved not in {"zero", "one", "unknown"} or local == "mismatch":
+        assert observed["run_receipt_sha256"] is None
+
+
+@pytest.mark.parametrize(
     "fault",
     [
         "missing",
