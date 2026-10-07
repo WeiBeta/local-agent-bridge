@@ -202,7 +202,7 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | CLI-12 | 实际 CLI 身份缺项 Blocked；18 模块有序发现相等且无重复；完整 pytest/ruff/format；新 sdist→wheel 与隔离锁定离线非 editable 安装 |
 
 本轮报告须给出实际 JUnit、失败轮日志、平台 skip、发行清单/RECORD/metadata/源文件字节核对和安装来源。只检查本产品静态帮助，不启动真实宿主帮助或版本命令。
-首次真实 Task R/bootstrap 未定义，目录 manifest 的既有资源风险未修复；不以合成测试或安装自检替代独立 Review、真实运行与部署。
+首次真实 Task R/bootstrap 未定义；目录 manifest 的无界读取与 entries 预门禁缺失已由 LAB-DIR-MANIFEST-RESOURCE-01 候选按 package_bytes_limit 有界读取与 entry_count_limit 预门禁关闭，仍待独立 Review。不以合成测试或安装自检替代独立 Review、真实运行与部署。
 
 ## 12. CLI 首轮修复验证（LAB-TASK-CLI-REPAIR-01）
 
@@ -218,4 +218,17 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | R02-03 | B直接检查prepare-only、receipt-only、plan-only、Cursor-only、full-plan，null JSON receipt文件不能当文件不存在；null-run结果schema不变、management_decision=null |
 | FULL | 全18模块当前树pytest/JUnit、ruff/format；本修复轮不复建整套发行安装，后续独立Review按风险复验 |
 
-完整计划即使CLI在最后写入后传播异常，B也按真实完整控制材料观察，不伪称缺失或业务接受。最终句柄查询之后的外部变化和原路径链点时限制如实保留；本轮没有长期文件锁或永久TOCTOU消除声明。首次真实R和目录manifest资源依赖仍未闭合。
+完整计划即使CLI在最后写入后传播异常，B也按真实完整控制材料观察，不伪称缺失或业务接受。最终句柄查询之后的外部变化和原路径链点时限制如实保留；本轮没有长期文件锁或永久TOCTOU消除声明。首次真实R仍未闭合；目录manifest资源残余由 LAB-DIR-MANIFEST-RESOURCE-01 候选关闭，待独立 Review。
+
+## 13. 目录 manifest 资源界（LAB-DIR-MANIFEST-RESOURCE-01）
+
+仅关闭单列残余，不重开其他架构：manifest 读取复用 policy.package_bytes_limit（不新增第十个 policy 键），声明 entries 在逐条解析前过 entry_count_limit。只离线合成反例，不真实巨量内存/磁盘。
+
+| Gate | 反例 | 必须观察 |
+| --- | --- | --- |
+| DIR-BYTES-01 | manifest 字节等于/超过调低后的 package_bytes_limit；超限叠加错误声明摘要 | 等于上限正常导入；超限在哈希比较与 JSON 解码前 ResourceLimitExceeded；限内错误摘要仍 InputManifestMismatch；失败不发布最终根 |
+| DIR-GROW-01 | stat 合法但读取期间返回 limit+1 字节（仅 patch manifest 的 Path.open） | 同一 ResourceLimitExceeded；不发布最终根 |
+| DIR-COUNT-01 | entries 等于/超过调低后的 entry_count_limit；超限清单尾部叠加畸形条目 | 等于上限正常；超限在逐条字段解析前以条目数错误拒绝；不发布最终根 |
+| DIR-REG-01 | 既有 canonical 目录导入、树漂移与既有 deadline 共享用例（manifest-read 注入点随有界读取更新） | 限内行为与错误契约不变；deadline 仍在读取后即时检查 |
+
+完整 18 模块 pytest/JUnit、ruff/format 照常；本轮不复建发行安装。资源保证为有界读取与有界条目迭代，不宣称 JSON 解析绝对内存上限；本候选仍需未参与修复的独立 Review，首次真实 Task R 保持未验。

@@ -933,6 +933,117 @@ def test_directory_entry_and_file_limits(tmp_path: Path) -> None:
     )
 
 
+def test_directory_manifest_read_reuses_the_package_bytes_limit(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, TREE_FILES)
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    manifest_bytes = manifest_path.read_bytes()
+    source = _directory_source(tree, manifest_path)
+
+    manifest = import_snapshot(
+        source=source,
+        policy=_policy(package_bytes_limit=len(manifest_bytes)),
+        snapshot_root=tmp_path / "snapshot-equal",
+    )
+    assert manifest["source"]["kind"] == "directory"
+
+    oversize = dict(source)
+    oversize["manifest_sha256"] = "0" * 64
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=oversize,
+        policy=_policy(package_bytes_limit=len(manifest_bytes) - 1),
+        snapshot_root=tmp_path / "snapshot-over",
+    )
+    assert not (tmp_path / "snapshot-over").exists()
+
+    _expect_error(
+        "InputManifestMismatch",
+        import_snapshot,
+        source=oversize,
+        policy=_policy(),
+        snapshot_root=tmp_path / "snapshot-hash",
+    )
+    assert not (tmp_path / "snapshot-hash").exists()
+
+
+def test_directory_manifest_growth_during_the_bounded_read_is_rejected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, {"AGENTS.md": b"# synthetic guide\n"})
+    manifest_path = _manifest_file(tree, _tree_document(tree))
+    source = _directory_source(tree, manifest_path)
+    limit = manifest_path.stat().st_size
+    real_open = Path.open
+
+    def growing_open(self, *args, **keywords):
+        if self == manifest_path:
+            return io.BytesIO(b"0" * (limit + 1))
+        return real_open(self, *args, **keywords)
+
+    monkeypatch.setattr(Path, "open", growing_open)
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=source,
+        policy=_policy(package_bytes_limit=limit),
+        snapshot_root=tmp_path / "snapshot-grow",
+    )
+    assert not (tmp_path / "snapshot-grow").exists()
+
+
+def test_directory_manifest_entry_count_gates_before_entry_parsing(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _write_tree(tree, TREE_FILES)
+    document = _tree_document(tree)
+    total = len(document["entries"])
+    manifest_path = _manifest_file(tree, document)
+
+    manifest = import_snapshot(
+        source=_directory_source(tree, manifest_path),
+        policy=_policy(entry_count_limit=total),
+        snapshot_root=tmp_path / "snapshot-equal",
+    )
+    assert len(manifest["entries"]) == total
+
+    _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=_directory_source(tree, manifest_path),
+        policy=_policy(entry_count_limit=total - 1),
+        snapshot_root=tmp_path / "snapshot-count",
+    )
+    assert not (tmp_path / "snapshot-count").exists()
+
+    overflowing = dict(document)
+    overflowing["entries"] = [
+        *document["entries"],
+        {
+            "path": "ghost.cs",
+            "kind": "file",
+            "bytes": 1,
+            "sha256": "0" * 64,
+            "unexpected": True,
+        },
+    ]
+    overflow_manifest = tmp_path / "inventory-overflow.json"
+    overflow_manifest.write_bytes(_canonical(overflowing))
+    error = _expect_error(
+        "ResourceLimitExceeded",
+        import_snapshot,
+        source=_directory_source(tree, overflow_manifest),
+        policy=_policy(entry_count_limit=total),
+        snapshot_root=tmp_path / "snapshot-overflow",
+    )
+    assert "entry count" in str(error)
+    assert not (tmp_path / "snapshot-overflow").exists()
+
+
 def test_sensitive_excluded_and_source_path_accounting(tmp_path: Path) -> None:
     files = dict(TREE_FILES)
     files["creds/key.pem"] = b"synthetic credential material\n"
@@ -2458,9 +2569,29 @@ def test_import_stages_share_one_deadline(
     elif stage == "zip-member-scan":
         delay_result(entry, "_zip_entry_name", lambda args, kw: True)
     elif stage == "manifest-read":
-        delay_result(
-            entry.Path, "read_bytes", lambda args, kw: args[0] == Path(source["manifest_path"])
-        )
+        original_open = entry.Path.open
+
+        def delayed_open(self, *arguments, **keywords):
+            stream = original_open(self, *arguments, **keywords)
+            if self != Path(source["manifest_path"]):
+                return stream
+
+            class DelayedRead:
+                def read(self, *read_arguments, **read_keywords):
+                    payload = stream.read(*read_arguments, **read_keywords)
+                    if not injected:
+                        expire_once()
+                    return payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exit_arguments):
+                    return stream.__exit__(*exit_arguments)
+
+            return DelayedRead()
+
+        monkeypatch.setattr(entry.Path, "open", delayed_open)
     elif stage == "manifest-hash":
         delay_result(entry, "_sha256_bytes", lambda args, kw: True)
     elif stage == "manifest-parse":

@@ -80,7 +80,7 @@ v2的`launches`是`0/1/null`，来自本次调用方持有的同一份LaunchLife
 
 ## 7. Task v1 CLI 候选
 
-五条 `task import/prepare/plan/run/collect` 的命令和 spec 表见 [TASK_WORKSPACE_CONTRACT.md](TASK_WORKSPACE_CONTRACT.md) §11，验收矩阵见 [TASK_WORKSPACE_ACCEPTANCE.md](TASK_WORKSPACE_ACCEPTANCE.md) §11。Task 的 A 输入支持冻结工程字节树；旧切片命令仍遵守上文既有文本限制。
+五条 `task import/prepare/plan/run/collect` 的命令和 spec 表见 [TASK_WORKSPACE_CONTRACT.md](TASK_WORKSPACE_CONTRACT.md) §11，验收矩阵见 [TASK_WORKSPACE_ACCEPTANCE.md](TASK_WORKSPACE_ACCEPTANCE.md) §11。Task 的 A 输入支持冻结工程字节树；目录导入的 manifest 读取复用 package_bytes_limit 做 stat 加实际 limit+1 有界读取，声明 entries 先过 entry_count_limit 预门禁，超限在哈希与解码前拒绝，不新增 policy 键。旧切片命令仍遵守上文既有文本限制。
 
 `prepare/plan/run` 的可信根和 bundle 摘要必须由管理作为单独 CLI 参数供给；不能写进 spec 或从 Worker/任务内容自算接受。Cursor 仅 task plan 可准备管理绑定的固定项目文件，原始模板字节保留。task run 默认在新运行根保存 NotRun，不初始化 key、不启动；显式 --execute 仍须原 C 全部门禁，无新 Task R 合法 Blocked。
 stdout 是原业务 JSON 加一个传输 LF，固定错误在 stderr；CLI 退出码不构成业务接受。离线 fake/self-check、独立 Review、首次真实 R 与部署分别记录，本候选没有实机声明。

@@ -1000,7 +1000,7 @@ def _plan_git_selection(
 
 
 def _validate_directory_manifest(
-    document: object, deadline: _Deadline
+    document: object, policy: _Policy, deadline: _Deadline
 ) -> tuple[dict[str, tuple[int, str]], set[str]]:
     deadline.check()
     if type(document) is not dict or set(document) != {"contract_version", "entries"}:
@@ -1014,6 +1014,10 @@ def _validate_directory_manifest(
     if type(raw_entries) is not list:
         raise TaskInputError(
             "InputManifestMismatch", "the directory manifest entries must be a list"
+        )
+    if len(raw_entries) > policy.entry_count_limit:
+        raise TaskInputError(
+            "ResourceLimitExceeded", "the directory manifest exceeds the entry count limit"
         )
     files: dict[str, tuple[int, str]] = {}
     directories: set[str] = set()
@@ -1151,8 +1155,21 @@ def _plan_directory_tree(
     )
     declared_sha256 = _require_sha256(source["manifest_sha256"], "manifest sha256", "InvalidSource")
     deadline.check()
-    raw = manifest_path.read_bytes()
+    # The manifest is the directory source's container description, so it reuses
+    # the package bytes limit. The stat check rejects cheaply; reading at most
+    # limit + 1 bytes also rejects a file that grew between the two steps. This
+    # bounds the raw manifest and its entry iteration, not JSON decode memory.
+    if manifest_path.stat().st_size > policy.package_bytes_limit:
+        raise TaskInputError(
+            "ResourceLimitExceeded", "the directory manifest exceeds the package bytes limit"
+        )
+    with manifest_path.open("rb") as stream:
+        raw = stream.read(policy.package_bytes_limit + 1)
     deadline.check()
+    if len(raw) > policy.package_bytes_limit:
+        raise TaskInputError(
+            "ResourceLimitExceeded", "the directory manifest exceeds the package bytes limit"
+        )
     actual_sha256 = _sha256_bytes(raw)
     deadline.check()
     if actual_sha256 != declared_sha256:
@@ -1161,7 +1178,7 @@ def _plan_directory_tree(
         )
     document = decode_strict_json_bytes(raw, label="directory manifest")
     deadline.check()
-    declared_files, declared_directories = _validate_directory_manifest(document, deadline)
+    declared_files, declared_directories = _validate_directory_manifest(document, policy, deadline)
     actual_files, actual_directories = _scan_tree(root, policy, deadline)
     if actual_directories != declared_directories or actual_files != declared_files:
         raise TaskInputError("InputChanged", "the directory tree differs from its manifest")

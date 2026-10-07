@@ -503,7 +503,7 @@ local-agent-bridge task collect --spec <absolute path>
 spec 是严格 UTF-8、无 BOM 的单个 JSON 文档；允许 JSON 空白，拒绝重复/未知键、非有限数、溢出和错误类型。
 重复 CLI 选项、长选项缩写、额外位置参数、stdin/`-` 和任意模型/argv/URL/宿主配置参数均拒绝。`task --help` 与五条子命令的独立 `--help` 返回 0，不读输入或访问服务。
 
-source/policy 原样交给 A：Git 须精确 40 位提交与文件列表；ZIP 须明确摘要和 strip_prefix（可为 null）；目录须清单文件和明确摘要。policy 的 source_paths、excluded_paths、sensitive_paths、trusted_control_files 四项必填，原九项数值上限及缺省值保持。A 的目录清单预读取/条目解析资源风险仍为单独依赖，本阶段没有修复。task_manifest_path 严格 JSON 解码后由 B 校验原业务 schema；task_note_path 按原字节交给 B，保留 BOM、CRLF 和末尾换行状态。
+source/policy 原样交给 A：Git 须精确 40 位提交与文件列表；ZIP 须明确摘要和 strip_prefix（可为 null）；目录须清单文件和明确摘要。policy 的 source_paths、excluded_paths、sensitive_paths、trusted_control_files 四项必填，原九项数值上限及缺省值保持。A 的目录清单读取复用既有 package_bytes_limit：先 stat 拒超限，再实际读取至多 limit+1 字节并在超出时同样拒绝，声明摘要比对与严格 JSON 解码只发生在这些有界字节上；声明 entries 列表在逐条解析前先过 entry_count_limit 门禁。不新增 policy 键或公共 schema；有界读取约束原始字节与条目迭代，不宣称 JSON 解码的绝对内存上限。task_manifest_path 严格 JSON 解码后由 B 校验原业务 schema；task_note_path 按原字节交给 B，保留 BOM、CRLF 和末尾换行状态。
 
 C 公开 `checked_host_path`、`read_host_input_bytes`、`load_trusted_inputs`、`prepare_cursor_project`。固定 64 MiB 的 Host 文件读取检查读取前大小、实际读取长度、普通单链接文件身份及读取前后稳定性；不增加可配置上限。读取句柄保持打开，完成最终路径检查后再查询同一句柄，作为本次最终变化观察点；opened/after/final 的 fstat ctime 相互比较，path-before/path-current 的 stat ctime 相互比较，其余身份信息跨查询核对。固定有限观察覆盖读后句柄查询至最终路径检查期间的变化；不重读或循环重试，不保证最后一次句柄观察之后的文件不可变，既有路径链点时检查限制保持。
 共享加载只从可信根读取 deployment-receipt.json、deployment-profile.json、authorization.json 三个 canonical JSON；bundle 与管理另外供给的摘要相等才继续。共享 receipt/profile/auth 绑定校验复用 C，完整 input_control_bindings 和 task/规则语义继续由 B 校验。尚未创建的 task_root 可以加载可信材料，但不得据此创建任务或读取 task.json。已知 task/snapshot/run/product 根与可信根不能相交；管理仍须供给业务及来源根以外的可信根，CLI 不扫描整机发现其他根。
