@@ -531,3 +531,30 @@ CLI 退出 0 不接受 Worker 业务结果；collect 的 worker_status 不决定
 Caps.execute 是 Worker 测试/命令能力，`--execute` 是宿主是否启动：静态 Review 可在 Caps.execute=false 且适用真实 R 下启动；prepare_dependencies=true 仍要求 Caps.execute=true；默认 dry run 即使 Caps.execute=true 也不启动。
 
 本候选的 synthetic Accepted/fake launch 只证明离线分支。首次真实 Task R/bootstrap、真实 agy/Cursor、独立 Review 和部署分别待验；无 Skill、H3/MCP、A 或真实配置变更。LAB-TASK-CLI-REPAIR-01 按管理扩大的范围，仅调整 B 对不完整计划的观察，不变更 Result schema。
+
+### 首次 Task R 独立验证程序 v1（LAB-FIRST-TASK-R-IMPLEMENT-01）
+
+`verification/first_task_r.py` 是 sdist 中的可信管理验证材料，不进入 wheel、不注册 CLI/MCP、不修改 src 或普通 run/R 门禁。实现和 fake 自检不是实际执行批准，真实方案仍 ProposedRecommended/authorConfirmed=false。程序只验证 agy/Coding/Caps={execute:true,web_reference:false,prepare_dependencies:false}/declared_scope；不实现第二 host、R-a 实机探针、解密、部署或接受裁决。
+
+管理在验收单外供给其绝对路径与 expected raw SHA；源文件/Worker 不供给信任。验收单为严格 JSON 对象，未知/重复键、错误类型、bool冒充int、hash/路径漂移拒绝。只有审批字段 Approved/true、全部明确权限 true、预算证据非空且 hash 非 null 才可消费；字段仅记录可信管理批准，不能鉴别任意同用户伪造调用方或证明费用未超限。
+
+| 闭合字段 | 精确语义 |
+| --- | --- |
+| contract_version；kind | int=1；TaskRuntimeValidationPermit |
+| permit_id；task_id；management_task_id | permit_id为1–64位ASCII字母数字/下划线/连字符；task_id绑定Task/Auth；management_task_id固定019fe10b-df55-7b82-a9ba-3702dc08c55f |
+| approval；grant_ref；budget_ref；max_host_launches | approval={status:Proposed/Approved,author_confirmed:bool}；grant_ref等于可信Auth.grant_ref；budget_ref为一个HostObserved且hash非null的Evidence（管理预先核实，程序不自动解析ref）；max_host_launches严格int=1，限制一次生命周期调用，不证明provider请求数或费用 |
+| host；role；capabilities；execution_boundary | 精确agy/Coding/上述三bool/declared_scope；Task/Auth/Profile均不得提供其他角色/能力/边界 |
+| task_root；trusted_control_root；run_root；result_root | 普通窄绝对根；可信根及其SHA沿用原三文件bundle；run/result必须不存在且父目录已存在；相互、安装根、capture根不重叠；不得覆盖旧产物 |
+| task_manifest_sha256；plan_sha256；trusted_inputs_sha256；receipt_binding_sha256；deadline_seconds | 前三者绑定规范task/Plan/bundle；R binding仅排除receipt.runtime_acceptances/provenance_refs；deadline为1–1020秒并准确等于Task值 |
+| validator；installation | validator为本程序自身FileIdentity；installation={root:A,python:FileIdentity,wheel:FileIdentity}，root必须是当前sys.prefix，python是当前sys.executable；非editable安装、实际产品路径及全部wheel包内payload原字节核验，不能使用源码editable运行环境 |
+| environment | FileIdentity指向严格对象{contract_version:1,kind:TaskRuntimeValidationEnvironment,local_appdata:A,worker_shell:FileIdentity}；其raw SHA/路径必须在profile.enforcement.evidence_refs以HostObserved登记。Worker Shell这里只是冻结预期身份，实际使用仍需实机独立取证 |
+| recipes | 恰好一项{ref:first_task_r_unittest_v1,identity:FileIdentity}；绑定receipt唯一Python工具链recipe_refs，文件在work内并受protected_paths保护；程序只核字节，不执行任意recipe/argv |
+| permissions | 严格六bool对象：synthetic_copies、same_user_declared_scope、configuration_lease、owned_job_termination、capture_key_read、isolated_capture_write，全部true才可消费；其他权限没有入口 |
+
+先核验许可、程序/安装、路径、环境绑定、完整Task/Profile/Auth/快照/规则/控制与唯一缺R，再排他创建 `run_root.parent/<permit_id>.consumed.json`。存在或写入失败即拒绝；失败标记、部分run/state/result均保留，不删除或自动重用。初始静态核验失败不读key/配置、不消费；消费后才核原配置及复验。C的Blocked分支会跳过实现身份核验，程序每次必须显式核 `_verify_runtime_identity`、安装/recipe/环境和全部非R门禁，不能只凭blocker字符串放行。
+
+真实receipt.runtime_acceptances必须为空，Plan原样Blocked且唯一blocker为RuntimeAcceptanceUnverified。严格recheck重复外部permit raw SHA、自身身份、冻结bundle/Task/Plan/receipt副本、根、实现/环境/工具链/recipe和配置核验；复用安装C的 `_load_inputs`、`_execute_once`、真实launch/capture/restore/Job，不猴补实际检查，不制造Ready/Accepted或删原R blocker。仅程序本进程临时使用全新LOCALAPPDATA，C创建自己的新capture域，agy继承该环境；finally恢复调用进程环境，不改用户/机器环境。此环境兼容性及真实认证未验。
+
+独立 `validation.json` 标明kind=TaskRuntimeValidation、普通Plan=Blocked、R=Unverified、management_decision=null；状态仅ObservationRecorded/Failed/Interrupted。C run.json与B result完整保留，其Completed/Pass不提升为R或业务接受。生命周期只调用一次；launch_count=0/1/null来自C事实，无回执的执行异常保守记null；中断尽力保存观测后传播原异常，不用次生写入/collect异常替换。前置拒绝仅返回固定非敏感错误，可信调用方保留自己的失败回执。程序不解密、不判断命令业务质量、不产出Accepted；后续R-a/R-b及独立核验、管理接受另行授权。
+
+B的普通run回执规则明确拒绝Blocked Plan且launch_count非0，本程序不改变该规则。独立验证只用既有 `collect_task(run_root=None)` 回收候选，仍核完整receipt/plan控制、范围和必需产物；B.transport=NotRun、acceptance=Unrun、management_decision=null。validation.collection_mode=ArtifactsOnlyNullRun，C生命周期run.json/hash单独保存，不能把它交B当作已接受的普通run。ObservationRecorded还要求生命周期完整、B.scope=Pass及outputs=Pass；它不表示普通run贯通或R通过。此数据分离是离线候选协议，真实路径仍待独立Review和作者批准。

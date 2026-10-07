@@ -62,6 +62,7 @@ EXPECTED_TEST_MODULES = {
     "tests/test_bridge_winjob.py",
     "tests/test_cursor_run.py",
     "tests/test_distribution.py",
+    "tests/test_first_task_r.py",
     "tests/test_h3_adapter.py",
     "tests/test_h3_mcp.py",
     "tests/test_legacy_launch_receipts.py",
@@ -430,6 +431,20 @@ def test_source_archive_carries_every_shipped_test_module() -> None:
 
     for relative in sorted(EXPECTED_TEST_MODULES):
         assert relative in only_include, relative
+
+
+def test_first_task_r_validator_is_source_material_without_a_runtime_entrypoint() -> None:
+    document = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    script = "verification/first_task_r.py"
+    assert script in document["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
+    assert (REPOSITORY_ROOT / script).is_file()
+    assert document["tool"]["hatch"]["build"]["targets"]["wheel"] == {
+        "packages": ["src/local_agent_bridge"]
+    }
+    assert set(document["project"]["scripts"]) == {"local-agent-bridge", "local-agent-bridge-h3"}
+    assert not any(
+        "first_task_r" in name or "verification" in name for name in EXPECTED_PACKAGE_FILES
+    )
 
 
 def test_source_archive_carries_both_task_contract_documents() -> None:

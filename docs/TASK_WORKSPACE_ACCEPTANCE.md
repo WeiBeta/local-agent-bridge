@@ -232,3 +232,19 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | DIR-REG-01 | 既有 canonical 目录导入、树漂移与既有 deadline 共享用例（manifest-read 注入点随有界读取更新） | 限内行为与错误契约不变；deadline 仍在读取后即时检查 |
 
 完整 18 模块 pytest/JUnit、ruff/format 照常；本轮不复建发行安装。资源保证为有界读取与有界条目迭代，不宣称 JSON 解析绝对内存上限；本候选仍需未参与修复的独立 Review，首次真实 Task R 保持未验。
+
+## 首次 Task R 验证程序离线矩阵（LAB-FIRST-TASK-R-IMPLEMENT-01）
+
+验收单闭合字段见合同“首次 Task R 独立验证程序 v1”。本包只实现和 fake 自检，不修改 src/普通run/R门禁，不执行真实host（含help/version）、provider、key/解密、配置、R-a实机探针、部署或Skill。真实方案仍 ProposedRecommended/authorConfirmed=false；ObservationRecorded不是R Pass。全套沿用原有受控fixture单元测试，不将其中Windows fixture进程检查登记为真实Task R。
+
+| 组 | 必须验证的离线分支 |
+| --- | --- |
+| RPERMIT-01 | 缺失/漂移/重复键/未知键、Proposed/未确认/权限缺项/无有效预算、bool冒充次数/deadline、host/role/Caps/boundary扩大、自身hash漂移、已消费许可，均不得进入生命周期 |
+| RINPUT-01 | 外部bundle与完整task/Plan/receipt绑定、唯一缺R、其他授权blocker、根重叠/旧输出、profile环境证据/预期shell、protected recipe及唯一Python工具链；Blocked分支显式核全部实际实现身份 |
+| RLIFE-01 | 只调用真实C生命周期一次，在测试边界注入fake0/1/null；配置错误消费后launch0留失败；capture/restore失败不接受；启动前permit/控制/身份复验拒绝漂移，无重试 |
+| RKEEP-01 | 原中断在收集/观测写入失败时仍传播，run/标记/partial/失败现场保留，原环境恢复；缺生命周期回执记unknown/null，不推定0 |
+| RPROD-01 | 正常run即使--execute且Caps.execute=true，缺R仍NotRun/launch0；初验Blocked Plan/R blocker及授权原字节不改，产物明确TaskRuntimeValidation、R Unverified、management_decision=null |
+| RCOLLECT-01 | B仍拒绝Blocked Plan/launch1普通回执；验证只用既有null-run回收候选，B保持NotRun/Unrun/null decision，生命周期另存/hash绑定；范围或必需输出不完整则验证Failed |
+| RDIST-01 | 新测试模块纳入默认/显式/JUnit完整有序发现与sdist；验证程序仅进sdist，不进wheel、不新增console/MCP/依赖；实际新sdist→wheel核对全部包内payload |
+
+自检不替代独立 Review。首次R-a/R-b、真实安装/权限/费用/模型可用性、原生命令取证、默认生产capture根和current-main选择性整合全部待各自冻结和验收；不能从本表或fake Approved验收单继承实际许可。

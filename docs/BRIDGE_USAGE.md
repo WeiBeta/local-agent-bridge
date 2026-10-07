@@ -86,3 +86,13 @@ v2的`launches`是`0/1/null`，来自本次调用方持有的同一份LaunchLife
 stdout 是原业务 JSON 加一个传输 LF，固定错误在 stderr；CLI 退出码不构成业务接受。离线 fake/self-check、独立 Review、首次真实 R 与部署分别记录，本候选没有实机声明。
 
 普通计划写入异常退出 2，原中断退出 130，材料原样保留。receipt 存在但 plan 缺失，或 Cursor 材料存在而计划不完整时，原 B collect 必须报告 ControlChanged、scope_status=Fail、continuation=null；纯 prepare 无这些材料仍合法。读取句柄保持有效到最终路径复核及最后一次句柄变化观察；这是有限观察，不保证观察后文件不变。LAB-TASK-CLI-REPAIR-01 自检仍须新的独立 Review。
+
+### 首次 Task R 的独立验证材料
+
+`verification/first_task_r.py` 随源码发行材料保存，wheel没有此脚本或新入口。它只供可信管理者在另行批准的冻结验收单下验证单一agy/Coding/execute能力；普通 `task run --execute` 仍须Accepted R。当前只有离线实现/自检，真实方案和许可仍未批准，不能照着本节直接运行实际host。
+
+未来单独授权后的调用形状为：冻结安装的Python，以 `-I -B` 运行冻结脚本，只有 `--acceptance-sheet <管理固定绝对路径>`、`--expected-sha256 <派工独立供给的raw SHA>` 两个参数。没有model/argv/host命令、skip-R、解密或任意执行入口。验收单需准确记录Approved/author_confirmed=true、全部权限、一次宿主启动与预算引用、程序/非editable安装/wheel/环境/recipe/控制材料身份；完整schema见 TASK_WORKSPACE_CONTRACT.md，不能从源包自填“我可信”。实际provider请求数/费用不由次数1证明，程序不是预算平台或OS沙箱。
+
+许可排他消费后失败也不重用；正常Plan保持Blocked，生命周期调用明确标作验证程序所得。validation.json的ObservationRecorded仅表示观测已保存，Failed/Interrupted保存缺口；R始终Unverified，独立核验与管理接受另做。程序不覆盖旧控制或删除失败，不读取历史会话/导出key/解密。专用LOCALAPPDATA只在该进程内临时设置并恢复，真实agy会继承，其兼容性、登录和Worker Shell实际使用未验；后续普通入口复用R须管理核对同环境适用范围，不自动验收默认生产state根。
+
+B只在既有null-run模式回收本验证候选，transport仍NotRun，验收项Unrun。独立生命周期事实另存，不能作为Blocked Plan下的普通run回执交B。正常B对此回执仍返回RunReceiptInvalid；验证程序不更改该门禁，也不宣称正常run真实贯通。
