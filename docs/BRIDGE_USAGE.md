@@ -17,7 +17,7 @@
 | `local-agent-bridge shadow` | 离线验证、快照、回放或比较已封口会话；详见 [SHADOW_USAGE.md](SHADOW_USAGE.md) |
 | `local-agent-bridge cursor` | 对冻结任务根执行一次固定 Cursor CLI 调用（grok-4.7-high，非 Fast）；详见 [CURSOR_USAGE.md](CURSOR_USAGE.md) |
 
-`local-agent-bridge --help` 列出八条命令与当前限制；`cursor` 属独立固定 Cursor 入口，agy `run` 默认行为不变；`local-agent-bridge-h3` 保持原四工具 H3 MCP 入口不变。
+`local-agent-bridge --help` 列出九条顶层命令；原八条参数和默认行为保留，新增 `task` 包装五条 Task v1 操作；`local-agent-bridge-h3` 保持原四工具 H3 MCP 入口不变。
 
 ## 2. 保留的原合同
 
@@ -77,3 +77,10 @@ v2的`launches`是`0/1/null`，来自本次调用方持有的同一份LaunchLife
 未知或启动后异常仍为既有`launch_failed`/非成功退出；捕获不完整保留`capture_incomplete`，已知正常结果与0/2/3退出码语义保持。原始中断在独立尽力收尾/回执尝试后继续传播，次生恢复/写入错误不替换它，不重试任何启动或写入。
 
 仓内CLI只转发结果，没有读取旧执行回执的产品解析器；task collect使用独立`contract_version=1`合同并明确拒绝这两种旧adapter回执，不能跨合同误读。外部读取器须显式支持v2或拒绝未知版本；外部兼容、真实CLI/部署与本候选独立Review尚未验收。归档索引：`C:/Users/user/Documents/Codex-Archive/2026-10-06-LAB-LEGACY-LAUNCH-RECEIPT-02/INDEX.md`。
+
+## 7. Task v1 CLI 候选
+
+五条 `task import/prepare/plan/run/collect` 的命令和 spec 表见 [TASK_WORKSPACE_CONTRACT.md](TASK_WORKSPACE_CONTRACT.md) §11，验收矩阵见 [TASK_WORKSPACE_ACCEPTANCE.md](TASK_WORKSPACE_ACCEPTANCE.md) §11。Task 的 A 输入支持冻结工程字节树；旧切片命令仍遵守上文既有文本限制。
+
+`prepare/plan/run` 的可信根和 bundle 摘要必须由管理作为单独 CLI 参数供给；不能写进 spec 或从 Worker/任务内容自算接受。Cursor 仅 task plan 可准备管理绑定的固定项目文件，原始模板字节保留。task run 默认在新运行根保存 NotRun，不初始化 key、不启动；显式 --execute 仍须原 C 全部门禁，无新 Task R 合法 Blocked。
+stdout 是原业务 JSON 加一个传输 LF，固定错误在 stderr；CLI 退出码不构成业务接受。离线 fake/self-check、独立 Review、首次真实 R 与部署分别记录，本候选没有实机声明。

@@ -476,3 +476,58 @@ Skill 必补固定路由：`agy run: gemini-3.8-flash-high / effort high；Curso
 可直接工程决定：上述新旧协议分离、bytes 快照、固定资源初值、角色目录、增删变化清单、业务状态/覆盖、续接引用、现有底座复用、离线 fixtures 与分包所有权。这些不需要额外作者玩法决定。
 
 确需作者权限：新真实模型/上游调用、部署或宿主全局设置改变、未核验的 shell 范围风险接受、新 VM/容器/受限账户与工具安装、新域名/联网依赖或安装脚本范围、预算/账户扩展、游戏包使用和远端发布。现有会话明确授权的项继续有效，不逐阶段重新确认；缺少授权只阻断依赖该项的运行，不阻止其余离线实现。所有待决项标 `ProposedRecommended/authorConfirmed=false`，不在本阶段创建审批等待、轮询或监控。
+
+## 11. Task CLI v1 候选（LAB-TASK-CLI-IMPLEMENT-01）
+
+冻结提案：LAB-TASK-CLI-CONTRACT-01，SHA-256 `e5b484ba27b97ca299442ee5e4e7fd82e4e6f5309328f6dc5eae1fa7be665847`。
+本阶段只包装已有 A/B/C API；原八条命令及旧 adapter 回执 v2 保持原含义。新增命令如下：
+
+```text
+local-agent-bridge task import  --spec <absolute path>
+local-agent-bridge task prepare --spec <absolute path> --trusted-control-root <absolute root> --trusted-inputs-sha256 <64 lowercase hex>
+local-agent-bridge task plan    --spec <absolute path> --trusted-control-root <absolute root> --trusted-inputs-sha256 <64 lowercase hex>
+local-agent-bridge task run     --spec <absolute path> --trusted-control-root <absolute root> --trusted-inputs-sha256 <64 lowercase hex> [--execute]
+local-agent-bridge task collect --spec <absolute path>
+```
+
+每条 spec 的 `cli_contract_version` 为整数 1，并且必须且只能包含下表字段。所有路径为未经 trim、环境展开或 dot/parent 折叠的绝对路径字符串；只有 collect.run_root 可显式为 null。
+
+| 命令 | 其余必填字段 |
+| --- | --- |
+| import | source、policy、snapshot_root |
+| prepare | snapshot_root、task_manifest_path、task_note_path、task_root |
+| plan | task_root、host（agy 或 cursor） |
+| run | task_root、run_root |
+| collect | task_root、run_root、result_root |
+
+spec 是严格 UTF-8、无 BOM 的单个 JSON 文档；允许 JSON 空白，拒绝重复/未知键、非有限数、溢出和错误类型。
+重复 CLI 选项、长选项缩写、额外位置参数、stdin/`-` 和任意模型/argv/URL/宿主配置参数均拒绝。`task --help` 与五条子命令的独立 `--help` 返回 0，不读输入或访问服务。
+
+source/policy 原样交给 A：Git 须精确 40 位提交与文件列表；ZIP 须明确摘要和 strip_prefix（可为 null）；目录须清单文件和明确摘要。policy 的 source_paths、excluded_paths、sensitive_paths、trusted_control_files 四项必填，原九项数值上限及缺省值保持。A 的目录清单预读取/条目解析资源风险仍为单独依赖，本阶段没有修复。task_manifest_path 严格 JSON 解码后由 B 校验原业务 schema；task_note_path 按原字节交给 B，保留 BOM、CRLF 和末尾换行状态。
+
+C 公开 `checked_host_path`、`read_host_input_bytes`、`load_trusted_inputs`、`prepare_cursor_project`。固定 64 MiB 的 Host 文件读取检查读取前大小、实际读取长度、普通单链接文件身份及读取前后稳定性；不增加可配置上限。Windows 路径查询与句柄查询的 ctime 各自作前后比较，其余身份信息跨查询核对。
+共享加载只从可信根读取 deployment-receipt.json、deployment-profile.json、authorization.json 三个 canonical JSON；bundle 与管理另外供给的摘要相等才继续。共享 receipt/profile/auth 绑定校验复用 C，完整 input_control_bindings 和 task/规则语义继续由 B 校验。尚未创建的 task_root 可以加载可信材料，但不得据此创建任务或读取 task.json。已知 task/snapshot/run/product 根与可信根不能相交；管理仍须供给业务及来源根以外的可信根，CLI 不扫描整机发现其他根。
+
+plan/run 的 C 入口和紧前复核继续重读可信材料、B 输入控制与原 work 树；不缓存接受、自动重 plan 或修复输入。运行身份的必需文件增加实际 cli.py 和 task_cli.py，旧 receipt 缺少它们会 Blocked，不能删减必需集合兼容旧证据。
+
+Cursor 仅在 task plan 前由 C 准备固定 task_root/.cursor/cli.json：原字节来自 trusted-control-root/cursor-project.json，摘要绑定于 receipt.configuration.cursor_project.sha256。这是固定原生模板，不是第四个通用合同对象。校验原 permissions.allow/deny 字符串数组 schema，不生成或合并权限；task/B 控制、原始 work、准确目标及保护范围均先核对。缺目录排他创建；已有目录只能包含普通单链接 cli.json，且必须同字节，只读复验。冲突、额外文件、链接、模板缺失或不符均拒绝。run 不准备配置，不读写全局配置来补救；未通过 R 仍 Blocked。
+
+Cursor 文件准备与原 C receipt/plan 持久化不是原子事务。后段失败返回 2，保留先前写入和失败现场；不删除、覆盖、回滚或自动重做，B collect 可能报告 ControlChanged。
+
+stdout 保持原 SnapshotManifest、TaskManifest、Plan、RunReceipt 或 ResultManifest 的单个 canonical UTF-8 JSON 对象，并增加一个传输 LF；落盘 canonical JSON 不带该 LF，文件摘要不包含传输换行。异常 stdout 为空，stderr 仅固定 `local-agent-bridge task: <stable-code>`，不输出路径、输入、异常正文或 traceback。
+
+| 结果 | 进程退出码 |
+| --- | --- |
+| help、成功 import/prepare | 0 |
+| plan Ready / Blocked（均输出原 Plan） | 0 / 2 |
+| Ready dry run，NotRun/0 且无 blockers | 0 |
+| 已执行 Completed/1、capture Sealed、restore Unchanged 或 Restored，且无 blockers | 0 |
+| run blockers、Failed、TimedOut、launch_count=null、capture/restore 失败 | 2 |
+| collect 无 blockers 且 scope_status 不是 Fail / 其余收集结果（均输出原 Result） | 0 / 2 |
+| 参数、schema、路径、摘要、I/O 等异常 | 2 |
+| 原 KeyboardInterrupt 经原 C 收尾并传播 | 130 |
+
+CLI 退出 0 不接受 Worker 业务结果；collect 的 worker_status 不决定进程退出码，management_decision 仍为 null。
+Caps.execute 是 Worker 测试/命令能力，`--execute` 是宿主是否启动：静态 Review 可在 Caps.execute=false 且适用真实 R 下启动；prepare_dependencies=true 仍要求 Caps.execute=true；默认 dry run 即使 Caps.execute=true 也不启动。
+
+本候选的 synthetic Accepted/fake launch 只证明离线分支。首次真实 Task R/bootstrap、真实 agy/Cursor、独立 Review 和部署分别待验；本阶段无 Skill、H3/MCP、A/B 或真实配置变更。

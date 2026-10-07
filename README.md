@@ -15,6 +15,9 @@ toolsmith 内容不属于本包，本文件取代旧 README 作为本包首页�
    会话，按文件长度计量、整包滚动；见 [docs/SESSION_STORAGE.md](docs/SESSION_STORAGE.md)。
 4. **离线影子回放**：只读取已封口会话，输出内容无关的终态、工具/文件集合与用量观察，并可保存自包含重加密快照；
    不回放指令、不调用模型；见 [docs/SHADOW_USAGE.md](docs/SHADOW_USAGE.md)。
+5. **Task v1 CLI 候选**：`task import/prepare/plan/run/collect` 包装冻结输入、任务副本、固定宿主生命周期与结果收集；
+   可信根和摘要由管理单独供给。只完成离线自检，独立 Review、首次真实 Task R 和部署分别待验；见
+   [docs/TASK_WORKSPACE_CONTRACT.md](docs/TASK_WORKSPACE_CONTRACT.md) 的 CLI v1 章节。
 
 ## 安装与安装资源
 
@@ -36,10 +39,10 @@ wheel 内只包含 `local_agent_bridge` 包与两个打包资源：`resources/st
 
 | 入口 | 作用 |
 | --- | --- |
-| `local-agent-bridge` | 切片桥 CLI：`prepare`、`collect`、`plan`、`run`、`session-status`、`session-key-init`、`shadow`、`cursor` |
+| `local-agent-bridge` | 原八条切片/会话命令及 `task` 的五条 Task v1 操作 |
 | `local-agent-bridge-h3` | 只注册四个 H3 MCP 工具的标准输入输出 MCP 服务 |
 
-`local-agent-bridge --help` 列出八条子命令与当前限制。各子命令用各自 `--help` 查看参数；实际参数为：
+`local-agent-bridge --help` 列出九条顶层命令与当前限制。各子命令用各自 `--help` 查看参数；原八条参数为：
 
 ```text
 local-agent-bridge prepare --commit <sha> --file <path> [--editable <path>] --task-note <path> --out <new dir> [--repository <root>]
@@ -52,7 +55,10 @@ local-agent-bridge shadow {fingerprint|snapshot|replay|compare} ...
 local-agent-bridge cursor  run --task-root <dir> --run-root <new dir> --exe <agent.ps1> --exe-sha256 <64 hex> [--execute]
 ```
 
-`run` 缺省只做预检：不写文件、不启动进程。`--execute` 是单独的一次性授权，执行一次固定本地 CLI 调用。
+旧切片 `run` 缺省只做预检：不写文件、不启动进程。`--execute` 是单独的一次性授权，执行一次固定本地 CLI 调用。
+Task 命令使用单个绝对路径 `--spec`；`prepare/plan/run` 另须明确的 `--trusted-control-root` 和
+`--trusted-inputs-sha256`。`task run` 缺省不启动宿主，但在全新 `run_root` 保存原 NotRun 回执；
+只有显式 `--execute` 且原 C 门禁通过才启动一次。规格、退出码与原始字节规则见上述合同章节。
 
 在另一台机器上让 Codex 调用已安装的 Bridge：见 [skills/local-agent-bridge](skills/local-agent-bridge/SKILL.md)（Skill 只做调用，不安装、不升级、不登录、不改配置）。
 

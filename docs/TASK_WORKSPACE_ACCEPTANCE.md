@@ -181,3 +181,25 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | LEGACY-CONSUMER-01 | 严格task collect尝试读取旧schema v1/v2/未知3 | RunReceiptInvalid/Failed、continuation=null，不跨合同误读；外部消费者未核验，不声明通用向后兼容 |
 
 默认与显式测试集合均含test_legacy_launch_receipts.py（共17模块），sdist与精确发行测试清单同样登记；完整结果保留实际失败与平台skip。新旧候选边界、独立审查和真实部署不能用这些离线总数合并宣布接受。
+
+## 11. Task CLI v1 离线验收矩阵
+
+对应 LAB-TASK-CLI-IMPLEMENT-01，测试新增 test_task_cli.py；当前默认和显式发行测试清单均为 18 模块，runtime 精确清单包含 task_cli.py。历史章节的模块数量仅描述当时候选，不累计为本轮结果。
+
+| 组 | 必须验证 |
+| --- | --- |
+| CLI-01 | task 与五条 help 无输入访问；必填/重复/缩写/多余参数拒绝，错误无原始文本 |
+| CLI-02 | 严格 spec JSON、原路径拼写、64 MiB 读取前/后边界、身份变化、单链接 |
+| CLI-03 | 实际 Git/ZIP/目录经 CLI→A；源类型精确字段、摘要、strip_prefix 与 policy 必填 |
+| CLI-04 | 新 task_root 共享加载；管理固定摘要、canonical、receipt/profile/auth 绑定和根不交 |
+| CLI-05 | CLI→B prepare；task/note/规则原字节与 input_control_bindings；错误不发布任务 |
+| CLI-06 | Cursor 固定模板和只读复验；字节/schema/目录冲突及部分持久化失败原位保留 |
+| CLI-07 | 无适用 R 为 Blocked；Caps.execute 与 --execute 分离；静态 Review 不误禁宿主 |
+| CLI-08 | 实际 A→B→fake C→B；默认 dry run 不读 key/不启动，允许启动只一次 |
+| CLI-09 | trust/task note/source/rule/plan/runtime 身份漂移；run 不准备或修复 Cursor 配置 |
+| CLI-10 | Failed/TimedOut/null/capture/restore 与原中断清理；退出 2/130、不产生成功 |
+| CLI-11 | collect null run、缺输出、越界改动、Worker Blocked；原结果、管理裁决 null、传输 LF |
+| CLI-12 | 实际 CLI 身份缺项 Blocked；18 模块有序发现相等且无重复；完整 pytest/ruff/format；新 sdist→wheel 与隔离锁定离线非 editable 安装 |
+
+本轮报告须给出实际 JUnit、失败轮日志、平台 skip、发行清单/RECORD/metadata/源文件字节核对和安装来源。只检查本产品静态帮助，不启动真实宿主帮助或版本命令。
+首次真实 Task R/bootstrap 未定义，目录 manifest 的既有资源风险未修复；不以合成测试或安装自检替代独立 Review、真实运行与部署。

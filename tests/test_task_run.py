@@ -74,6 +74,8 @@ def prepare(
     accepted=True,
     actual_b=False,
     files=None,
+    publish=True,
+    note=None,
 ):
     """The test itself explicitly injects trust; nothing is a real grant or R."""
     caps = caps or {"execute": True, "web_reference": False, "prepare_dependencies": False}
@@ -85,7 +87,9 @@ def prepare(
             (root / name).mkdir(parents=True)
     trust = tmp_path / "trusted"
     trust.mkdir()
-    note = "离线工程任务\n".encode()
+    note = "离线工程任务\n".encode() if note is None else note
+    if not publish and not actual_b:
+        raise ValueError("unpublished fixtures require an actual A snapshot")
     files = {"source.py": b"n = 0\r\n"} if files is None else files
     rules = {
         path: runner._digest(raw)
@@ -245,7 +249,7 @@ def prepare(
     monkeypatch.setattr(slice_run, "_protect_directory", lambda _path: None)
     monkeypatch.setattr(slice_run, "_session_store", lambda: case.store)
     sync(case, refresh_r=True, persist_task=not actual_b)
-    if actual_b:
+    if actual_b and publish:
         assert (
             task_workspace.prepare_task(
                 snapshot_root=snapshot_root,
@@ -257,7 +261,7 @@ def prepare(
             )
             == task
         )
-    if host == "cursor":
+    if host == "cursor" and publish:
         (root / ".cursor").mkdir()
         project.write_bytes(project_raw)
     return case

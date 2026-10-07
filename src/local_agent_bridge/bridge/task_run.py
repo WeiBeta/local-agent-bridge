@@ -242,11 +242,55 @@ def _file(path: Path) -> Path:
     return path
 
 
+def checked_host_path(*, path: str) -> Path:
+    """Check the raw Host spelling before Path can fold dot components."""
+    try:
+        return _absolute(_text(path))
+    except (OSError, task_input.TaskInputError, paths.BridgePathError) as error:
+        raise _map_error(error) from error
+
+
+def read_host_input_bytes(*, path: str) -> bytes:
+    """Read one ordinary, single-link Host file within the fixed byte limit."""
+    try:
+        target = _file(checked_host_path(path=path))
+        before = target.stat()
+        if before.st_size > _JSON_LIMIT:
+            raise TaskRunError("ResourceLimitExceeded")
+        with target.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            raw = stream.read(_JSON_LIMIT + 1)
+            after = os.fstat(stream.fileno())
+        if len(raw) > _JSON_LIMIT:
+            raise TaskRunError("ResourceLimitExceeded")
+        current = _file(target).stat()
+
+        def identity(info: os.stat_result) -> tuple:
+            return (
+                info.st_dev,
+                info.st_ino,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_nlink,
+                info.st_mode,
+                getattr(info, "st_file_attributes", 0),
+            )
+
+        if not identity(before) == identity(opened) == identity(after) == identity(current):
+            raise TaskRunError("InputChanged")
+        # Windows Python can report birth time through stat and change time
+        # through fstat under the ctime name. Compare each clock with itself.
+        if before.st_ctime_ns != current.st_ctime_ns or opened.st_ctime_ns != after.st_ctime_ns:
+            raise TaskRunError("InputChanged")
+        if len(raw) != before.st_size:
+            raise TaskRunError("InputChanged")
+        return raw
+    except (OSError, task_input.TaskInputError, paths.BridgePathError) as error:
+        raise _map_error(error) from error
+
+
 def _read(path: Path) -> dict:
-    path = _file(path)
-    if path.stat().st_size > _JSON_LIMIT:
-        raise TaskRunError("ResourceLimitExceeded")
-    raw = path.read_bytes()
+    raw = read_host_input_bytes(path=str(path))
     value = contract.decode_strict_json_bytes(raw, label="task contract")
     if type(value) is not dict or raw != _canonical(value):
         raise TaskRunError("InvalidContract")
@@ -497,14 +541,42 @@ def _validate_receipt(receipt: dict) -> None:
     _evidence(receipt["provenance_refs"])
 
 
-def _load_inputs(
-    task_root: Path, trusted_root: Path, expected: str, *, run_root: Path | None = None
+def load_trusted_inputs(
+    *,
+    trusted_control_root: Path,
+    trusted_inputs_sha256: str,
+    task_root: Path,
+    snapshot_root: Path | None = None,
+    run_root: Path | None = None,
+) -> dict[str, object]:
+    """Load only the management-pinned bundle; this does not accept a task or R."""
+    try:
+        return _load_trusted_inputs(
+            trusted_control_root, trusted_inputs_sha256, task_root, snapshot_root, run_root
+        )
+    except (
+        OSError,
+        task_input.TaskInputError,
+        paths.BridgePathError,
+        contract.BridgeContractError,
+    ) as error:
+        raise _map_error(error) from error
+
+
+def _load_trusted_inputs(
+    trusted_root: Path,
+    expected: str,
+    task_root: Path,
+    snapshot_root: Path | None,
+    run_root: Path | None,
 ) -> dict:
     _hash(expected)
-    task_root, trusted_root = _directory(task_root), _directory(trusted_root)
+    trusted_root, task_root = _directory(trusted_root), _absolute(task_root)
+    _directory(task_root.parent)
+    if os.path.lexists(task_root):
+        _directory(task_root)
     blocked_roots = [task_root, Path(__file__).resolve().parents[3]]
-    if run_root is not None:
-        blocked_roots.append(run_root)
+    blocked_roots.extend(_absolute(root) for root in (snapshot_root, run_root) if root is not None)
     for blocked in blocked_roots:
         if paths._is_within(trusted_root, blocked) or paths._is_within(blocked, trusted_root):
             raise TaskRunError("TrustedRootRejected")
@@ -522,6 +594,33 @@ def _load_inputs(
     _validate_receipt(receipt)
     _validate_profile(profile)
     _validate_authorization(auth)
+    if task_root.parent != _directory(Path(receipt["workspace_parent"])):
+        raise TaskRunError("InvalidScope")
+    digest = _digest(_canonical(receipt))
+    projection = {key: value for key, value in profile.items() if key != "receipt_sha256"}
+    if (
+        profile["receipt_sha256"] != digest
+        or auth["receipt_sha256"] != digest
+        or receipt["profile_fields_sha256"] != _digest(_canonical(projection))
+        or receipt["id"] != profile["id"]
+        or receipt["host"] != profile["host"]
+        or [tool["ref"] for tool in receipt["toolchains"]] != profile["toolchain_refs"]
+    ):
+        raise TaskRunError("ControlChanged")
+    return bundle
+
+
+def _load_inputs(
+    task_root: Path, trusted_root: Path, expected: str, *, run_root: Path | None = None
+) -> dict:
+    task_root = _directory(task_root)
+    bundle = load_trusted_inputs(
+        trusted_control_root=trusted_root,
+        trusted_inputs_sha256=expected,
+        task_root=task_root,
+        run_root=run_root,
+    )
+    receipt, profile, auth = bundle.values()
     task = _read(task_root / "task.json")
     _validate_task(task)
     for key, name, expected_hash in (
@@ -539,19 +638,7 @@ def _load_inputs(
     _directory(task_root / "work")
     _directory(task_root / "out")
     _directory(task_root / "scratch")
-    if task_root.parent != _directory(Path(receipt["workspace_parent"])):
-        raise TaskRunError("InvalidScope")
-    digest = _digest(_canonical(receipt))
-    projection = {key: value for key, value in profile.items() if key != "receipt_sha256"}
-    if (
-        profile["receipt_sha256"] != digest
-        or auth["receipt_sha256"] != digest
-        or receipt["profile_fields_sha256"] != _digest(_canonical(projection))
-        or not receipt["id"] == profile["id"] == task["deployment_profile_id"]
-        or receipt["host"] != profile["host"]
-        or task["task_id"] != auth["task_id"]
-        or [tool["ref"] for tool in receipt["toolchains"]] != profile["toolchain_refs"]
-    ):
+    if receipt["id"] != task["deployment_profile_id"] or task["task_id"] != auth["task_id"]:
         raise TaskRunError("ControlChanged")
     if receipt["host"] == "cursor" and (
         Path(receipt["configuration"]["cursor_project"]["path"])
@@ -728,7 +815,11 @@ def plan_task(
 
 def _runtime_files() -> set[Path]:
     """The actual imported implementation, not a version label or caller list."""
+    from local_agent_bridge import cli, task_cli
+
     modules = (
+        cli,
+        task_cli,
         contract,
         cursor_run,
         paths,
@@ -783,14 +874,58 @@ def _verify_cursor_project(receipt: dict) -> None:
     if {path.name for path in directory.iterdir()} != {"cli.json"}:
         raise TaskRunError("ConfigurationChanged")
     _verify_file_identity(identity)
-    value = contract.decode_strict_json_bytes(
-        _file(Path(identity["path"])).read_bytes(), label="native project control"
-    )
+    _validate_cursor_project_bytes(read_host_input_bytes(path=identity["path"]))
+
+
+def _validate_cursor_project_bytes(raw: bytes) -> None:
+    value = contract.decode_strict_json_bytes(raw, label="native project control")
     _object(value, {"permissions"})
     permissions = _object(value["permissions"], {"allow", "deny"})
     for key in ("allow", "deny"):
         for rule in _list(permissions[key]):
             _text(rule)
+
+
+def prepare_cursor_project(
+    *,
+    task_root: Path,
+    trusted_control_root: Path,
+    trusted_inputs_sha256: str,
+) -> None:
+    """Prepare one fixed task-local control before plan; partial writes are retained."""
+    try:
+        context = _load_inputs(task_root, trusted_control_root, trusted_inputs_sha256)
+        receipt = context["bundle"]["deployment_receipt"]
+        if receipt["host"] != "cursor":
+            raise TaskRunError("InvalidAdapter")
+        raw = read_host_input_bytes(path=str(trusted_control_root / "cursor-project.json"))
+        if _digest(raw) != receipt["configuration"]["cursor_project"]["sha256"]:
+            raise TaskRunError("ConfigurationChanged")
+        _validate_cursor_project_bytes(raw)
+        # Re-read the management bundle, task and source after reading the native material.
+        _load_inputs(task_root, trusted_control_root, trusted_inputs_sha256)
+        target = _absolute(task_root / ".cursor" / "cli.json")
+        directory = target.parent
+        if os.path.lexists(directory):
+            _verify_cursor_project(receipt)
+            if read_host_input_bytes(path=str(target)) != raw:
+                raise TaskRunError("ConfigurationChanged")
+            return
+        _absolute(directory)
+        directory.mkdir()
+        _absolute(target)
+        with target.open("xb") as stream:
+            stream.write(raw)
+        _verify_cursor_project(receipt)
+        _load_inputs(task_root, trusted_control_root, trusted_inputs_sha256)
+    except (
+        OSError,
+        task_input.TaskInputError,
+        task_workspace.TaskWorkspaceError,
+        paths.BridgePathError,
+        contract.BridgeContractError,
+    ) as error:
+        raise _map_error(error) from error
 
 
 @contextlib.contextmanager

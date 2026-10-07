@@ -69,3 +69,13 @@ H3 前次只提交 0 次属历史阶段（当时后端不可达、队列无法�
 - 文档不得暗示会话会无条件持续滚动；只有完整、无引用且复验通过的整包才可能被滚动。
 - 文档不得把离线影子回放写成模型复跑成功。
 - 文档不得把本包写成已正式发布的产品。
+
+## Task CLI v1 候选复核项
+
+LAB-TASK-CLI-IMPLEMENT-01 增加 task 的五条命令；当前顶层共九条，原八条和旧 adapter 执行回执 v2 保持原合同。发布复核须以本轮新构建和 JUnit 为准，不套用上表历史验证结果。
+
+- 18 个测试模块默认/显式有序 nodeids 相等且无重复；test_task_cli.py 随 sdist 分发。
+- 精确 runtime 清单包含 task_cli.py；C 运行身份包含实际 cli.py/task_cli.py。
+- 新 sdist 构建 wheel；metadata、entry_points、全部 RECORD 项和源码/许可原字节核对；全新隔离环境锁定、离线、非 editable 安装，导入来自其 site-packages。
+- 安装后的本产品根 help、task help 和五条 Task 子 help 为静态检查；不调用真实 agy/Cursor 的帮助或版本。
+- 同批独立 Review 待验；首次真实 Task R/bootstrap、真实 Task 宿主、部署和 Skill 更新另需后续范围。目录 manifest 资源风险仍为依赖，不声明已解决。

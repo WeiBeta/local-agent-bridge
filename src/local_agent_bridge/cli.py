@@ -1,9 +1,10 @@
 """Combined console entry for the bounded local source-slice bridge.
 
-Eight subcommands: ``prepare``, ``collect`` and ``plan`` come from the slice
+The legacy commands ``prepare``, ``collect`` and ``plan`` come from the slice
 workspace module, ``run`` from the single-run module, two fixed session
 commands from this entry, ``shadow`` routes to the offline replay module and
-``cursor`` to the fixed Cursor call. The commands keep their own parsers; this entry
+``cursor`` to the fixed Cursor call. ``task`` owns the five Task v1 operations.
+The commands keep their own parsers; this entry
 only routes the first token. There is no pass
 through for arbitrary commands, models, URLs, paths or permission rules, and the
 tool is not an OS sandbox.
@@ -26,6 +27,7 @@ SUBCOMMANDS = (
     "session-key-init",
     "shadow",
     "cursor",
+    "task",
 )
 
 USAGE = """usage: local-agent-bridge <command> [options]
@@ -40,9 +42,10 @@ Bounded local source-slice bridge (Windows 11). Commands:
   session-key-init  explicitly create this product's Windows session key
   shadow    offline fingerprint, snapshot, replay or comparison of sealed bundles
   cursor    preflight (default) or execute one fixed Cursor CLI call
+  task      import, prepare, plan, run or collect a frozen Task v1 workspace
 
 The Bridge commands, shadow and cursor have their own ``--help``; session commands take no options.
-Current limits:
+Legacy slice limits (Task v1 has its separate frozen contract):
 
   * only existing text files can be prepared; added or deleted files are refused
   * one fixed local CLI invocation with fixed argv, model and effort
@@ -59,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE, end="")
         return 0
     command = arguments[0]
+    if command == "task":
+        from local_agent_bridge import task_cli
+
+        return task_cli.main(arguments[1:])
     if command in {"prepare", "collect", "plan"}:
         return slice_workspace.main(arguments)
     if command == "run":
