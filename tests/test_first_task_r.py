@@ -540,6 +540,149 @@ def test_legitimate_authored_source_change_is_collected(case, monkeypatch):
     assert (Path(case.sheet["result_root"]) / "candidate/new-authored-directory").is_dir()
 
 
+DIRECTORY_DOMAINS = {
+    "authored": ("work/authored-empty/nested", "candidate/authored-empty/nested"),
+    "generated": ("work/pkg/.venv/nested", "generated/work/pkg/.venv/nested"),
+    "out": ("out/empty/nested", "out/empty/nested"),
+    "scratch": ("scratch/empty/nested", "scratch/empty/nested"),
+}
+
+
+@pytest.mark.parametrize("domain", DIRECTORY_DOMAINS)
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "before",
+        "source_add",
+        "source_remove",
+        "source_rename",
+        "result_add",
+        "result_remove",
+        "result_wrong_map",
+    ],
+)
+def test_complete_directory_mapping(case, monkeypatch, domain, fault):
+    source_path, published_path = DIRECTORY_DOMAINS[domain]
+    source = case.root / source_path
+    result_root = Path(case.sheet["result_root"])
+    published = result_root / published_path
+
+    def output():
+        complete_output(case)
+        source.mkdir(parents=True)
+
+    fake_spawn(case, monkeypatch, output)
+    original_collect = task_workspace.collect_task
+
+    def collect(**kwargs):
+        result = original_collect(**kwargs)
+        assert source.is_dir() and published.is_dir()
+        if fault == "source_add":
+            (source / "late-empty").mkdir()
+        elif fault == "source_remove":
+            source.rename(case.base / "retained-source-directory")
+        elif fault == "source_rename":
+            source.rename(source.with_name("renamed-empty"))
+        elif fault == "result_add":
+            (published / "late-empty").mkdir()
+        elif fault == "result_remove":
+            published.rename(case.base / "retained-result-directory")
+        elif fault == "result_wrong_map":
+            published.rename(result_root / "out/misplaced-empty")
+        return result
+
+    monkeypatch.setattr(task_workspace, "collect_task", collect)
+    observed = invoke(case)
+    assert observed == observations(case) and observed["launch_count"] == 1
+    assert observed["status"] == ("ObservationRecorded" if fault == "before" else "Failed")
+    assert observed["runtime_acceptance"] == "Unverified" and len(case.calls) == 1
+    if fault != "before":
+        assert observed["run_receipt_sha256"] is None
+        assert observed["collection_sha256"] is None
+    assert (case.base / "fixture-permit.consumed.json").exists()
+
+
+@pytest.mark.parametrize(
+    "operation,relative",
+    [
+        ("add", "candidate/orphan"),
+        ("add", "out/orphan"),
+        ("add", "scratch/orphan"),
+        ("add", "generated/orphan"),
+        ("add", "generated/work/orphan"),
+        ("add", "host/orphan"),
+        ("add", "host/control/orphan"),
+        ("add", "validation/orphan"),
+        ("add", "run/orphan"),
+        ("remove", "scratch"),
+        ("remove", "generated"),
+        ("remove", "generated/work"),
+        ("remove", "generated/work/pkg"),
+    ],
+)
+def test_result_structure_directories_are_exact(case, monkeypatch, operation, relative):
+    def output():
+        complete_output(case)
+        (case.root / "work/pkg/.venv/nested").mkdir(parents=True)
+
+    fake_spawn(case, monkeypatch, output)
+    original_collect = task_workspace.collect_task
+
+    def collect(**kwargs):
+        result = original_collect(**kwargs)
+        target = Path(case.sheet["result_root"]) / relative
+        if operation == "add":
+            target.mkdir(parents=True)
+        else:
+            target.rename(case.base / "retained-b-directory")
+        return result
+
+    monkeypatch.setattr(task_workspace, "collect_task", collect)
+    observed = invoke(case)
+    assert observed["status"] == "Failed" and observed["launch_count"] == 1
+    assert observed["collection_sha256"] is None and observed["run_receipt_sha256"] is None
+    assert observed == observations(case) and len(case.calls) == 1
+
+
+def test_generic_build_empty_directory_remains_authored(case, monkeypatch):
+    def output():
+        complete_output(case)
+        (case.root / "work/build/empty").mkdir(parents=True)
+
+    fake_spawn(case, monkeypatch, output)
+    observed = invoke(case)
+    result_root = Path(case.sheet["result_root"])
+    assert observed["status"] == "ObservationRecorded"
+    assert (result_root / "candidate/build/empty").is_dir()
+    assert not (result_root / "generated").exists()
+
+
+def test_directory_failure_keeps_original_interrupt_and_launch(case, monkeypatch):
+    original = KeyboardInterrupt("original synthetic interrupt")
+    fake_spawn(case, monkeypatch, lambda: complete_output(case))
+    original_execute = task_run._execute_once
+    original_collect = task_workspace.collect_task
+
+    def execute(*args, **kwargs):
+        original_execute(*args, **kwargs)
+        raise original
+
+    def collect(**kwargs):
+        result = original_collect(**kwargs)
+        (case.root / "out/after-interrupt").mkdir()
+        return result
+
+    monkeypatch.setattr(task_run, "_execute_once", execute)
+    monkeypatch.setattr(task_workspace, "collect_task", collect)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        invoke(case)
+    observed = observations(case)
+    assert caught.value is original and observed["status"] == "Interrupted"
+    assert observed["launch_count"] == 1 and len(case.calls) == 1
+    assert observed["collection_sha256"] is None and observed["run_receipt_sha256"] is None
+    assert (case.base / "fixture-permit.consumed.json").exists()
+
+
 @pytest.mark.parametrize("fault", ["limit", "identity"])
 def test_saved_run_uses_bounded_stable_descriptor_read(case, monkeypatch, fault):
     fake_spawn(case, monkeypatch, lambda: complete_output(case))

@@ -100,3 +100,5 @@ B只在既有null-run模式回收本验证候选，transport仍NotRun，验收�
 45a22cf的落盘缺失P1已被独立Review拒绝；LAB-FIRST-TASK-R-REPAIR-01仅提出修复候选。修复程序重读固定run与本地launch/restore证据、实际B result/artifacts及同任务控制/环境，不用C/B返回对象哈希替代保存证明。缺失/漂移/错绑定失败也保留原0/1/null启动事实和原中断；opaque会话引用只记录声明，不能据此断言密文或命令已实测，不解密。修复自检不批准ArtifactsOnlyNullRun模式，仍须新的独立Review及另行真实许可；本轮没有runtime安装、完整发行复建或真实调用。
 
 LAB-FIRST-TASK-R-REPAIR-02处理Review-02的新增P1：未绑定的saved run不能先提供计数。优先保留本调用可信C返回的明确0/1；没有明确返回时核固定launch的自洽事实及已绑定、基本生命周期有效的run本体，两者任一确认1保留1，没有1时保留已核来源的明确0，无法确认则null。相反零/缺失/无效/unknown均不能消除有效run本体的已知1。证据不完整仍Failed/Interrupted、无效run hash=null，原中断、consumed和原字节保留，不自动重试。此为第2且最后自动Repair候选，仍需fresh Review，不能据零计数或自检结果另启真实调用。
+
+作者另行批准LAB-FIRST-TASK-R-REPAIR-03窄修复与独立离线审查，不重置自动轮次。验证候选现在将当前authored/generated work、out、scratch的完整目录映射与实际result目录逐项对应，计入B固定根和必要生成祖先。合法收集前空目录继续复制；收集后新增/缺失/错映射或多余result目录拒绝完整观测，同时保留启动事实、原中断和原字节。仍待管理安排独立Review-04，真实R未验收；B.NotRun只描述null-run收集，不能解释为整个验证从未启动。

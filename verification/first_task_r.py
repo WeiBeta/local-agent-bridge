@@ -586,7 +586,7 @@ def _saved_collection(sheet: dict, roots: dict, context: dict, returned: dict) -
         expected[relative] = (artifact["bytes"], artifact["sha256"])
     deadline = task_run.task_input._Deadline.starting_now(sheet["deadline_seconds"])
     # The actual set and byte total must equal B's already bounded publication.
-    files, _ = task_workspace._inventory(
+    files, result_directories = task_workspace._inventory(
         roots["result_root"], sum(size for size, _ in expected.values()), deadline
     )
     _require(files == expected, "ArtifactBindingMismatch")
@@ -636,17 +636,31 @@ def _saved_collection(sheet: dict, roots: dict, context: dict, returned: dict) -
         + path: stamp
         for path, stamp in work.items()
     }
+    source_directories = {"candidate", "out", "scratch"}
+    source_directories.update(
+        ("generated/work/" if task_workspace._under(path, generated) else "candidate/") + path
+        for path in work_dirs
+    )
     for name in ("out", "scratch"):
-        source, _ = task_workspace._inventory(
+        source, directories = task_workspace._inventory(
             roots["task_root"] / name, task["source_output_bytes_limit"], deadline
         )
         source_files.update({name + "/" + path: stamp for path, stamp in source.items()})
+        source_directories.update(name + "/" + path for path in directories)
     collected_source = {
         artifact["path"]: files[artifact["path"]]
         for artifact in artifacts
         if artifact["origin"] in {"CandidateTree", "WorkerOutput"}
     }
     _require(source_files == collected_source, "CollectedSourceChanged")
+    # B copies every source directory, creates its three roots, and creates only
+    # the ancestors needed by copied directories and declared artifact files.
+    expected_directories = source_directories | {
+        "/".join(relative.split("/")[:index])
+        for relative in expected.keys() | source_directories
+        for index in range(1, len(relative.split("/")))
+    }
+    _require(result_directories == expected_directories, "CollectedDirectoriesChanged")
     return task_run._digest(result_raw)
 
 

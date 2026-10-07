@@ -580,3 +580,11 @@ session:UID仅核声明与同run.capture_uid相等，run_evidence_checks标记Op
 基本run校验与附属证据完整性分开：严格计数类型、transport/capture/restore、capture_uid、NotRun/Completed/TimedOut和LaunchUnverified关系先核，再逐项核引用与收集。run本体有效且明确已启动，即使launch引用/文件或其他附属证据缺失，仍保留1并报告Failed/Interrupted。错绑定、错误状态或畸形run不能贡献0/1；与固定launch矛盾由既有完整证据检查拒绝。可信C的明确返回不能被相反磁盘摘要覆盖。
 
 来源选择不是证据接受。无效run的hash仍null，原KeyboardInterrupt对象优先于所有次生错误，consumed标记和原字节保留；没有重试、恢复或新生产B/C门禁。
+
+### 完整目录映射修复候选（LAB-FIRST-TASK-R-REPAIR-03）
+
+作者额外批准这次窄修复及独立离线审查，不重置自动两轮界限。Review-03发现收集后out空目录与保存副本不同仍完整观测；本候选自检不能撤销P1或接受真实R。
+
+保存并核B inventory的完整目录集合，不只核文件及candidate摘要。当前work目录沿用B的generated分类：authored映射candidate/<relative>，新生成缓存映射generated/work/<relative>；out/scratch分别同名映射。合法收集前空目录、嵌套目录和通用build源目录继续保留；冻结源中的缓存名仍按B原规则处理。
+
+result目录必须精确等于上述当前源目录映射、B固定生成的candidate/out/scratch三个根，以及映射和已核artifact文件所需的祖先目录（含host/control、validation等）。收集后任一复制域新增、缺失、改名/错映射，或result多出无声明空目录、缺少必要生成目录，均拒绝完整观测。文件/长度/hash、candidate与continuation及最终控制核验继续；目录关联失败使collection/run完整hash保守null，不抹去0/1/null启动事实或原中断。该检查是有限阶段观察，不保证观察后的树不变。

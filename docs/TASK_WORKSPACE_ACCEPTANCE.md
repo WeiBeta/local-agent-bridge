@@ -278,3 +278,18 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | FULL | fresh basetemp完整pytest/JUnit、Ruff及格式检查；失败和成功材料分别保留，不重复发行重建，fresh Review补停止矩阵 |
 
 只离线fake与合成安装核验，不执行真实host/provider/凭据解密/配置、新R-a/H3或部署；自检不是独立接受，真实Task R仍Unverified。
+
+### 完整目录关联矩阵（LAB-FIRST-TASK-R-REPAIR-03）
+
+本次为作者额外明确批准的窄修复，不恢复或重置自动修复轮次。新独立Review-04由管理核收后安排；再次阻断不自动追加修复。
+
+| 组 | 必须观察 |
+| --- | --- |
+| RDIR-01 | 原Review03真实A/B/C：收集前合法out空目录对照通过，实际B返回后增加同目录拒绝；真实安装gate不替换 |
+| RDIR-02 | authored/generated/out/scratch四复制域各核合法收集前创建、当前源新增/缺失/改名、保存副本新增/缺失/错映射；不机械禁止空目录 |
+| RDIR-03 | result、candidate/out/scratch、generated/work及其必要父目录、host/control、validation、无声明run目录的多余/缺失按完整目录集合拒绝 |
+| RDIR-04 | 通用build仍authored，新空缓存正确generated，合法层级与B生成祖先正确保留；原中断及已启动事实不被目录失败抹去 |
+| RDIR-KEEP | 三类旧缺run/错绑定零/有效本体1附属零反例保持通过；B.NotRun不是整项未启动，opaque仍不证明密文 |
+| FULL | fresh basetemp全pytest/JUnit、Ruff/format；默认与显式全部模块有序发现和JUnit逐项同序核对；原失败及各阶段材料保留 |
+
+只五文件离线候选；生产B/C/R、依赖及治理/台账不变。自检与独立审查、真实R、管理接受和部署仍分别记录。
