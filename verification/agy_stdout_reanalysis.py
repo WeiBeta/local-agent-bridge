@@ -393,13 +393,30 @@ def _run_once(bundle: Path, output: Path, config: dict, key_loader) -> dict:
 
 
 def _load_key():
-    import keyring
+    # Require the locked transport before win32ctypes can select its ctypes fallback.
+    import cffi  # noqa: F401
+    from win32ctypes import core
 
-    backend = keyring.get_keyring()
-    if not type(backend).__module__.casefold().startswith("keyring.backends.windows"):
+    if core._backend != "cffi":
         raise Refused("KeyBackendRefused")
-    encoded = backend.get_password("LocalAgentBridge.SessionCapture.v1", "aes256gcm-session-v1")
-    key = base64.b64decode(encoded, altchars=b"-_", validate=True)
+    from win32ctypes.pywin32 import win32cred
+
+    # No keyring discovery/constructor or get_password's compound-target second read.
+    credential = win32cred.CredRead(
+        TargetName="LocalAgentBridge.SessionCapture.v1",
+        Type=win32cred.CRED_TYPE_GENERIC,
+        Flags=0,
+    )
+    if not isinstance(credential, dict) or credential.get("UserName") != "aes256gcm-session-v1":
+        raise Refused("KeyAccountRefused")
+    blob = credential.get("CredentialBlob")
+    if not isinstance(blob, bytes) or len(blob) != 88:
+        raise Refused("KeyShapeRefused")
+    try:
+        # The locked Windows writer stores its 44 ASCII base64 characters as UTF-16LE.
+        key = base64.b64decode(blob.decode("utf-16-le"), altchars=b"-_", validate=True)
+    except (ValueError, UnicodeError):
+        raise Refused("KeyShapeRefused") from None
     if len(key) != 32:
         raise Refused("KeyShapeRefused")
     return key

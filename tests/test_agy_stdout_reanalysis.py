@@ -5,6 +5,9 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import jsonschema
@@ -353,3 +356,294 @@ def test_unapproved_or_changed_artifacts_refuse(field, value):
     sheet[field] = value
     with pytest.raises(helper.Refused):
         helper._approved(sheet, artifacts)
+
+
+# Each process starts without helper/cffi/Windows imports. Its observer and native
+# guard precede those imports; replacing CredRead happens as its real loader exits.
+COLD_KEY_PROBE = r"""
+import base64
+import builtins
+import importlib.abc
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import sys
+
+script, fixture, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+assert not any(name in sys.modules for name in ("keyring", "win32ctypes", "cffi"))
+counts = {"config_reads": 0, "discovery": 0, "native_calls": 0, "audit_reads": 0}
+queries = []
+allowed = [script.parent.parent, Path(sys.prefix), Path(sys.base_prefix), fixture,
+           Path(os.environ["SystemRoot"])]
+
+def observe(path):
+    if not isinstance(path, (str, bytes, os.PathLike)):
+        return
+    path = Path(os.fsdecode(path)).absolute()
+    if path.name.casefold() == "keyringrc.cfg":
+        counts["config_reads"] += 1
+        raise AssertionError("SyntheticConfigurationReadDenied")
+    if not any(path.is_relative_to(root) for root in allowed):
+        raise AssertionError("OutsidePublicSoftwareOrFixtureDenied")
+
+original_builtin, original_io, original_path = builtins.open, io.open, Path.open
+def builtin_open(path, *args, **kwargs):
+    observe(path)
+    return original_builtin(path, *args, **kwargs)
+def io_open(path, *args, **kwargs):
+    observe(path)
+    return original_io(path, *args, **kwargs)
+def path_open(path, *args, **kwargs):
+    observe(path)
+    return original_path(path, *args, **kwargs)
+def audit(event, args):
+    if event == "open":
+        counts["audit_reads"] += 1
+        observe(args[0])
+sys.addaudithook(audit)
+builtins.open, io.open, Path.open = builtin_open, io_open, path_open
+
+# Calibration would fail with counterexample01's Path.open-only observer.
+configuration = fixture / "keyringrc.cfg"
+for opener in (builtins.open, io.open, Path.open):
+    try:
+        opener(configuration, "rb")
+    except AssertionError as error:
+        assert str(error) == "SyntheticConfigurationReadDenied"
+    else:
+        raise AssertionError("ObserverMissedActualOpen")
+try:
+    original_builtin(configuration, "rb")  # bypass wrappers; audit must still see it
+except AssertionError as error:
+    assert str(error) == "SyntheticConfigurationReadDenied"
+else:
+    raise AssertionError("ObserverMissedBuiltinAudit")
+calibration = counts["config_reads"]
+assert calibration == 4
+counts["config_reads"] = counts["audit_reads"] = 0
+
+def native_denied(*args, **kwargs):
+    counts["native_calls"] += 1
+    raise AssertionError("NativeCredentialCallDenied")
+
+class ProtectedLibrary:
+    def __init__(self, library):
+        self.library = library
+    def __getattr__(self, name):
+        if name.startswith("Cred"):
+            return native_denied
+        return getattr(self.library, name)
+
+def fake_read(*args, **kwargs):
+    queries.append((args, kwargs))
+    if mode == "missing":
+        raise OSError(1168, "SENSITIVE_MISSING_CREDENTIAL")
+    if mode == "exception":
+        raise RuntimeError("SENSITIVE_KEY_ERROR synthetic-full-command --password secret")
+    encoded = base64.urlsafe_b64encode(bytes(range(32))).decode()
+    credential = {"UserName": "aes256gcm-session-v1",
+                  "CredentialBlob": encoded.encode("utf-16-le")}
+    if mode == "account":
+        credential["UserName"] = "SENSITIVE_OTHER_ACCOUNT"
+    elif mode == "not-dict":
+        return None
+    elif mode == "blob-type":
+        credential["CredentialBlob"] = "SENSITIVE_BLOB"
+    elif mode == "blob-size":
+        credential["CredentialBlob"] = b"short"
+    elif mode == "utf16":
+        credential["CredentialBlob"] = b"\x00\xd8" * 44
+    elif mode == "base64":
+        credential["CredentialBlob"] = ("!" * 44).encode("utf-16-le")
+    elif mode == "key-size":
+        encoded = base64.urlsafe_b64encode(bytes(range(31))).decode()
+        credential["CredentialBlob"] = encoded.encode("utf-16-le")
+    return credential
+
+class GuardedLoader:
+    def __init__(self, delegate, name):
+        self.delegate, self.name = delegate, name
+    def create_module(self, spec):
+        return self.delegate.create_module(spec)
+    def exec_module(self, module):
+        self.delegate.exec_module(module)
+        if self.name == "cffi":
+            original_dlopen = module.FFI.dlopen
+            def guarded_dlopen(ffi, name, *args, **kwargs):
+                library = original_dlopen(ffi, name, *args, **kwargs)
+                if str(name).casefold() == "advapi32.dll":
+                    return ProtectedLibrary(library)
+                return library
+            module.FFI.dlopen = guarded_dlopen
+        elif self.name == "win32ctypes.core" and mode == "wrong-transport":
+            module._backend = "ctypes"
+        elif self.name == "win32ctypes.pywin32.win32cred":
+            module.CredRead = fake_read
+            for name in ("CredWrite", "CredDelete", "CredEnumerate"):
+                if hasattr(module, name):
+                    setattr(module, name, native_denied)
+
+class GuardedFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "keyring" or fullname.startswith("keyring."):
+            counts["discovery"] += 1
+            raise AssertionError("DefaultKeyringDiscoveryDenied")
+        if fullname in {"win32cred", "pywintypes", "win32api"}:
+            raise AssertionError("Pywin32FallbackDenied")
+        if (fullname == "cffi" and mode == "no-cffi") or (
+            fullname == "win32ctypes.pywin32" and mode == "import-failure"
+        ):
+            raise ImportError("SyntheticFixedBackendUnavailable")
+        if fullname in {"cffi", "win32ctypes.core", "win32ctypes.pywin32.win32cred"}:
+            spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+            assert spec is not None
+            spec.loader = GuardedLoader(spec.loader, fullname)
+            return spec
+
+def profile(frame, event, argument):
+    if event == "call":
+        module = frame.f_globals.get("__name__", "")
+        if module.startswith("win32ctypes") and frame.f_code.co_name.casefold() in {
+            "credread", "credwrite", "creddelete", "credenumerate", "_credread",
+            "_credwrite", "_creddelete", "_credenumerate", "_credfree", "credential2dict"
+        }:
+            native_denied()
+sys.meta_path.insert(0, GuardedFinder())
+sys.setprofile(profile)
+spec = importlib.util.spec_from_file_location("cold_helper", script)
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+assert queries == [] and counts["native_calls"] == 0
+failed = False
+try:
+    key = helper._load_key()
+except (helper.Refused, ImportError, OSError, RuntimeError):
+    failed = True
+finally:
+    sys.setprofile(None)
+assert failed == (mode != "success")
+expected = 0 if mode in {"no-cffi", "import-failure", "wrong-transport"} else 1
+assert len(queries) == expected
+for args, kwargs in queries:
+    assert args == ()
+    assert kwargs == {"TargetName": "LocalAgentBridge.SessionCapture.v1", "Type": 1, "Flags": 0}
+assert counts["config_reads"] == counts["discovery"] == counts["native_calls"] == 0
+assert counts["audit_reads"] > 0
+if not failed:
+    assert key == bytes(range(32))
+print(json.dumps({**counts, "query_count": len(queries), "calibration": calibration,
+                  "failed": failed, "key_bytes": 0 if failed else len(key)}))
+"""
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "success",
+        "missing",
+        "exception",
+        "account",
+        "not-dict",
+        "blob-type",
+        "blob-size",
+        "utf16",
+        "base64",
+        "key-size",
+        "no-cffi",
+        "import-failure",
+        "wrong-transport",
+    ],
+)
+def test_cold_fixed_backend_has_no_discovery_config_or_second_query(tmp_path, mode):
+    fixture = tmp_path / "synthetic-account-config"
+    fixture.mkdir()
+    (fixture / "keyringrc.cfg").write_text("[fixture-only]\nvalue=synthetic\n", encoding="utf-8")
+    env = dict(os.environ)
+    for name in ("USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME"):
+        env[name] = str(fixture)
+    env.update(
+        PYTHON_KEYRING_BACKEND="synthetic.unapproved.Backend",
+        KEYRING_PROPERTY_SERVICE="SENSITIVE_SERVICE_OVERRIDE",
+        KEYRING_PROPERTY_KEYRING="SENSITIVE_BACKEND_OVERRIDE",
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", COLD_KEY_PROBE, str(SCRIPT), str(fixture), mode],
+        cwd=fixture,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    assert "SENSITIVE" not in completed.stdout and "synthetic-full-command" not in completed.stdout
+    facts = json.loads(completed.stdout)
+    assert facts["calibration"] == 4
+    assert facts["config_reads"] == facts["discovery"] == facts["native_calls"] == 0
+    assert facts["query_count"] == (
+        0 if mode in {"no-cffi", "import-failure", "wrong-transport"} else 1
+    )
+    assert facts["key_bytes"] == (32 if mode == "success" else 0)
+
+
+def test_native_key_failure_consumes_marker_and_cli_sanitizes(tmp_path, monkeypatch, capsys):
+    from win32ctypes.pywin32 import win32cred
+
+    bundle, config, _ = synthetic_bundle(tmp_path)
+    config["bundle"] = bundle.as_posix()
+    configuration = tmp_path / "synthetic-config.json"
+    configuration.write_bytes(helper._canonical(config))
+    schema = tmp_path / "synthetic-schema.json"
+    schema.write_bytes(b"{}")
+    output = tmp_path / "synthetic-once"
+    for name, value in (
+        ("UID", config["uid"]),
+        ("BUNDLE", bundle),
+        ("OUTPUT", output),
+        ("CONFIG", configuration),
+        ("SCHEMA", schema),
+    ):
+        monkeypatch.setattr(helper, name, value)
+    queries, auth = [], []
+
+    def fail_read(*args, **kwargs):
+        queries.append((args, kwargs))
+        raise RuntimeError("SENSITIVE_KEY_ERROR synthetic-full-command --password secret")
+
+    monkeypatch.setattr(win32cred, "CredRead", fail_read)
+    monkeypatch.setattr(helper, "_authenticate", lambda *args: auth.append(1))
+    artifacts = {
+        name: helper._sha(path.read_bytes())
+        for name, path in (("code", SCRIPT), ("config", configuration), ("schema", schema))
+    }
+    sheet = {
+        "task_id": helper.TASK_ID,
+        "uid": config["uid"],
+        "author_confirmed": True,
+        "review": "Passed",
+        "artifacts": artifacts,
+        "max_key_reads": 1,
+        "max_stdout_authentications": 1,
+        "grant_ref": "synthetic-test-only-not-a-real-grant",
+    }
+    approval = tmp_path / "synthetic-approval.json"
+    approval.write_bytes(helper._canonical(sheet))
+    argv = [
+        "--approval",
+        str(approval),
+        "--expected-approval-sha256",
+        helper._sha(approval.read_bytes()),
+    ]
+    assert helper.main(argv) == 2
+    assert queries == [
+        ((), {"TargetName": "LocalAgentBridge.SessionCapture.v1", "Type": 1, "Flags": 0})
+    ]
+    assert auth == []
+    assert set(path.name for path in output.iterdir()) == {"attempt.consumed.json"}
+    assert helper.main(argv) == 2
+    assert len(queries) == 1 and auth == []
+    assert capsys.readouterr().out == '{"status":"Refused","retry":false}\n' * 2

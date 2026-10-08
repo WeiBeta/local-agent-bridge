@@ -22,7 +22,11 @@ cipher=48333 bytes / SHA256 `841c86b0b9a7964b284b6bb1b2d23868f7cee3897f2cd08858f
 
 独立 Review 通过且管理取得适用授权后，提供批准单及独立 raw SHA。单据恰好含 task_id、uid、author_confirmed=true、review=Passed、artifacts={code,config,schema 的 raw SHA}、max_key_reads=1、max_stdout_authentications=1、grant_ref。Reviewed source/runtime 固定，不能边解密边修代码；变更须重新 Review。批准单不由工具自产。
 
-未来用冻结 Python 3.13 的 `-I -B` 执行冻结脚本，只有 `--approval <管理批准单绝对路径>`、`--expected-approval-sha256 <独立 SHA>`。依赖 cryptography / Windows keyring 的版本、安装来源/身份也须冻结。程序只查询 Bridge 专用 key 一次，无创建/备用 backend；key 仅驻内存，不承诺 Python/crypto 内存零化。
+未来用冻结 Python 3.13 的 `-I -B` 执行冻结脚本，只有 `--approval <管理批准单绝对路径>`、`--expected-approval-sha256 <独立 SHA>`。依赖 cryptography / pywin32-ctypes / cffi 的版本、安装来源/身份也须冻结。程序只查询 Bridge 专用 key 一次，无创建/备用 backend；key 仅驻内存，不承诺 Python/crypto 内存零化。
+
+REPAIR-02 只修复独立 Review 的 P1-01：helper 不调用 `keyring.get_keyring`，不导入 keyring 或构造其后端，避免读取 keyringrc.cfg、环境属性和插件。先要求锁定 cffi 传输，再直接调用同一 Windows 后端底层的 pywin32-ctypes `CredRead`，固定 `LocalAgentBridge.SessionCapture.v1`、generic 类型、Flags=0；返回后严格核对 `aes256gcm-session-v1` 账户及 UTF-16LE/base64/32-byte 形状。缺失、异常、账户错或导入失败立即拒绝；不查询 compound target，不重试、不换 ctypes/pywin32 或默认后端。原 UID、绑定、批准合同和第二阶段目录不变。
+
+本次冷进程合成测试在 helper/后端导入前装入 builtins.open、io.open、Path.open 与 audit 观察器，并在依赖导入时封锁原生凭据函数。既有 counterexample01 的观察器假通过和 counterexample02 的失败证据保留；新离线自检不追溯改写旧结果，也不替代 fresh independent Review。真实 key/认证重析、CLI/provider、部署与验收仍须另过门禁。
 
 固定输出：`C:/Users/user/Documents/Codex-Scratch/LAB-AGY-LIVE-ADAPTER-REPAIR-01/stage-two`，必须预先不存在。独占创建目录并持久写 attempt.consumed.json 后才读三文件/key。失败也消耗机会、保留标记；目录存在就拒绝，无重试/替代 reader。成功只写 result.json；错误返回固定状态，无 traceback/异常正文。断电或人为删除不属于工具的强制能力，禁止删除和重跑。
 
