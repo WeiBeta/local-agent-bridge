@@ -62,7 +62,7 @@ def install_native(monkeypatch, boundary, original, *, cleanup_fault=None):
             raise RuntimeError("SECRET-job")
         return 71
 
-    def spawn(*_):
+    def spawn(*_, env=None):
         trace.append("spawn")
         if boundary == "spawn":
             raise RuntimeError("SECRET-spawn")

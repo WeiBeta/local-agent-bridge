@@ -536,7 +536,7 @@ def test_fake_run_terminal_states_are_not_cli_success(tmp_path, monkeypatch, cap
     )
     if outcome == "null":
 
-        def ambiguous(_argv, _cwd, *, lifecycle):
+        def ambiguous(_argv, _cwd, *, lifecycle, env=None):
             case.calls.append("one attempt")
             lifecycle.begin_resume()
             raise OSError("synthetic private diagnostic")

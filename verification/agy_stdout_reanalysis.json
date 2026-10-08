@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "task_id": "LAB-AGY-LIVE-ADAPTER-REPAIR-01",
+  "uid": "a357f09f-86a9-410e-9a76-32acf462f575",
+  "bundle": "C:/Users/user/Documents/Codex-Archive/2026-10-08-LAB-FIRST-R-V2-LIVE-01/encrypted-capture/a357f09f-86a9-410e-9a76-32acf462f575",
+  "files": {
+    "open.json": {
+      "bytes": 160,
+      "sha256": "c294b208155b1a9ebc762038c2b3d896bdfce4d001233b6851658fdbc71da19d"
+    },
+    "seal.json": {
+      "bytes": 2152,
+      "sha256": "4be2f5d827e3c0b91cf5a9aa7fc544075b705f0386c2b18cfa08ba844c20dab7"
+    },
+    "stdout.enc": {
+      "bytes": 48333,
+      "sha256": "841c86b0b9a7964b284b6bb1b2d23868f7cee3897f2cd08858f80b93b9798913"
+    }
+  },
+  "manifest_sha256": "883cd90da50ed518b00312466087cf07667371ea16ef3c3b96876dec0c8e1127",
+  "plaintext": {
+    "bytes": 48283,
+    "sha256": "b65afdf658b6912aa741ece06b164532d50f65c7387587f6893166daaa819ed4"
+  },
+  "recipes": {
+    "cwd_sha256": [
+      "a161633998966366c5e909d001dd18dcf531b5715d59b6942d3d5011f92b1b61",
+      "f22e35cb39b73704244a65aa6e25bdf552a73fe330b40295150fd27a224611fd"
+    ],
+    "reproduce_command_sha256": [
+      "260ade5f20ef78c4b0f9e16acfbb98ba35cab24dfdf917b04e45b8d29b00a115",
+      "7863fa6cd1033e4b11eefcb1ad5d8a1c5657186714b6de2ebca8204b10863122",
+      "a2ed9e62d7e806b5812c651888c9c1313d996f7e28b347606d5afa6372af2eb4",
+      "cf112ff1d4f8edb58427ec4ae067cb773541ce791f8ffd9284a39df8a40e9d5c",
+      "d351f6961df7e85f92b4d5a748e8269bcbf44bf337e3efdd97a190352dbe228e",
+      "dd06e1d0b1bfc08d7407f6367102c909731035812f0af32ca255e978f0a50e52"
+    ],
+    "regression_command_sha256": [
+      "0696b00c2136a7bd19f71efee451034b7197b2c6192438fbc323ec0dbc81d767",
+      "0e041566943ea3d465b71cecaeb3895aca5d20774d5f44d8bf19edb8d86a628e",
+      "0e9a27c7aa395f290ec1f34198ef2fb77add4a2646fa70fc3d66d54af3976f56",
+      "49276892b2bf8b0ac1fde60d7bb79ba6a948bc5674d0f830a1550f482e2ff14f",
+      "8aeca408a0dd27e694cd00c07f8d78f38453048869262d199100cd369b95bd32",
+      "d2d55f87dbcd607fc2ff82e5fb7fd87cfae3ca536b3e4b6bbd0af6c39866d074"
+    ]
+  },
+  "source_manifest_sha256": "5159520d2dcfc4daf4b862bb0534d79f1719c4f55976082cdcca9d924f8029d0"
+}

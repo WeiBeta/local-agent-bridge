@@ -48,7 +48,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from ctypes import wintypes
 from datetime import UTC, datetime
 from pathlib import Path
@@ -512,6 +512,13 @@ def _drain_stream(stream, destination: SessionStream) -> dict[str, object]:
     return {"bytes_read": read_total, "bytes_kept": kept, "truncated": read_total != kept}
 
 
+def _agy_child_environment() -> dict[str, str]:
+    """Disable the updater only in this child; never restore over concurrent parent changes."""
+    environment = os.environ.copy()
+    environment[AUTO_UPDATE_VARIABLE] = AUTO_UPDATE_VALUE
+    return environment
+
+
 def _launch_and_capture(
     exe: str,
     argv: list[str],
@@ -522,6 +529,7 @@ def _launch_and_capture(
     timeout_seconds: float = OBSERVATION_TIMEOUT_SECONDS,
     on_spawn: Callable[[int], None] | None = None,
     lifecycle: LaunchLifecycle | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Exactly one bounded launch; post-spawn failures are reported, never hidden.
 
@@ -534,7 +542,11 @@ def _launch_and_capture(
     started = time.monotonic()
     started_utc = datetime.now(UTC).isoformat()
     lifecycle = lifecycle if lifecycle is not None else LaunchLifecycle()
-    process = spawn_suspended_in_job(argv, cwd, lifecycle=lifecycle)
+    process = (
+        spawn_suspended_in_job(argv, cwd, lifecycle=lifecycle)
+        if env is None
+        else spawn_suspended_in_job(argv, cwd, lifecycle=lifecycle, env=env)
+    )
     statistics: dict[str, dict[str, object]] = {}
     readers: list[threading.Thread] = []
     capture_error: str | None = None

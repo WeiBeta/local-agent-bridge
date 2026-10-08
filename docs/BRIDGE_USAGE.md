@@ -1,5 +1,7 @@
 # Local Agent Bridge 切片桥使用说明（预览包）
 
+AGY Task 的进程环境/progress 合同修复及 source-only 单 UID 重析候选见 [AGY_LIVE_ADAPTER.md](AGY_LIVE_ADAPTER.md)。独立 Review、真实重析及新版实测均另行门禁，旧失败不改写。
+
 适用版本：`local-agent-bridge` 0.1.0.dev0（内部预览候选）；平台：Windows 11；Python 3.13。
 本模块从冻结提交 `725333c2e345a01faf04475b4b3bcdade91fdd3c` 的 `scripts/ag_slice_workspace.py`、
 `scripts/ag_slice_run.py` 与 `scripts/ag_slice_run_private.ps1` 提取；SESSION 阶段随后把管道持久化改为加密会话，保留单次启动与配置恢复合同。

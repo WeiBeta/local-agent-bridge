@@ -56,6 +56,8 @@ EXPECTED_PACKAGE_FILES = {
 # Every shipped test module, discovered through the directory-level testpaths
 # configuration rather than a hand-written module list.
 EXPECTED_TEST_MODULES = {
+    "tests/test_agy_live_adapter.py",
+    "tests/test_agy_stdout_reanalysis.py",
     "tests/test_bridge_contract.py",
     "tests/test_bridge_run.py",
     "tests/test_bridge_slice.py",
@@ -296,6 +298,7 @@ def test_source_archive_carries_the_new_product_documents_only() -> None:
         if item.startswith("docs/") and not item.startswith("docs/legal/") and item.endswith(".md")
     ]
     assert packed_docs == [
+        "docs/AGY_LIVE_ADAPTER.md",
         "docs/H3_USAGE.md",
         "docs/BRIDGE_USAGE.md",
         "docs/SESSION_STORAGE.md",
@@ -445,6 +448,20 @@ def test_first_task_r_validator_is_source_material_without_a_runtime_entrypoint(
     assert not any(
         "first_task_r" in name or "verification" in name for name in EXPECTED_PACKAGE_FILES
     )
+
+
+def test_agy_reanalysis_is_source_material_without_a_runtime_entrypoint() -> None:
+    document = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    shipped = document["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
+    for name in (
+        "verification/agy_stdout_reanalysis.py",
+        "verification/agy_stdout_reanalysis.json",
+        "verification/agy_stdout_reanalysis.schema.json",
+        "docs/AGY_LIVE_ADAPTER.md",
+    ):
+        assert name in shipped and (REPOSITORY_ROOT / name).is_file()
+    assert set(document["project"]["scripts"]) == {"local-agent-bridge", "local-agent-bridge-h3"}
+    assert not any("agy_stdout" in name for name in EXPECTED_PACKAGE_FILES)
 
 
 def test_source_archive_carries_both_task_contract_documents() -> None:

@@ -22,7 +22,7 @@ import contextlib
 import ctypes
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from typing import Literal
@@ -280,7 +280,9 @@ def create_kill_on_close_job() -> int:
     return int(job)
 
 
-def spawn_suspended(argv: Sequence[str], cwd: str) -> subprocess.Popen:
+def spawn_suspended(
+    argv: Sequence[str], cwd: str, *, env: Mapping[str, str] | None = None
+) -> subprocess.Popen:
     """Spawn a suspended, hidden-window child with piped stdio."""
     try:
         return subprocess.Popen(
@@ -290,6 +292,7 @@ def spawn_suspended(argv: Sequence[str], cwd: str) -> subprocess.Popen:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=_CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW,
+            env=env,
         )
     except OSError as error:
         raise AgWinJobError("spawn_failed", type(error).__name__) from error
@@ -495,7 +498,11 @@ class AgSuspendedJobProcess:
 
 
 def spawn_suspended_in_job(
-    argv: Sequence[str], cwd: str, *, lifecycle: LaunchLifecycle | None = None
+    argv: Sequence[str],
+    cwd: str,
+    *,
+    lifecycle: LaunchLifecycle | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> AgSuspendedJobProcess:
     """Production spawner: suspended spawn -> pre-execution Job ownership -> verified resume.
 
@@ -510,7 +517,7 @@ def spawn_suspended_in_job(
         lifecycle.stage = "job_create"
         job = create_kill_on_close_job()
         lifecycle.stage = "suspended_spawn"
-        proc = spawn_suspended(argv, cwd)
+        proc = spawn_suspended(argv, cwd) if env is None else spawn_suspended(argv, cwd, env=env)
         lifecycle.stage = "assign_job"
         assign_to_job(job, proc)
         lifecycle.stage = "prepare_identity"

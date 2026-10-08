@@ -166,6 +166,8 @@ Cursor 优先生成冻结项目 permissions，与用户全局配置合并语义�
 
 ## 6. 结果合同与明确续接
 
+生产 request 应明示 progress 五字段与 Completed/Partial/Blocked 完整枚举，未来 Task Note 同样冻结这项约束；Completed 是 Worker 进度而非 Accepted。AGY 环境及 source-only 原生事件重析候选、限次/脱敏/Unknown 边界见 [AGY_LIVE_ADAPTER.md](AGY_LIVE_ADAPTER.md)。collector 不接受 Candidate，也不重写历史进度。
+
 Worker 写 out/progress.json 及任务 required_outputs；Host collect 生成 result.json、changes.json 与 artifacts.json，Worker 不能把自述替代 Host 验证。原始报告/结果原样保留，Host 校验单列；缺失错误产物不自动补成 Worker 成功。测试 stdout/stderr 全量留产品已授权加密管道或专用加密 sidecar；常规 JSON 只留工具/recipe、cwd 相对路径、退出码、时间、报告相对路径/哈希、必要计数，避免复制源码/完整命令文本。
 
 result.json 分开记录 worker_status（Worker 自述）、host_observations（实际观察/结构核验）与 management_decision=null。Host collect 不裁定审查质量，不自动把全部 acceptance_ids 标 Pass；管理在独立裁决记录引用 result SHA 后给出 final_status。业务状态仅 Completed/Partial/Blocked，transport 完整和 CLI success 不直接提升为 Completed。

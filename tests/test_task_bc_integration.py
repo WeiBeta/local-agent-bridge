@@ -204,7 +204,7 @@ def test_actual_b_collect_preserves_exception_lifecycle_fact(
         else RuntimeError("synthetic failure")
     )
 
-    def fail(argv, cwd, *, lifecycle):
+    def fail(argv, cwd, *, lifecycle, env=None):
         case.calls.append((argv, cwd))
         if state != "not_attempted":
             previous = lifecycle.begin_resume()

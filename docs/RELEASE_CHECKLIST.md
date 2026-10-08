@@ -1,5 +1,7 @@
 # Local Agent Bridge 发布检查表（0.1.0.dev0 内部预览候选）
 
+- AGY adapter 新行为需离线矩阵与独立 Review；冻结新 wheel/sdist/部署身份，不沿用旧包 SHA。source-only 重析器不得进入 wheel/MCP/CLI，第二阶段只在独立 Review 通过后的单 UID 授权下执行，详见 [AGY_LIVE_ADAPTER.md](AGY_LIVE_ADAPTER.md)。此项尚不代表真实验证或发布通过。
+
 适用范围：Windows 11 / Python 3.13 的 `local-agent-bridge` 内部预览包。本表把发布前要做的事分成
 四栏：**已验**（本机离线证据已通过）、**实机三项**（2026-09-29 已完成授权验收，逐项列出已验与未验）、
 **待许可**、**待远端**。本表不是发布授权，也不是已发布声明。

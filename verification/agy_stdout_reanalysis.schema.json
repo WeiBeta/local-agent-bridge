@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "origin", "status", "events", "event_categories", "steps", "init_cwd", "result_status", "shell", "actual_invocations", "management_decision"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "origin": {"const": "CliDeclared"},
+    "status": {"enum": ["Complete", "Incomplete", "Conflict"]},
+    "init_cwd": {"$ref": "#/$defs/comparison"},
+    "result_status": {"enum": ["SUCCESS", "ERROR", "CANCELLED", "Unknown"]},
+    "shell": {"const": "Unknown"},
+    "actual_invocations": {"type": "null"},
+    "management_decision": {"type": "null"},
+    "event_categories": {
+      "type": "object", "additionalProperties": false,
+      "required": ["init", "step_update", "result", "Unknown"],
+      "properties": {
+        "init": {"$ref": "#/$defs/count"}, "step_update": {"$ref": "#/$defs/count"},
+        "result": {"$ref": "#/$defs/count"}, "Unknown": {"$ref": "#/$defs/count"}
+      }
+    },
+    "events": {
+      "type": "array", "maxItems": 1024,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["line", "raw_event_sha256", "category"],
+        "properties": {
+          "line": {"type": "integer", "minimum": 1, "maximum": 1024},
+          "raw_event_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "category": {"enum": ["init", "step_update", "result", "Unknown"]}
+        }
+      }
+    },
+    "steps": {
+      "type": "array", "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["step_index", "order", "category", "tool", "states", "command", "exit_code", "argv", "cwd"],
+        "properties": {
+          "step_index": {"type": "integer", "minimum": 0, "maximum": 1000000},
+          "order": {"type": "integer", "minimum": 1, "maximum": 256},
+          "category": {"enum": ["user_input", "agent_response", "tool", "checkpoint", "Unknown"]},
+          "tool": {"enum": ["run_command", "write_to_file", "ask_permission", "Unknown"]},
+          "states": {"type": "array", "maxItems": 1024, "items": {"enum": ["ACTIVE", "DONE", "Unknown"]}},
+          "argv": {"const": "Unknown"}, "cwd": {"const": "Unknown"},
+          "exit_code": {"type": ["integer", "null"], "minimum": -2147483648, "maximum": 2147483647},
+          "command": {
+            "type": "object", "additionalProperties": false, "required": ["reproduce", "regression"],
+            "properties": {"reproduce": {"$ref": "#/$defs/comparison"}, "regression": {"$ref": "#/$defs/comparison"}}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "comparison": {"enum": ["Match", "Mismatch", "Unknown"]},
+    "count": {"type": "integer", "minimum": 0, "maximum": 1024}
+  }
+}

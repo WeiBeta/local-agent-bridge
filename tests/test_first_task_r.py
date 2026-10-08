@@ -938,7 +938,7 @@ def test_fake_launch_failure_records_zero_one_or_unknown_without_retry(case, mon
         fake_spawn(case, monkeypatch, wait_error=OSError("private failure body"))
     else:
 
-        def fail_spawn(argv, cwd, *, lifecycle):
+        def fail_spawn(argv, cwd, *, lifecycle, env=None):
             case.calls.append((argv, cwd))
             if count is None:
                 lifecycle.execution_state = "unknown"
