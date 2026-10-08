@@ -588,3 +588,23 @@ session:UID仅核声明与同run.capture_uid相等，run_evidence_checks标记Op
 保存并核B inventory的完整目录集合，不只核文件及candidate摘要。当前work目录沿用B的generated分类：authored映射candidate/<relative>，新生成缓存映射generated/work/<relative>；out/scratch分别同名映射。合法收集前空目录、嵌套目录和通用build源目录继续保留；冻结源中的缓存名仍按B原规则处理。
 
 result目录必须精确等于上述当前源目录映射、B固定生成的candidate/out/scratch三个根，以及映射和已核artifact文件所需的祖先目录（含host/control、validation等）。收集后任一复制域新增、缺失、改名/错映射，或result多出无声明空目录、缺少必要生成目录，均拒绝完整观测。文件/长度/hash、candidate与continuation及最终控制核验继续；目录关联失败使collection/run完整hash保守null，不抹去0/1/null启动事实或原中断。该检查是有限阶段观察，不保证观察后的树不变。
+
+### 首次观测合同 v2（LAB-FIRST-R-OBSERVATION-CONTRACT-01）
+
+本节新增闭合的首次观测材料，沿用原 A/B/C 操作和独立验证通道。旧 DeploymentReceipt v1、Permit v1 和 Environment v1 保持原样：v1 的 `host_identity_files` 仍非空，预期 `worker_shell` 仍是必须核验的 FileIdentity。不能给旧 v1 填 Unknown 或静默改为空清单。
+
+| 对象 | v2 精确差异与适用范围 |
+| --- | --- |
+| DeploymentReceipt | `contract_version` 严格 int=2；原 v1 全部键外恰好新增 `host_composition`，值为严格对象 `{status:"Unknown",scope:"FirstObservation"}`；仅 `host=agy`，`host_identity_files=[]` 和 `runtime_acceptances=[]` 必须为空 list，其余原字段/类型/摘要规则不变 |
+| TaskRuntimeValidationPermit | 原闭合字段不变，`contract_version` 严格 int=2；必须绑定 Receipt v2 与 Environment v2；v1/v2 交叉不允许。审批、权限、预算、一次消费及外部 raw SHA 沿用原规则 |
+| TaskRuntimeValidationEnvironment | 严格五键 `{contract_version:2,kind:"TaskRuntimeValidationEnvironment",local_appdata:A,scope:"FirstObservation",worker_shell:ExpectedShell}`；其原字节身份仍登记在 profile 的 HostObserved 引用中 |
+| ExpectedShell | 严格两键 `{status:"Known"|"Unknown",identity:FileIdentity|null}`；Known 必须给实际普通单链接文件并核 SHA；Unknown 必须 identity=null，仅该 v2 首次环境允许。路径未知不能用候选/占位身份填充 |
+| TaskRuntimeValidation | `contract_version=2`，保留原观察字段；新增 `host_composition` 为上述 Unknown 对象、`expected_worker_shell` 为冻结 ExpectedShell、`actual_worker_shell={status:"Unknown",identity:null}`、`command_evidence_status="Unverified"`、`acceptance_requirements=["ActualWorkerShellIdentity","RecipeCommandCompletionEvidence"]` |
+
+这里的空清单明确表示尚未建立本地实现组成映射；已知入口由 `host_entry` 单独绑定并继续核真实文件，不能重复登记 exe 来假装完整组成。v2 不接受非空实现清单、占位 backend 或接受记录；已取得组成的原 v1 材料不因本节被削弱。未知/重复键、非上述版本、bool 冒充 int、伪格式和错误 scope 均拒绝。其他 Task/Profile/Auth/Plan/RunReceipt 与 CLI spec 仍为 v1。
+
+共享加载器可读取管理固定的 v2 材料，现有 `prepare/plan` 不新增参数。普通 Plan 始终为 Blocked，至少包含 `HostCompositionUnverified` 和 `RuntimeAcceptanceUnverified`；普通 `run` 即使 `--execute` 也只能保存 NotRun/launch_count=0，不读配置/key、不进执行生命周期。伪造 Ready 或补 Accepted 不能解除该状态。v2 不是普通生产 R 接受格式，不能将这次观察直接升级成可复用 R。
+
+独立验证程序仅在另外批准的 v2 验收单下要求准确的上述两个 blocker；其他非 R 门禁仍必须通过。初始、消费前与结束重读继续核原 bundle/raw SHA、环境、入口/安装/toolchain/recipe、全部控制和实际文件；Known 预期 Shell 仍逐次核验。许可消费、配置恢复、0/1/null 启动事实、原中断及 B 文件和完整目录关联语义不变，不重新实现执行通道。
+
+预期 Shell 字段不传入 agy、不选择或约束实际 Shell。v2 的 ObservationRecorded 只表示生命周期和候选回收证据完整保存，实际组成/Shell/命令证据仍如上述未证字段声明，R 始终 Unverified、management_decision=null。实际 Worker Shell 路径/文件身份，以及固定 recipe 的完整 argv、cwd、完成与退出事实，必须由另行获准的真实证据在管理接受前取得；程序不解密，不承诺现有捕获必然提供它们。缺证不能从 Unknown、stdout 终态、预期文件或自检推导接受。本合同候选仍需独立 Review 和新的适用实测授权，旧真实许可及自动修复上限不重置。

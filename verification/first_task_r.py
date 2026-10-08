@@ -97,7 +97,10 @@ def _sheet(path: Path, expected_sha256: str) -> dict:
     _require(task_run._digest(raw) == expected_sha256, "PermitChanged")
     sheet = contract.decode_strict_json_bytes(raw, label="runtime validation permit")
     task_run._object(sheet, SHEET_FIELDS)
-    task_run._version(sheet)
+    _require(
+        type(sheet["contract_version"]) is int and sheet["contract_version"] in {1, 2},
+        "PermitInvalid",
+    )
     _require(sheet["kind"] == "TaskRuntimeValidationPermit", "PermitInvalid")
     for key in ("permit_id", "task_id", "grant_ref"):
         task_run._text(sheet[key])
@@ -153,13 +156,35 @@ def _sheet(path: Path, expected_sha256: str) -> dict:
 def _environment(sheet: dict) -> dict:
     raw = _read_pinned(sheet["environment"])
     value = contract.decode_strict_json_bytes(raw, label="runtime validation environment")
-    task_run._object(value, {"contract_version", "kind", "local_appdata", "worker_shell"})
-    task_run._version(value)
+    fields = {"contract_version", "kind", "local_appdata", "worker_shell"}
+    if sheet["contract_version"] == 2:
+        fields.add("scope")
+    task_run._object(value, fields)
+    _require(
+        type(value["contract_version"]) is int
+        and value["contract_version"] == sheet["contract_version"],
+        "EnvironmentUnverified",
+    )
     _require(value["kind"] == "TaskRuntimeValidationEnvironment", "EnvironmentUnverified")
     task_run._absolute(value["local_appdata"])
-    task_run._identity(value["worker_shell"])
-    task_run._verify_file_identity(value["worker_shell"])
+    shell = value["worker_shell"]
+    if sheet["contract_version"] == 2:
+        _require(value["scope"] == "FirstObservation", "EnvironmentUnverified")
+        task_run._object(shell, {"status", "identity"})
+        task_run._enum(shell["status"], {"Known", "Unknown"})
+        if shell["status"] == "Unknown":
+            _require(shell["identity"] is None, "EnvironmentUnverified")
+            return value
+        shell = shell["identity"]
+    task_run._identity(shell)
+    task_run._verify_file_identity(shell)
     return value
+
+
+def _expected_blockers(sheet: dict) -> list[str]:
+    if sheet["contract_version"] == 2:
+        return sorted([MISSING_R, task_run.FIRST_OBSERVATION_BLOCKER])
+    return [MISSING_R]
 
 
 def _overlaps(left: Path, right: Path) -> bool:
@@ -314,7 +339,10 @@ def _verify_context(
         "ValidationScopeRejected",
     )
     _require(
-        receipt["host"] == "agy" and receipt["runtime_acceptances"] == [], "ValidationScopeRejected"
+        receipt["host"] == "agy"
+        and receipt["runtime_acceptances"] == []
+        and receipt["contract_version"] == sheet["contract_version"],
+        "ValidationScopeRejected",
     )
     binding = _digest(
         {
@@ -330,7 +358,8 @@ def _verify_context(
     )
     plan = task_run._make_plan(context, "agy")
     _require(
-        plan["preflight_status"] == "Blocked" and plan["blockers"] == [MISSING_R], "NonRGateBlocked"
+        plan["preflight_status"] == "Blocked" and plan["blockers"] == _expected_blockers(sheet),
+        "NonRGateBlocked",
     )
     _require(
         _digest(plan) == sheet["plan_sha256"]
@@ -699,6 +728,7 @@ def _final_context(
 
 def _observation(
     sheet: dict,
+    environment: dict,
     expected: str,
     run: dict | None,
     collection: dict | None,
@@ -718,14 +748,14 @@ def _observation(
         and run["transport_state"] == "Completed"
         and run["capture_state"] == "Sealed"
         and run["restore_state"] == "Restored"
-        and run["blockers"] == [MISSING_R]
+        and run["blockers"] == _expected_blockers(sheet)
         and collection is not None
         and collection["host_observations"]["scope_status"] == "Pass"
         and collection["host_observations"]["outputs_status"] == "Pass"
         and collection["host_observations"]["transport_state"] == "NotRun"
     )
-    return {
-        "contract_version": 1,
+    observation = {
+        "contract_version": sheet["contract_version"],
         "kind": "TaskRuntimeValidation",
         "permit_id": sheet["permit_id"],
         "task_id": sheet["task_id"],
@@ -748,6 +778,18 @@ def _observation(
         "runtime_acceptance": "Unverified",
         "management_decision": None,
     }
+    if sheet["contract_version"] == 2:
+        observation.update(
+            host_composition=task_run.FIRST_OBSERVATION_COMPOSITION.copy(),
+            expected_worker_shell=environment["worker_shell"],
+            actual_worker_shell={"status": "Unknown", "identity": None},
+            command_evidence_status="Unverified",
+            acceptance_requirements=[
+                "ActualWorkerShellIdentity",
+                "RecipeCommandCompletionEvidence",
+            ],
+        )
+    return observation
 
 
 def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
@@ -861,6 +903,7 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
                             error = secondary
                 observation = _observation(
                     sheet,
+                    environment,
                     expected_sha256,
                     run,
                     collection,
@@ -884,6 +927,7 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
         raise error
     return _observation(
         sheet,
+        environment,
         expected_sha256,
         run,
         collection,

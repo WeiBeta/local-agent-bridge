@@ -800,3 +800,39 @@ def test_cursor_preparation_failure_is_observed_by_b(tmp_path, monkeypatch, caps
     assert not case.calls and result["management_decision"] is None
     if before is not None:
         assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_first_observation_bundle_uses_existing_cli_without_execution(
+    tmp_path, monkeypatch, capsys, execute
+):
+    case = cli_case(tmp_path, monkeypatch, capsys, accepted=False)
+    fixtures.first_observation_receipt(case)
+    fixtures.sync(case, persist_task=False)
+    Path(case.prepare_fields["task_manifest_path"]).write_bytes(fixtures.canonical(case.task))
+    monkeypatch.setattr(runner, "_execute_once", lambda *_: pytest.fail("ordinary execution"))
+    monkeypatch.setattr(fixtures.slice_run, "_session_store", lambda: pytest.fail("key read"))
+    code, result, _ = invoke(tmp_path, capsys, "prepare", case.prepare_fields, case=case)
+    assert code == 0 and result == case.task
+    code, frozen, _ = planned(tmp_path, capsys, case)
+    assert code == 2 and frozen["preflight_status"] == "Blocked"
+    assert frozen["blockers"] == [runner.FIRST_OBSERVATION_BLOCKER, "RuntimeAcceptanceUnverified"]
+    code, result, _ = invoke(
+        tmp_path,
+        capsys,
+        "run",
+        {"task_root": str(case.root), "run_root": str(tmp_path / "ordinary")},
+        case=case,
+        execute=execute,
+    )
+    assert code == 2 and result["transport_state"] == "NotRun" and result["launch_count"] == 0
+    workspace_fixtures.progress(case.root, case.task)
+    code, result, _ = invoke(
+        tmp_path,
+        capsys,
+        "collect",
+        {"task_root": str(case.root), "run_root": None, "result_root": str(tmp_path / "collected")},
+    )
+    assert code == 0 and result["host_observations"]["scope_status"] == "Pass"
+    assert result["host_observations"]["transport_state"] == "NotRun"
+    assert result["management_decision"] is None and not case.calls

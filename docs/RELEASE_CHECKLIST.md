@@ -79,3 +79,13 @@ LAB-TASK-CLI-IMPLEMENT-01 增加 task 的五条命令；当前顶层共九条，
 - 新 sdist 构建 wheel；metadata、entry_points、全部 RECORD 项和源码/许可原字节核对；全新隔离环境锁定、离线、非 editable 安装，导入来自其 site-packages。
 - 安装后的本产品根 help、task help 和五条 Task 子 help 为静态检查；不调用真实 agy/Cursor 的帮助或版本。
 - 同批独立 Review 待验；首次真实 Task R/bootstrap、真实 Task 宿主、部署和 Skill 更新另需后续范围。目录 manifest 资源风险仍为依赖，不声明已解决。
+
+## 首次观测合同 v2 候选复核项
+
+LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次验证材料，必须使用该候选的新包身份；原实机/Review04 wheel SHA 不能支持它的部署或实测。
+
+- 旧 v1 不静默放宽；v2 空组成清单只能明确 Unknown/FirstObservation，伪身份、重复 exe、未知键/版本和非空接受清单拒绝。
+- 普通 Plan/run 继续 Blocked/NotRun0；验证程序 v2 只保存观察，不产生 Ready/Accepted；实际 Shell/命令证据仍接受前必需。
+- 原计数、中断、恢复、文件及完整目录反例在 v1/v2 同时通过；针对/全pytest/JUnit、Ruff/format 和全部模块默认/显式有序发现逐项核对。
+- 新 sdist/wheel 全部源码payload、RECORD及元数据核验，验证程序只进sdist；新冻结 wheel 的隔离非editable安装和实际导入身份需有对应证据，未做项如实登记。
+- 独立Review、新适用实测许可、真实 Shell/命令取证、生产部署与 Skill 更新各自核收；历史失败材料及自动修复上限不重置。

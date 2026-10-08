@@ -102,3 +102,13 @@ B只在既有null-run模式回收本验证候选，transport仍NotRun，验收�
 LAB-FIRST-TASK-R-REPAIR-02处理Review-02的新增P1：未绑定的saved run不能先提供计数。优先保留本调用可信C返回的明确0/1；没有明确返回时核固定launch的自洽事实及已绑定、基本生命周期有效的run本体，两者任一确认1保留1，没有1时保留已核来源的明确0，无法确认则null。相反零/缺失/无效/unknown均不能消除有效run本体的已知1。证据不完整仍Failed/Interrupted、无效run hash=null，原中断、consumed和原字节保留，不自动重试。此为第2且最后自动Repair候选，仍需fresh Review，不能据零计数或自检结果另启真实调用。
 
 作者另行批准LAB-FIRST-TASK-R-REPAIR-03窄修复与独立离线审查，不重置自动轮次。验证候选现在将当前authored/generated work、out、scratch的完整目录映射与实际result目录逐项对应，计入B固定根和必要生成祖先。合法收集前空目录继续复制；收集后新增/缺失/错映射或多余result目录拒绝完整观测，同时保留启动事实、原中断和原字节。仍待管理安排独立Review-04，真实R未验收；B.NotRun只描述null-run收集，不能解释为整个验证从未启动。
+
+### 首次观测材料 v2
+
+LAB-FIRST-R-OBSERVATION-CONTRACT-01 为当前入口已核、内部组成尚未知的首次观测新增严格 v2 材料；完整 schema 和兼容规则见 [合同](TASK_WORKSPACE_CONTRACT.md#首次观测合同-v2lab-first-r-observation-contract-01)。旧 v1 的非空实现文件清单及 Known 预期 Shell 不变。
+
+v2 receipt 明确 `host_composition={status:"Unknown",scope:"FirstObservation"}`、`host_identity_files=[]`、`runtime_acceptances=[]`，仅 agy。验收单/环境/receipt 必须同时为 v2；环境允许显式 Unknown 预期 Shell，或继续核真实 Known 文件。入口和安装身份仍必须精确绑定；不能重复填 exe 或占位 backend 来构造组成证明，不能用新字段选择实际 Worker Shell。
+
+CLI 参数不变。普通 prepare/plan 能保存首次材料，Plan 始终被 HostCompositionUnverified 与 RuntimeAcceptanceUnverified 阻断；普通 `run --execute` 仍 NotRun/0。只在另行批准的首次验收单下，冻结验证程序使用原 C 一次生命周期和 B null-run 回收。ObservationRecorded 仍保存 R Unverified/decision=null，并明确实际 Shell Unknown、命令证据 Unverified；实际 Shell 文件身份及 recipe 完整 argv/cwd/完成/退出事实需接受前独立取证。若实际材料不能提供这些事实，保持未接受。
+
+本轮是离线合同候选，未授权或执行新的真实 host/model/key/配置调用；历史 LIVE01 的安装、组件和 version/help 不重跑。产品源码已变，后续必须冻结新 wheel/sdist、验证程序和部署身份，不沿用旧包 SHA；独立Review与新的适用实测授权由管理安排，生产部署/Skill更新及历史自动修复上限不随本合同改变。

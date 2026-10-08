@@ -344,6 +344,16 @@ def plan(case):
     )
 
 
+def first_observation_receipt(case):
+    """Synthetic v2 declaration, without a fake backend or accepted R."""
+    case.receipt.update(
+        contract_version=2,
+        host_composition=runner.FIRST_OBSERVATION_COMPOSITION.copy(),
+        host_identity_files=[],
+        runtime_acceptances=[],
+    )
+
+
 def run(case, frozen, target, *, execute=False):
     return runner.run_task(
         task_root=case.root,
@@ -1084,3 +1094,98 @@ def test_exact_unicode_ref_identity_and_output_order(tmp_path, monkeypatch):
     output = [item["ref"] for item in result["evidence_refs"]]
     assert output == sorted(set(output), key=lambda ref: ref.encode("utf-8"))
     runner._evidence(result["evidence_refs"])
+
+
+@pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+def test_first_observation_is_never_an_ordinary_execution(tmp_path, monkeypatch, execute, role):
+    case = prepare(tmp_path, monkeypatch, accepted=False, role=role)
+    first_observation_receipt(case)
+    sync(case)
+    before = case.settings.read_bytes()
+    monkeypatch.setattr(runner, "_execute_once", lambda *_: pytest.fail("ordinary execution"))
+    monkeypatch.setattr(slice_run, "_session_store", lambda: pytest.fail("key read"))
+    frozen = plan(case)
+    assert frozen["preflight_status"] == "Blocked"
+    assert frozen["blockers"] == [
+        runner.FIRST_OBSERVATION_BLOCKER,
+        "RuntimeAcceptanceUnverified",
+    ]
+    result = run(case, frozen, tmp_path / "ordinary", execute=execute)
+    assert result["transport_state"] == "NotRun" and result["launch_count"] == 0
+    assert case.settings.read_bytes() == before and not case.calls
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "legacy_empty",
+        "legacy_extra",
+        "bool_version",
+        "future_version",
+        "missing_composition",
+        "extra_field",
+        "known_composition",
+        "ordinary_scope",
+        "composition_extra",
+        "composition_null",
+        "files_null",
+        "files_unknown",
+        "repeated_entry",
+        "accepted",
+        "cursor",
+    ],
+)
+def test_observation_receipt_is_closed_and_does_not_relax_v1(tmp_path, monkeypatch, fault):
+    case = prepare(tmp_path, monkeypatch)
+    acceptance = case.receipt["runtime_acceptances"]
+    first_observation_receipt(case)
+    receipt = case.receipt
+    if fault == "legacy_empty":
+        receipt["contract_version"] = 1
+        receipt.pop("host_composition")
+    elif fault == "legacy_extra":
+        receipt["contract_version"] = 1
+    elif fault == "bool_version":
+        receipt["contract_version"] = True
+    elif fault == "future_version":
+        receipt["contract_version"] = 3
+    elif fault == "missing_composition":
+        receipt.pop("host_composition")
+    elif fault == "extra_field":
+        receipt["skip_identity"] = True
+    elif fault == "known_composition":
+        receipt["host_composition"]["status"] = "Known"
+    elif fault == "ordinary_scope":
+        receipt["host_composition"]["scope"] = "OrdinaryRun"
+    elif fault == "composition_extra":
+        receipt["host_composition"]["backend"] = "placeholder"
+    elif fault == "composition_null":
+        receipt["host_composition"] = None
+    elif fault == "files_null":
+        receipt["host_identity_files"] = None
+    elif fault == "files_unknown":
+        receipt["host_identity_files"] = "Unknown"
+    elif fault == "repeated_entry":
+        receipt["host_identity_files"] = [receipt["host_entry"]]
+    elif fault == "accepted":
+        receipt["runtime_acceptances"] = acceptance
+    else:
+        receipt["host"] = "cursor"
+    sync(case)
+    with pytest.raises(runner.TaskRunError, match="InvalidContract"):
+        plan(case)
+    assert not (case.root / "control/plan.json").exists() and not case.calls
+
+
+def test_observation_cannot_use_a_counterfeit_ready_plan(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch, accepted=False)
+    first_observation_receipt(case)
+    sync(case)
+    frozen = plan(case)
+    counterfeit = {**frozen, "preflight_status": "Ready", "blockers": []}
+    write_json(case.root / "control/plan.json", counterfeit)
+    monkeypatch.setattr(runner, "_execute_once", lambda *_: pytest.fail("execution"))
+    with pytest.raises(runner.TaskRunError, match="PlanChanged"):
+        run(case, counterfeit, tmp_path / "refused", execute=True)
+    assert not (tmp_path / "refused").exists() and not case.calls

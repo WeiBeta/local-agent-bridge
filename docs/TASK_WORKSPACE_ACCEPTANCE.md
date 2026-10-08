@@ -293,3 +293,20 @@ prepare_dependencies=true且实际锁/registry传递范围/脚本/cache/env授�
 | FULL | fresh basetemp全pytest/JUnit、Ruff/format；默认与显式全部模块有序发现和JUnit逐项同序核对；原失败及各阶段材料保留 |
 
 只五文件离线候选；生产B/C/R、依赖及治理/台账不变。自检与独立审查、真实R、管理接受和部署仍分别记录。
+
+### 首次观测 v2 矩阵（LAB-FIRST-R-OBSERVATION-CONTRACT-01）
+
+v2 精确 schema 见合同“首次观测合同 v2”；以下离线合成自检不构成真实权限或 R。
+
+| 组 | 必须观察 |
+| --- | --- |
+| OBS-V1 | v1 原非空实现清单、Known 预期 Shell 和观察输出兼容；v1 空清单/Unknown/新增键继续拒绝 |
+| OBS-V2 | 仅 agy、组成 Unknown/FirstObservation、空实现和空接受清单；环境 Known/Unknown；bool/未知版本/混版本、额外键、错误 scope/状态、null/伪身份及重复 exe 清单拒绝 |
+| OBS-NORMAL | 实际共享加载器及 CLI prepare/plan 可登记 v2；普通 Plan 固定双 blocker，execute/非execute 均 NotRun0；伪 Ready、Accepted 不能执行，不读 key/配置 |
+| OBS-IDENTITY | 已知入口/Bridge/toolchain 不因组成 Unknown 跳过；Known 预期 Shell 的缺失、漂移、硬链接及 capture 开始后的 environment/receipt/Shell 漂移均拒绝 |
+| OBS-ACCEPT | v2 ObservationRecorded 保留组成 Unknown、实际 Shell Unknown、命令 Unverified 和接受前必需证据；R Unverified/decision=null；B 仍拒绝 Blocked Plan 下的普通 launch1 回执 |
+| OBS-COUNTS | 原缺run、错绑定零、有效本体1附属零及所有0/1/null来源反例同时运行v1/v2；许可只消费一次，原中断对象/恢复/原字节和失败证据保留 |
+| OBS-TREE | 原完整文件/目录映射反例同时运行v1/v2，合法空目录/生成祖先保留，收集后新增/缺失/错映射仍拒绝 |
+| OBS-FULL | 针对及全套pytest/JUnit、Ruff/format；默认/显式有序nodeids无重复且与JUnit逐项相等；新源码/发行包身份核验，不借旧wheel |
+
+实际 Shell/命令 argv/cwd/完成/退出的独立证据仍是接受前条件；v2 不捕获或认证它们，也不选择实际 Shell。本候选不改变普通生产接受标准、文件单链接规则、OS权限、C生命周期或B收集语义。独立Review、真实R和部署仍各自未由自检取得。

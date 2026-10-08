@@ -1,9 +1,10 @@
-"""Task v1: trusted fixed inputs, one host launch, separate lifecycle evidence.
+"""Trusted Task inputs, one host launch, separate lifecycle evidence.
 
 The current management caller supplies the external root and expected digest.
 Neither hashes nor this API authenticate an arbitrary host caller. Real task R
 and actual authority are management facts; offline fixture acceptance never
 creates either. References are not arbitrary file/URL loading instructions.
+Receipt v2 records a first observation; ordinary plans remain blocked.
 """
 
 from __future__ import annotations
@@ -102,6 +103,8 @@ _RECEIPT_KEYS = {
     "runtime_acceptances",
     "provenance_refs",
 }
+FIRST_OBSERVATION_COMPOSITION = {"status": "Unknown", "scope": "FirstObservation"}
+FIRST_OBSERVATION_BLOCKER = "HostCompositionUnverified"
 _PLAN_KEYS = {
     "contract_version",
     "task_id",
@@ -474,8 +477,22 @@ def _validate_authorization(auth: dict) -> None:
 
 
 def _validate_receipt(receipt: dict) -> None:
-    _object(receipt, _RECEIPT_KEYS)
-    _version(receipt)
+    if type(receipt) is not dict or type(receipt.get("contract_version")) is not int:
+        raise TaskRunError("InvalidContract")
+    first_observation = receipt["contract_version"] == 2
+    if first_observation:
+        _object(receipt, _RECEIPT_KEYS | {"host_composition"})
+        composition = _object(receipt["host_composition"], {"status", "scope"})
+        if (
+            composition != FIRST_OBSERVATION_COMPOSITION
+            or receipt["host"] != "agy"
+            or _list(receipt["host_identity_files"]) != []
+            or _list(receipt["runtime_acceptances"]) != []
+        ):
+            raise TaskRunError("InvalidContract")
+    else:
+        _object(receipt, _RECEIPT_KEYS)
+        _version(receipt)
     _text(receipt["id"])
     host = _enum(receipt["host"], set(_ROUTES))
     if receipt["adapter"] != host + "_task_v1":
@@ -488,7 +505,7 @@ def _validate_receipt(receipt: dict) -> None:
     _identities(bridge["product_files"], nonempty=True)
     _identity(receipt["host_entry"])
     _text(receipt["host_version"])
-    _identities(receipt["host_identity_files"], nonempty=True)
+    _identities(receipt["host_identity_files"], nonempty=not first_observation)
     config = _object(receipt["configuration"], {"agy_settings", "cursor_global", "cursor_project"})
     if host == "agy":
         if (
@@ -681,6 +698,9 @@ def _make_plan(context: dict, host: str) -> dict:
     if host not in _ROUTES or host != receipt["host"]:
         raise TaskRunError("InvalidAdapter")
     blockers = []
+    # A v2 receipt declares a first observation, never ordinary R applicability.
+    if receipt["contract_version"] == 2:
+        blockers.append(FIRST_OBSERVATION_BLOCKER)
     if (
         task["role"] not in profile["roles"]
         or task["execution_boundary"] not in profile["execution_modes"]

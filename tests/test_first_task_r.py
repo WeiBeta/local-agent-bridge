@@ -51,8 +51,8 @@ def freeze(case):
     case.sheet_sha = task_run._digest(case.sheet_path.read_bytes())
 
 
-@pytest.fixture
-def case(tmp_path, monkeypatch):
+@pytest.fixture(params=[1, 2], ids=["legacy-v1", "first-observation-v2"])
+def case(tmp_path, monkeypatch, request):
     original_close = FakeProcess.close_job
 
     def close_job(process):
@@ -67,6 +67,13 @@ def case(tmp_path, monkeypatch):
         actual_b=True,
         files={"source.py": b"answer = 0\n", "test_recipe.py": b"assert answer == 30\n"},
     )
+    version = request.param
+    if version == 2:
+        value.receipt.update(
+            contract_version=2,
+            host_identity_files=[],
+            host_composition=task_run.FIRST_OBSERVATION_COMPOSITION.copy(),
+        )
     value.base = tmp_path
     value.saved_controls = {}
     value.profile["roles"] = ["Coding"]
@@ -77,15 +84,17 @@ def case(tmp_path, monkeypatch):
     shell = tmp_path / "worker-shell.exe"
     shell.write_bytes(b"fake Worker Shell identity only")
     environment_path = tmp_path / "environment.json"
-    write_json(
-        environment_path,
-        {
-            "contract_version": 1,
-            "kind": "TaskRuntimeValidationEnvironment",
-            "local_appdata": str(tmp_path / "isolated-appdata"),
-            "worker_shell": identity(shell),
-        },
-    )
+    environment = {
+        "contract_version": version,
+        "kind": "TaskRuntimeValidationEnvironment",
+        "local_appdata": str(tmp_path / "isolated-appdata"),
+        "worker_shell": identity(shell),
+    }
+    if version == 2:
+        environment.update(
+            scope="FirstObservation", worker_shell={"status": "Unknown", "identity": None}
+        )
+    write_json(environment_path, environment)
     value.profile["enforcement"]["evidence_refs"] = [
         {
             "ref": str(environment_path),
@@ -98,7 +107,7 @@ def case(tmp_path, monkeypatch):
     value.receipt["bridge"]["wheel_sha256"] = identity(wheel)["sha256"]
     value.sheet_path = tmp_path / "permit.json"
     value.sheet = {
-        "contract_version": 1,
+        "contract_version": version,
         "kind": "TaskRuntimeValidationPermit",
         "permit_id": "fixture-permit",
         "task_id": value.task["task_id"],
@@ -777,11 +786,23 @@ def test_fake_lifecycle_records_observation_and_keeps_production_blocked(case, m
     assert result["kind"] == "TaskRuntimeValidation" and result["status"] == "ObservationRecorded"
     assert result["launch_count"] == 1 and result["runtime_acceptance"] == "Unverified"
     assert result["management_decision"] is None and len(case.calls) == 1
+    assert result["contract_version"] == case.sheet["contract_version"]
+    if result["contract_version"] == 2:
+        assert result["host_composition"] == task_run.FIRST_OBSERVATION_COMPOSITION
+        assert result["expected_worker_shell"] == {"status": "Unknown", "identity": None}
+        assert result["actual_worker_shell"] == {"status": "Unknown", "identity": None}
+        assert result["command_evidence_status"] == "Unverified"
+        assert result["acceptance_requirements"] == [
+            "ActualWorkerShellIdentity",
+            "RecipeCommandCompletionEvidence",
+        ]
+    else:
+        assert "host_composition" not in result and "actual_worker_shell" not in result
     assert process.closed and result == observations(case)
     assert len(case.identity_checks) >= 4 and os.environ.get("LOCALAPPDATA") == original_appdata
     assert all((case.root / "control" / name).read_bytes() == raw for name, raw in controls.items())
     run = task_run._read(Path(case.sheet["run_root"]) / "run.json")
-    assert run["blockers"] == [validation.MISSING_R]
+    assert run["blockers"] == validation._expected_blockers(case.sheet)
     collected = task_run._read(Path(case.sheet["result_root"]) / "result.json")
     assert collected["host_observations"]["scope_status"] == "Pass"
     assert collected["host_observations"]["transport_state"] == "NotRun"
@@ -1118,3 +1139,152 @@ def test_installation_verifier_checks_real_fixture_bytes_and_origin(tmp_path, mo
     else:
         with pytest.raises((validation.ValidationError, task_run.TaskRunError)):
             validation._verify_installation(sheet, receipt)
+
+
+def bind_environment(case, value):
+    path = Path(case.sheet["environment"]["path"])
+    retain_and_write(path, task_run._canonical(value))
+    case.sheet["environment"] = identity(path)
+    case.profile["enforcement"]["evidence_refs"] = [
+        {"ref": str(path), "sha256": identity(path)["sha256"], "origin": "HostObserved"}
+    ]
+    freeze(case)
+
+
+@pytest.mark.parametrize("case", [2], indirect=True)
+@pytest.mark.parametrize("fault", ["none", "missing", "changed", "hardlink"])
+def test_first_observation_known_expected_shell_is_a_real_file(case, monkeypatch, fault):
+    path = case.base / "worker-shell.exe"
+    shell_identity = identity(path)
+    environment = task_run._read(Path(case.sheet["environment"]["path"]))
+    environment["worker_shell"] = {"status": "Known", "identity": shell_identity}
+    bind_environment(case, environment)
+    if fault == "missing":
+        path.rename(case.base / "retained-shell.exe")
+    elif fault == "changed":
+        retain_and_write(path, b"changed expected shell")
+    elif fault == "hardlink":
+        os.link(path, case.base / "shell-link.exe")
+    fake_spawn(case, monkeypatch, lambda: complete_output(case))
+    if fault == "none":
+        result = invoke(case)
+        assert result["status"] == "ObservationRecorded"
+        assert result["expected_worker_shell"] == environment["worker_shell"]
+        assert result["actual_worker_shell"] == {"status": "Unknown", "identity": None}
+        assert result["runtime_acceptance"] == "Unverified"
+    else:
+        with pytest.raises((task_run.TaskRunError, OSError)):
+            invoke(case)
+        assert not case.calls and not list(case.base.glob("*.consumed.json"))
+
+
+@pytest.mark.parametrize("case", [2], indirect=True)
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "env_version",
+        "permit_version",
+        "receipt_version",
+        "bool_env_version",
+        "bool_permit_version",
+        "future_permit",
+        "missing_scope",
+        "ordinary_scope",
+        "extra_env",
+        "null_shell",
+        "bare_identity",
+        "wrong_state",
+        "unknown_identity",
+        "known_null",
+        "extra_shell",
+        "worker_reported",
+        "receipt_composition",
+        "accepted_receipt",
+    ],
+)
+def test_first_observation_versions_scope_and_unknown_shape_are_closed(case, fault):
+    environment = task_run._read(Path(case.sheet["environment"]["path"]))
+    if fault == "env_version":
+        environment["contract_version"] = 1
+    elif fault == "permit_version":
+        case.sheet["contract_version"] = 1
+    elif fault == "receipt_version":
+        case.receipt["contract_version"] = 1
+        case.receipt.pop("host_composition")
+        case.receipt["host_identity_files"] = [identity(case.base / "worker-shell.exe")]
+    elif fault == "bool_env_version":
+        environment["contract_version"] = True
+    elif fault == "bool_permit_version":
+        case.sheet["contract_version"] = True
+    elif fault == "future_permit":
+        case.sheet["contract_version"] = 3
+    elif fault == "missing_scope":
+        environment.pop("scope")
+    elif fault == "ordinary_scope":
+        environment["scope"] = "OrdinaryRun"
+    elif fault == "extra_env":
+        environment["select_shell"] = "forbidden"
+    elif fault == "null_shell":
+        environment["worker_shell"] = None
+    elif fault == "bare_identity":
+        environment["worker_shell"] = identity(case.base / "worker-shell.exe")
+    elif fault == "wrong_state":
+        environment["worker_shell"]["status"] = "Accepted"
+    elif fault == "unknown_identity":
+        environment["worker_shell"]["identity"] = identity(case.base / "worker-shell.exe")
+    elif fault == "known_null":
+        environment["worker_shell"]["status"] = "Known"
+    elif fault == "extra_shell":
+        environment["worker_shell"]["argv"] = []
+    elif fault == "receipt_composition":
+        case.receipt["host_composition"]["status"] = "Known"
+    elif fault == "accepted_receipt":
+        case.accepted = True
+    with pytest.raises((validation.ValidationError, task_run.TaskRunError)):
+        bind_environment(case, environment)
+        if fault == "worker_reported":
+            case.profile["enforcement"]["evidence_refs"][0]["origin"] = "WorkerReported"
+            freeze(case)
+        invoke(case)
+    assert not case.calls and not list(case.base.glob("*.consumed.json"))
+
+
+@pytest.mark.parametrize("case", [1], indirect=True)
+@pytest.mark.parametrize("shell", [None, "Unknown", {"status": "Unknown", "identity": None}])
+def test_legacy_environment_cannot_silently_gain_unknown(case, shell):
+    environment = task_run._read(Path(case.sheet["environment"]["path"]))
+    environment["worker_shell"] = shell
+    bind_environment(case, environment)
+    with pytest.raises(task_run.TaskRunError):
+        invoke(case)
+    assert not list(case.base.glob("*.consumed.json")) and not case.calls
+
+
+@pytest.mark.parametrize("case", [2], indirect=True)
+@pytest.mark.parametrize("subject", ["environment", "receipt", "known_shell"])
+def test_observation_identity_drift_during_capture_prevents_launch(case, monkeypatch, subject):
+    if subject == "known_shell":
+        environment = task_run._read(Path(case.sheet["environment"]["path"]))
+        environment["worker_shell"] = {
+            "status": "Known",
+            "identity": identity(case.base / "worker-shell.exe"),
+        }
+        bind_environment(case, environment)
+    original = case.store.start
+
+    def drift():
+        writer = original()
+        path = {
+            "environment": Path(case.sheet["environment"]["path"]),
+            "receipt": case.trust / "deployment-receipt.json",
+            "known_shell": case.base / "worker-shell.exe",
+        }[subject]
+        retain_and_write(path, path.read_bytes() + b" ")
+        return writer
+
+    monkeypatch.setattr(case.store, "start", drift)
+    fake_spawn(case, monkeypatch)
+    result = invoke(case)
+    assert result["status"] == "Failed" and result["launch_count"] == 0 and not case.calls
+    assert result["runtime_acceptance"] == "Unverified"
+    assert (case.base / "fixture-permit.consumed.json").exists()
