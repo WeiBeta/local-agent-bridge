@@ -89,6 +89,13 @@ CONTINUATION_KEYS = {
     "next_action",
     "session_id",
 }
+CHANGE_KEYS = {
+    "path",
+    "kind",
+    "before",
+    "after",
+    "rename_from",
+}
 
 
 def scope_digest(task: dict) -> str:
@@ -350,6 +357,23 @@ def evaluate_delivery(
         )
         runner.task_workspace._tests(collected["host_observations"]["test_observations"])
         runner._strings(collected["blockers"])
+        try:
+            change_paths = []
+            for change in runner._list(collected["changes"]):
+                runner._object(change, CHANGE_KEYS)
+                change_paths.append(change["path"])
+                runner._enum(change["kind"], {"added", "modified", "deleted"})
+                for stamp in (change["before"], change["after"]):
+                    if stamp is not None:
+                        runner._object(stamp, {"bytes", "sha256"})
+                        if type(stamp["bytes"]) is not int or stamp["bytes"] < 0:
+                            raise runner.TaskRunError("InvalidContract")
+                        runner._hash(stamp["sha256"])
+                if change["rename_from"] is not None:
+                    runner._strings([change["rename_from"]], relative=True)
+            runner._strings(change_paths, relative=True)
+        except runner.task_input.TaskInputError as error:
+            raise runner.TaskRunError("InvalidContract") from error
         for artifact in runner._list(collected["artifacts"]):
             runner._object(artifact, {"path", "bytes", "sha256", "origin"})
             runner._strings([artifact["path"]], relative=True)

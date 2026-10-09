@@ -510,3 +510,124 @@ def test_legacy_plan_semantics_remain(case, version):
         with pytest.raises(runner.TaskRunError):
             runner._validate_receipt(case.receipt)
     assert result["contract_version"] == 1 and "acceptance_method" not in result
+
+
+# P2-01 (LAB-AGY-LAYERED-SHAPE-REPAIR-01): the closed v1 collector object must
+# also validate the nested change list, matching the documented Change type and
+# the real task_workspace collector output.
+def _change_entry(**overrides):
+    entry = {
+        "path": "src/changed.py",
+        "kind": "modified",
+        "before": {"bytes": 1, "sha256": "b" * 64},
+        "after": {"bytes": 2, "sha256": "c" * 64},
+        "rename_from": None,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _real_changes():
+    return [
+        {
+            "path": "src/added.py",
+            "kind": "added",
+            "before": None,
+            "after": {"bytes": 3, "sha256": "1" * 64},
+            "rename_from": "src/old.py",
+        },
+        _change_entry(),
+        {
+            "path": "src/removed.py",
+            "kind": "deleted",
+            "before": {"bytes": 4, "sha256": "2" * 64},
+            "after": None,
+            "rename_from": None,
+        },
+    ]
+
+
+def test_legal_collector_change_list_stays_eligible(case):
+    case.collection["changes"] = _real_changes()
+    result = evaluate(case)
+    assert result["layers"]["code_delivery"]["result"] == "Pass"
+    assert result["status"] == "Eligible"
+
+
+def test_review_counterexample_string_change_list_is_rejected(case):
+    case.collection["changes"] = "not a collector change list"
+    with pytest.raises(runner.TaskRunError):
+        evaluate(case)
+
+
+@pytest.mark.parametrize("value", [{}, 7, ["not a change object"]])
+def test_non_list_or_non_object_change_values_are_rejected(case, value):
+    case.collection["changes"] = value
+    with pytest.raises(runner.TaskRunError):
+        evaluate(case)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"path": "src/a.py", "kind": "added"},
+        {
+            "path": "src/a.py",
+            "kind": "added",
+            "before": None,
+            "after": {"bytes": 1, "sha256": "a" * 64},
+            "rename_from": None,
+            "extra": True,
+        },
+    ],
+)
+def test_change_entries_must_use_the_closed_key_set(case, entry):
+    case.collection["changes"] = [entry]
+    with pytest.raises(runner.TaskRunError):
+        evaluate(case)
+
+
+def test_change_kind_must_match_the_documented_enum(case):
+    case.collection["changes"] = [_change_entry(kind="renamed")]
+    with pytest.raises(runner.TaskRunError):
+        evaluate(case)
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "stamp",
+        {"bytes": "1", "sha256": "a" * 64},
+        {"bytes": -1, "sha256": "a" * 64},
+        {"bytes": 1, "sha256": "not-a-digest"},
+        {"bytes": 1, "sha256": "a" * 64, "extra": True},
+    ],
+)
+def test_change_stamps_must_be_null_or_closed_file_stamps(case, stamp):
+    case.collection["changes"] = [_change_entry(before=stamp)]
+    with pytest.raises(runner.TaskRunError):
+        evaluate(case)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        [_change_entry(path="/rooted.py")],
+        [_change_entry(path="../escape.py")],
+        [_change_entry(path=7)],
+        [_change_entry(), _change_entry()],
+        [_change_entry(path="src/z.py"), _change_entry(path="src/a.py")],
+    ],
+)
+def test_change_paths_must_be_relative_unique_and_sorted(case, changes):
+    case.collection["changes"] = changes
+    with pytest.raises(runner.TaskRunError):
+        evaluate(case)
+
+
+@pytest.mark.parametrize("rename_from", [7, "/rooted.py"])
+def test_change_rename_from_must_be_a_relative_path_or_null(case, rename_from):
+    entry = _change_entry(kind="added", before=None, rename_from=rename_from)
+    case.collection["changes"] = [entry]
+    with pytest.raises(runner.TaskRunError):
+        evaluate(case)
