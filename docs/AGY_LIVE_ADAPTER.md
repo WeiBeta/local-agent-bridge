@@ -39,3 +39,10 @@ NDJSON 仅解析一遍：总262144 bytes、每行65536、1024行、256 step、�
 schema 只允许行号、raw-event SHA、已知类别计数、step 顺序/状态/类别、recipe 比较与必要声明退出字段及固定 Unknown/null。没有 source/text_delta/tool output/error.message/account/key。actual_invocations=null，management_decision=null。声明匹配也不证明 OS 实际执行、host composition 或 R Accepted。
 
 2026-10-08 官方字段参考：[更新控制](https://www.antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)、[原生事件](https://antigravity.google/docs/cli/headless/#streaming-json)。文档不是本机实测。
+
+
+## 普通可信 Coding 的独立接受方式
+
+作者已选择 trusted_coding_v1 分层方案（合同 §15）。新 deployment receipt v3 明确固定入口/版本与组成 Unknown/FixedEntryKnown，Plan v2 明确 acceptance_method；旧首次观察 v2 仍 Blocked/R Unverified，standalone first_task_r/reanalysis helper、原真实许可和旧 capture 机会不变。
+
+新评价器只处理管理固定的对象证据，不读取或解析 agy stdout，不引入 hooks/SDK/MCP/OS 审计。代码交付、管理独立复测、WorkerReported/CliDeclared/可选 HostObserved、外层生命周期分别记录；没有 Worker 完整命令事实时保持 Unknown。普通 Plan 还须显式管理 Accepted 和精确 scope/receipt 绑定，不能从一次窄修复推广 CRUD/rename/多文件或真实超时能力。本版本是离线候选，尚无新真实 runtime 接受或部署。

@@ -610,3 +610,42 @@ result目录必须精确等于上述当前源目录映射、B固定生成的cand
 独立验证程序仅在另外批准的 v2 验收单下要求准确的上述两个 blocker；其他非 R 门禁仍必须通过。初始、消费前与结束重读继续核原 bundle/raw SHA、环境、入口/安装/toolchain/recipe、全部控制和实际文件；Known 预期 Shell 仍逐次核验。许可消费、配置恢复、0/1/null 启动事实、原中断及 B 文件和完整目录关联语义不变，不重新实现执行通道。
 
 预期 Shell 字段不传入 agy、不选择或约束实际 Shell。v2 的 ObservationRecorded 只表示生命周期和候选回收证据完整保存，实际组成/Shell/命令证据仍如上述未证字段声明，R 始终 Unverified、management_decision=null。实际 Worker Shell 路径/文件身份，以及固定 recipe 的完整 argv、cwd、完成与退出事实，必须由另行获准的真实证据在管理接受前取得；程序不解密，不承诺现有捕获必然提供它们。缺证不能从 Unknown、stdout 终态、预期文件或自检推导接受。本合同候选仍需独立 Review 和新的适用实测授权，旧真实许可及自动修复上限不重置。
+
+
+## 15. 普通可信 Coding 分层接受 v1（LAB-AGY-LAYERED-ACCEPTANCE-IMPL-01）
+
+作者已选择 B。本节增加独立接受方式，不追溯改写 §14 首次观察 v2、§13 严格 R 或任何历史 Unverified。实现仍是离线候选，独立 Review、适用实机验证及部署须另行完成；本轮不为真实 runtime 生成接受记录。
+
+| 对象 | 精确新规则 |
+| --- | --- |
+| DeploymentReceipt v3 | 严格 int=3；v1 字段外恰好新增 `host_composition`、`acceptance_method`、`layered_acceptances`；仅 agy。method 固定 `trusted_coding_v1`，composition 恰为 `{status:"Unknown",scope:"FixedEntryKnown"}`。固定 host_entry/host_version、bridge 和 toolchain 身份仍必须完整；host_identity_files=[]、runtime_acceptances=[]。不将相同 exe 再登记为组成，也不把版本字符串当全部后端身份 |
+| Profile/Auth/Task | 仍为闭合 v1，不增加权限缺省。profile/auth 完整 receipt_sha256 绑定包含方式/层记录的 v3 原对象；原 profile_fields_sha256、授权 input_control_bindings、控制文件/范围/受保护文件检查照旧 |
+| Plan v2 | 原 Plan v1 键外恰好新增 acceptance_method=`trusted_coding_v1`；只由 Receipt v3 分支生成。旧 Receipt v1/v2 继续生成 Plan v1。CLI spec 与五条 task 命令不变 |
+| 外层 RunReceipt / collector | 保持 v1 生命周期和 test_observations 语义，以完整新 Plan SHA 绑定。collector 仅兼容加载 Plan v2，仍 management_decision=null；其 acceptance_observations 不被自动写 Accepted |
+
+v3 只允许 Coding、capabilities 恰为 execute=true/web_reference=false/prepare_dependencies=false、declared_scope。新方式不接受 Review、联网依赖、Web、required_enforced 或隐式权限扩张。既有路径/实际文件身份、配置租约与恢复、有界 owned Job 回收、capture/key 门禁仍在原执行路径；新方式不重写它们。
+
+layered_acceptances 每条恰为：`role,capabilities,execution_boundary,receipt_binding_sha256,task_scope_sha256,status,evaluation,management_acceptance_ref`。status 枚举 Accepted/Blocked/Unverified。仅 Accepted 且 evaluation=Eligible、管理引用是非空 SHA 的 HostObserved 才可解除 LayeredAcceptanceUnverified；其他授权/身份门禁仍须通过。匹配角色/全部能力/边界以及精确 task_scope_sha256，不能仅按 execute=true 推广。
+
+receipt_binding_sha256 是规范 JSON receipt 去掉 runtime_acceptances/layered_acceptances/provenance_refs 的 SHA；task_scope_sha256 是完整规范 task 去掉 deployment_profile_sha256/authorization_sha256 的 SHA。只剔除循环绑定，task_id/snapshot/说明/路径/保护/outputs/acceptance_ids/预算仍都参与。不同 task、源码快照、说明、CRUD/rename/多文件或期限范围必须重新明确接受，不能复用单行修复的记录。记录按 scope SHA 唯一排序。
+
+### 离线评价与管理裁决
+
+产品模块 `local_agent_bridge.bridge.layered_acceptance.evaluate_delivery` 为无 IO 的固定对象接口，无新 CLI/MCP/任意命令入口。输入 task、Receipt v3、管理冻结的 candidate_tree_sha256、recipes，以及 collection/manager_retest/host_lifecycle/可选 worker_execution/worker_recipe。每项证据恰为 `{value,evidence_ref}`，ref 恰为 `{ref,sha256,origin}`，SHA 必须等于 value 的规范 JSON。输入由可信管理固定；hash 与来源标签不验证任意调用方的权限，也无抗同用户伪造保证。不读 XML、原 stream、秘密或旧 capture。
+
+recipes 恰为 recipe_sha256/toolchain_sha256/executable_identity/argv/cwd；toolchain SHA 是对应登记 toolchain 的规范 JSON SHA，exe identity 必须在其 identity_files，argv[0] 是该 exe。可选 worker_recipe 使用相同闭合形状，独立冻结 Worker 的实际预期 argv/cwd，不把管理复测目录当 Worker 目录；缺该绑定时 Worker 层保持 Unknown。recipe SHA、完整 argv/cwd 由管理独立冻结，不接受 Worker 临时声明为预期值。retest 的源码树必须是实际 collector 交付 candidate_tree，不能先修补后接受。
+
+| 层 | 对应输入及通过条件 | 未知/声明边界 |
+| --- | --- | --- |
+| code_delivery | 原 collector 的闭合 v1 对象；HostObserved，task/snapshot/candidate/完整 artifact_manifest 绑定，scope/outputs Pass、Completed、无 blocker/remaining_paths | 仅接受交付与范围，不证明 Worker OS 操作或完整 CRUD；collection 的历史业务状态不改 |
+| manager_retest | actor=ManagementIndependent；task/source/recipe/toolchain/exe/完整 argv/cwd 匹配；有时区 start/end 且完成时间不倒序、exit=0、tests>0、failures/errors=0、HostObserved | 单独 XML、Worker 自述、错误原始候选树、缺证或错绑定不能通过；必须是管理实际保存的独立命令事实 |
+| worker_execution | Unknown，或 WorkerReported/CliDeclared 的声明；可选完整 HostObserved 命令事实 actor=Worker，并提供实际 worker_shell_identity | 声明层 result 固定 Unknown。HostObserved 也只证明该固定命令；管理执行不得填 actor=Worker，预期 Shell 不得冒充实际 Shell |
+| host_lifecycle | HostObserved；task/Plan SHA/新 capture UID 与 collection continuation 绑定，Completed、launch=1、exit=0、Sealed、Unchanged/Restored、owned_process_cleanup=Pass、无 blocker | 外层成功与 Worker 业务执行分开；失败或未确认回收不被代码/复测通过覆盖。正常关闭不证明真实强制超时能力 |
+
+命令事实闭合字段为 actor/task_id/source_tree_sha256/recipe_sha256/toolchain_sha256/executable_identity/worker_shell_identity/argv/cwd/start_utc/end_utc/exit_code/tests/failures/errors。管理事实的 worker_shell_identity=null；实际 Worker 事实须给身份。外层事实闭合字段为 task_id/plan_sha256/transport_state/launch_count/capture_uid/capture_state/restore_state/owned_process_cleanup/exit_code/blockers。
+
+evaluation 恰为 contract_version=1、acceptance_method、receipt_binding_sha256、task_scope_sha256、candidate_tree_sha256、layers、status、strict_r_status。layers 恰含 code_delivery/manager_retest/worker_execution/host_lifecycle；每层恰为 result/origin/evidence_refs。result=Pass/Fail/Unknown，origin=HostObserved/Unknown，Worker 层另可 WorkerReported/CliDeclared。strict_r_status 永远 Unverified。
+
+评价器只返回 Eligible/Blocked/Unverified：三个必需层 code_delivery/manager_retest/host_lifecycle 都有 HostObserved Pass 才 Eligible；任一必需层 Fail 则 Blocked，缺证为 Unverified。Worker 层独立，不以管理复测提升。Eligible 不是 Accepted。管理核验原材料后，才能在**新**部署回执的 layered_acceptances 中明确冻结 Accepted + management_acceptance_ref，并重新绑定 profile/auth/任务和 trusted bundle。不得在已准备的冻结控制树里改 receipt 或 Plan；新接受材料须准备新的专用 task 副本。
+
+普通生产路径仍为既有 `task prepare → task plan → task run → task collect`。普通 Plan 不自动取旧观察为接受证据；没有精确新记录时为 LayeredAcceptanceUnverified，范围不支持时另 LayeredScopeUnverified。首次真实观察许可与 standalone first_task_r v1/v2 不升级为 v3；新增实机证据生产方式和授权另冻。历史 R Unverified、旧退出码、旧消费 marker 和一次密文机会不变。

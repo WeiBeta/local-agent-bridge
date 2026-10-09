@@ -875,8 +875,25 @@ def _tests(value: Any) -> None:
 
 
 def _plan(value: Any, task: Any, task_sha: str) -> None:
-    _object(value, _PLAN_KEYS)
-    _version(value)
+    from .layered_acceptance import CAPABILITIES, METHOD
+
+    if (
+        type(value) is dict
+        and type(value.get("contract_version")) is int
+        and value["contract_version"] == 2
+    ):
+        _object(value, _PLAN_KEYS | {"acceptance_method"})
+        if value["acceptance_method"] != METHOD or value["host"] != "agy":
+            _fail("PlanBindingMismatch")
+        if value["preflight_status"] == "Ready" and (
+            task["role"] != "Coding"
+            or task["capabilities"] != CAPABILITIES
+            or task["execution_boundary"] != "declared_scope"
+        ):
+            _fail("PlanBindingMismatch")
+    else:
+        _object(value, _PLAN_KEYS)
+        _version(value)
     if value["task_id"] != task["task_id"] or value["task_manifest_sha256"] != task_sha:
         _fail("PlanBindingMismatch")
     _hash(value["deployment_receipt_sha256"])
@@ -1154,6 +1171,15 @@ def _control_observations(
         if plan_present:
             plan = _json(plan_path, canonical=True)
             _plan(plan, task, inputs._sha256_bytes(inputs._canonical_json_bytes(task)))
+            from .layered_acceptance import METHOD
+
+            layered_receipt = (
+                type(receipt.get("contract_version")) is int and receipt["contract_version"] == 3
+            )
+            if (plan["contract_version"] == 2) != layered_receipt or (
+                layered_receipt and receipt.get("acceptance_method") != METHOD
+            ):
+                _fail("PlanBindingMismatch")
             if (
                 plan["host"] != profile["host"]
                 or plan["deployment_receipt_sha256"] != profile["receipt_sha256"]

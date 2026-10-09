@@ -91,3 +91,11 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 - 原计数、中断、恢复、文件及完整目录反例在 v1/v2 同时通过；针对/全pytest/JUnit、Ruff/format 和全部模块默认/显式有序发现逐项核对。
 - 新 sdist/wheel 全部源码payload、RECORD及元数据核验，验证程序只进sdist；新冻结 wheel 的隔离非editable安装和实际导入身份需有对应证据，未做项如实登记。
 - 独立Review、新适用实测许可、真实 Shell/命令取证、生产部署与 Skill 更新各自核收；历史失败材料及自动修复上限不重置。
+
+
+## trusted_coding_v1 候选发布门禁
+
+- deployment receipt v3/Plan v2 与旧 v1/v2 分支分别核对；profile/auth 完整 SHA、task scope、实际入口/版本与 Unknown 组成不可混淆。
+- wheel 包含 bridge/layered_acceptance.py；sdist 包含 test_layered_acceptance.py 及现有合同/接受表/本清单。独立 copy 安装核验 import/文件集合，不复用旧 runtime 或 live 授权。
+- 三个必需层与可选 Worker 来源分开；Eligible 不自动变 Accepted，strict R 固定 Unverified。生产 runtime 没有本轮自动接受记录，历史材料不追溯改写。
+- 独立 Review、对应实机验证、生产接受/部署仍是分开的门禁；完整 CRUD/rename/真实强制超时未覆盖时不能写产品全能力 Pass。

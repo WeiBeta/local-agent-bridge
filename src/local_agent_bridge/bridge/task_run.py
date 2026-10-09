@@ -25,6 +25,7 @@ from typing import Literal
 from local_agent_bridge.bridge import (
     contract,
     cursor_run,
+    layered_acceptance,
     paths,
     slice_run,
     task_input,
@@ -480,6 +481,7 @@ def _validate_receipt(receipt: dict) -> None:
     if type(receipt) is not dict or type(receipt.get("contract_version")) is not int:
         raise TaskRunError("InvalidContract")
     first_observation = receipt["contract_version"] == 2
+    layered = receipt["contract_version"] == 3
     if first_observation:
         _object(receipt, _RECEIPT_KEYS | {"host_composition"})
         composition = _object(receipt["host_composition"], {"status", "scope"})
@@ -490,6 +492,20 @@ def _validate_receipt(receipt: dict) -> None:
             or _list(receipt["runtime_acceptances"]) != []
         ):
             raise TaskRunError("InvalidContract")
+    elif layered:
+        _object(
+            receipt,
+            _RECEIPT_KEYS | {"host_composition", "acceptance_method", "layered_acceptances"},
+        )
+        if (
+            receipt["host_composition"] != layered_acceptance.COMPOSITION
+            or receipt["acceptance_method"] != layered_acceptance.METHOD
+            or receipt["host"] != "agy"
+            or _list(receipt["host_identity_files"]) != []
+            or _list(receipt["runtime_acceptances"]) != []
+        ):
+            raise TaskRunError("InvalidContract")
+        layered_acceptance.validate_records(receipt["layered_acceptances"])
     else:
         _object(receipt, _RECEIPT_KEYS)
         _version(receipt)
@@ -505,7 +521,7 @@ def _validate_receipt(receipt: dict) -> None:
     _identities(bridge["product_files"], nonempty=True)
     _identity(receipt["host_entry"])
     _text(receipt["host_version"])
-    _identities(receipt["host_identity_files"], nonempty=not first_observation)
+    _identities(receipt["host_identity_files"], nonempty=not (first_observation or layered))
     config = _object(receipt["configuration"], {"agy_settings", "cursor_global", "cursor_project"})
     if host == "agy":
         if (
@@ -567,6 +583,18 @@ def _validate_receipt(receipt: dict) -> None:
     if seen != sorted(set(seen)):
         raise TaskRunError("InvalidContract")
     _evidence(receipt["provenance_refs"])
+
+
+def _validate_plan(plan: dict) -> None:
+    if type(plan) is not dict or type(plan.get("contract_version")) is not int:
+        raise TaskRunError("InvalidContract")
+    if plan["contract_version"] == 2:
+        _object(plan, _PLAN_KEYS | {"acceptance_method"})
+        if plan["acceptance_method"] != layered_acceptance.METHOD or plan["host"] != "agy":
+            raise TaskRunError("InvalidContract")
+    else:
+        _object(plan, _PLAN_KEYS)
+        _version(plan)
 
 
 def load_trusted_inputs(
@@ -727,50 +755,82 @@ def _make_plan(context: dict, host: str) -> dict:
             blockers.append("AuthorizationUnverified")
     if task["capabilities"]["execute"] and not receipt["toolchains"]:
         blockers.append("ToolchainUnverified")
-    binding = _digest(
-        _canonical(
-            {
-                key: value
-                for key, value in receipt.items()
-                if key not in {"runtime_acceptances", "provenance_refs"}
-            }
-        )
-    )
-    matches = [
-        record
-        for record in receipt["runtime_acceptances"]
-        if record["role"] == task["role"]
-        and record["capabilities"] == task["capabilities"]
-        and record["execution_boundary"] == task["execution_boundary"]
-    ]
-    evidence_sources = [receipt["provenance_refs"]]
-    if (
-        not matches
-        or matches[0]["receipt_binding_sha256"] != binding
-        or matches[0]["status"] != "Accepted"
-    ):
-        blockers.append("RuntimeAcceptanceUnverified")
+    layered = receipt["contract_version"] == 3
+    if layered:
+        evidence_sources = [receipt["provenance_refs"]]
+        if (
+            task["role"] != "Coding"
+            or task["capabilities"] != layered_acceptance.CAPABILITIES
+            or task["execution_boundary"] != "declared_scope"
+        ):
+            blockers.append("LayeredScopeUnverified")
+        matches = [
+            record
+            for record in receipt["layered_acceptances"]
+            if record["role"] == task["role"]
+            and record["capabilities"] == task["capabilities"]
+            and record["execution_boundary"] == task["execution_boundary"]
+            and record["task_scope_sha256"] == layered_acceptance.scope_digest(task)
+        ]
+        if (
+            not matches
+            or matches[0]["status"] != "Accepted"
+            or matches[0]["receipt_binding_sha256"] != layered_acceptance.receipt_binding(receipt)
+        ):
+            blockers.append("LayeredAcceptanceUnverified")
+        else:
+            record = matches[0]
+            evidence_sources.append([record["management_acceptance_ref"]])
+            evidence_sources.extend(
+                layer["evidence_refs"]
+                for name, layer in record["evaluation"]["layers"].items()
+                if name in layered_acceptance.REQUIRED_LAYERS
+            )
     else:
-        record = matches[0]
-        required = {"R-RUNTIME-01"}
-        if task["capabilities"]["web_reference"]:
-            required.add("WEB-01")
-        if task["capabilities"]["prepare_dependencies"]:
-            required.add("DEPS-01")
-        if task["execution_boundary"] == "required_enforced":
-            required |= {"BOUNDARY-02", "BOUNDARY-03", "NETWORK-01"}
-        gates = {gate["id"]: gate for gate in record["gates"]}
-        if not _observed([record["management_acceptance_ref"]]) or any(
-            key not in gates
-            or gates[key]["result"] != "Pass"
-            or not _observed(gates[key]["evidence_refs"])
-            for key in required
+        binding = _digest(
+            _canonical(
+                {
+                    key: value
+                    for key, value in receipt.items()
+                    if key not in {"runtime_acceptances", "provenance_refs"}
+                }
+            )
+        )
+        matches = [
+            record
+            for record in receipt["runtime_acceptances"]
+            if record["role"] == task["role"]
+            and record["capabilities"] == task["capabilities"]
+            and record["execution_boundary"] == task["execution_boundary"]
+        ]
+        evidence_sources = [receipt["provenance_refs"]]
+        if (
+            not matches
+            or matches[0]["receipt_binding_sha256"] != binding
+            or matches[0]["status"] != "Accepted"
         ):
             blockers.append("RuntimeAcceptanceUnverified")
-        evidence_sources.append([record["management_acceptance_ref"]])
-        evidence_sources.extend(
-            gates[key]["evidence_refs"] for key in sorted(required & gates.keys())
-        )
+        else:
+            record = matches[0]
+            required = {"R-RUNTIME-01"}
+            if task["capabilities"]["web_reference"]:
+                required.add("WEB-01")
+            if task["capabilities"]["prepare_dependencies"]:
+                required.add("DEPS-01")
+            if task["execution_boundary"] == "required_enforced":
+                required |= {"BOUNDARY-02", "BOUNDARY-03", "NETWORK-01"}
+            gates = {gate["id"]: gate for gate in record["gates"]}
+            if not _observed([record["management_acceptance_ref"]]) or any(
+                key not in gates
+                or gates[key]["result"] != "Pass"
+                or not _observed(gates[key]["evidence_refs"])
+                for key in required
+            ):
+                blockers.append("RuntimeAcceptanceUnverified")
+            evidence_sources.append([record["management_acceptance_ref"]])
+            evidence_sources.extend(
+                gates[key]["evidence_refs"] for key in sorted(required & gates.keys())
+            )
     if task["execution_boundary"] == "required_enforced" and (
         profile["enforcement"]["file_scope"] != "Enforced"
         or profile["enforcement"]["network_scope"] != "Enforced"
@@ -786,8 +846,8 @@ def _make_plan(context: dict, host: str) -> dict:
             # Ordinary identity files only; never inspect host settings here.
             blockers.append("RuntimeIdentityUnverified")
             context["identity_error"] = error
-    return {
-        "contract_version": 1,
+    plan = {
+        "contract_version": 2 if layered else 1,
         "task_id": task["task_id"],
         "task_manifest_sha256": _digest(_canonical(task)),
         "deployment_receipt_sha256": _digest(_canonical(receipt)),
@@ -799,6 +859,9 @@ def _make_plan(context: dict, host: str) -> dict:
         "blockers": sorted(set(blockers)),
         "evidence_refs": _combine_evidence(*evidence_sources),
     }
+    if layered:
+        plan["acceptance_method"] = layered_acceptance.METHOD
+    return plan
 
 
 def _map_error(error: Exception) -> TaskRunError:
@@ -1357,8 +1420,7 @@ def run_task(
         started = time.monotonic()
         if type(execute) is not bool:
             raise TaskRunError("InvalidContract")
-        _object(plan, _PLAN_KEYS)
-        _version(plan)
+        _validate_plan(plan)
         _enum(plan["host"], set(_ROUTES))
         _enum(plan["preflight_status"], {"Ready", "Blocked"})
         _enum(plan["execution_boundary"], _BOUNDARIES)

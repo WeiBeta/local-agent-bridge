@@ -310,3 +310,22 @@ v2 精确 schema 见合同“首次观测合同 v2”；以下离线合成自检
 | OBS-FULL | 针对及全套pytest/JUnit、Ruff/format；默认/显式有序nodeids无重复且与JUnit逐项相等；新源码/发行包身份核验，不借旧wheel |
 
 实际 Shell/命令 argv/cwd/完成/退出的独立证据仍是接受前条件；v2 不捕获或认证它们，也不选择实际 Shell。本候选不改变普通生产接受标准、文件单链接规则、OS权限、C生命周期或B收集语义。独立Review、真实R和部署仍各自未由自检取得。
+
+
+## 7. trusted_coding_v1 分层矩阵（作者选择 B，离线候选）
+
+对应合同 §15；不改原 v1 严格 R 与 v2 首次观察接受表。deployment receipt v3 / Plan v2 必须显式出现方式，旧字段和来源不能混用。接受只绑定精确 task scope，普通代码交付与管理独立复测不意味着 Worker execute、完整多文件 CRUD/rename 或真实超时已验收。
+
+| 组 | 离线合成场景 | 门禁 |
+| --- | --- | --- |
+| LA-LEGACY | 旧 v1 严格 R、v2 Unknown/空 R、v2 插 Accepted | 原语义、原两个 blocker；不静默升级 |
+| LA-VERSION | v3/Plan v2 错版本、bool、未知字段、错方式/host/组成、重复 exe | 闭合拒绝，v3 的 runtime_acceptances 必空 |
+| LA-MATCH | 精确角色/全部能力/边界/receipt binding/task projection；新 ID、snapshot/说明、CRUD/rename、路径变化 | 仅精确范围可以 Ready；更广样本或变更范围 Blocked |
+| LA-AUTH | 执行授权撤销、profile/auth hash、受保护/控制路径、入口 drift | 原授权与路径/身份拒绝仍生效 |
+| LA-LAYERS | 交付范围、独立复测、WorkerReported/CliDeclared/Unknown/完整 HostObserved、外层事实 | 分层记录；评价只有 Eligible，业务接受由管理明确冻结 |
+| LA-NEGATIVE | 单独伪 XML、只有自述、源码树/recipe/toolchain/argv/cwd/actor/时间/exit 不匹配、证据 SHA 错 | 相应层不能通过，声明不升为 HostObserved |
+| LA-LIFECYCLE | Failed/TimedOut、Unknown launch/cleanup、capture/restore 失败、错 Plan/UID | 必需外层门禁，代码通过不能覆盖；Unknown 保留 |
+| LA-COLLECT | 新旧 Plan 加载、dry/fake lifecycle 与实际 B prepare/collect | 保持 v1 collector 的 management_decision=null 和 Unrun/Unverified |
+| LA-PACKAGE | 锁定离线依赖、适用 pytest/ruff/format/diff、sdist→wheel、独立 noneditable copy | 仅自检；不作为独立 Review 或真实 runtime 接受 |
+
+本实现的 fixture 接受记录全部是合成注入，不落生产回执。下一门禁为新独立 Review；实际 native/模型/真实超时、完整 CRUD/rename、生产配置和部署均另授权并单独报告 NotRun。本轮不触现有 first_task_r/reanalysis helper 或旧捕获机会。
