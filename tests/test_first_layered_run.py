@@ -456,3 +456,151 @@ def test_management_final_evidence_is_rechecked(case, monkeypatch, fault):
     observed = legacy.invoke(case)
     assert observed["status"] == "Failed" and observed["launch_count"] == 1
     assert len(case.manager_calls) == 2 and observed["runtime_acceptance"] == "Unverified"
+
+
+@pytest.mark.parametrize("name", ["baseline", "candidate"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "bytes",
+        "add_file",
+        "add_directory",
+        "delete_file",
+        "delete_root",
+        "replace_root",
+        "io",
+        "interrupt",
+    ],
+)
+def test_terminal_materialized_work_is_rechecked(case, monkeypatch, name, fault):
+    fake_host(case, monkeypatch)
+    manager_process(case, monkeypatch)
+    original = validation._manager_retests
+    inventory = workspace._inventory
+    persist = runner._persist
+    primary = KeyboardInterrupt("synthetic terminal inventory interrupt")
+    retained = {}
+    plan = (case.root / "control/plan.json").read_bytes()
+
+    def retest(*args):
+        identities = original(*args)
+        retained["facts"] = {
+            key: Path(item["path"]).read_bytes() for key, item in identities.items()
+        }
+        stage = Path(case.sheet["manager_retest"]["root"]) / name
+        work = stage / "work"
+        source = work / "source.py"
+        if fault == "bytes":
+            (stage / "source.before-terminal.bin").write_bytes(source.read_bytes())
+            source.write_bytes(b"answer = 9000\n")
+        elif fault == "add_file":
+            (work / "late-added.py").write_bytes(b"late source\n")
+        elif fault == "add_directory":
+            (work / "late-empty-directory").mkdir()
+        elif fault == "delete_file":
+            source.rename(stage / "source.before-terminal.bin")
+        elif fault in {"delete_root", "replace_root"}:
+            work.rename(stage / "work.before-terminal")
+            if fault == "replace_root":
+                work.write_bytes(b"plain file replacing work directory")
+        else:
+
+            def fail_inventory(root, *args):
+                if root == work:
+                    raise primary if fault == "interrupt" else OSError("synthetic inventory IO")
+                return inventory(root, *args)
+
+            monkeypatch.setattr(workspace, "_inventory", fail_inventory)
+            if fault == "interrupt":
+
+                def fail_secondary(path, value):
+                    if path == Path(case.sheet["run_root"]) / "validation.json":
+                        retained["observation"] = value
+                        raise OSError("synthetic secondary observation IO")
+                    return persist(path, value)
+
+                monkeypatch.setattr(runner, "_persist", fail_secondary)
+        return identities
+
+    monkeypatch.setattr(validation, "_manager_retests", retest)
+    if fault == "interrupt":
+        with pytest.raises(KeyboardInterrupt) as caught:
+            legacy.invoke(case)
+        assert caught.value is primary
+        observed = retained["observation"]
+        assert observed["status"] == "Interrupted"
+    else:
+        observed = legacy.invoke(case)
+        assert observed["status"] == "Failed", observed
+        assert observed == legacy.observations(case)
+    assert observed["launch_count"] == len(case.calls) == 1 and len(case.manager_calls) == 2
+    assert observed["runtime_acceptance"] == observed["layered_acceptance"] == "Unverified"
+    assert (case.root / "control/plan.json").read_bytes() == plan
+    assert (case.base / "fixture-permit.consumed.json").is_file()
+    for key, raw in retained["facts"].items():
+        assert Path(observed["manager_evidence"][key]["path"]).read_bytes() == raw
+
+
+@pytest.mark.parametrize("name", ["baseline", "candidate"])
+@pytest.mark.parametrize(
+    "fault", ["bytes", "delete", "replace", "io", "interrupt", "after_inventory"]
+)
+def test_terminal_materialized_recipe_is_rechecked(case, monkeypatch, name, fault):
+    fake_host(case, monkeypatch)
+    manager_process(case, monkeypatch)
+    original = validation._manager_retests
+    inventory = workspace._inventory
+    read_pinned = validation._read_pinned
+    primary = KeyboardInterrupt("synthetic terminal recipe interrupt")
+    stage = Path(case.sheet["manager_retest"]["root"]) / name
+    relative = Path(case.sheet["recipes"][0]["identity"]["path"]).relative_to(case.root)
+    recipe = stage / relative
+    armed = False
+
+    def drift():
+        (stage / "recipe.before-terminal.bin").write_bytes(recipe.read_bytes())
+        recipe.write_bytes(b"changed after management command\n")
+
+    def retest(*args):
+        nonlocal armed
+        identities = original(*args)
+        armed = True
+        if fault == "bytes":
+            drift()
+        elif fault in {"delete", "replace"}:
+            recipe.rename(stage / "recipe.before-terminal.bin")
+            if fault == "replace":
+                recipe.mkdir()
+        return identities
+
+    def inspect(root, *args):
+        nonlocal armed
+        result = inventory(root, *args)
+        if armed and fault == "after_inventory" and root == stage / "work":
+            armed = False
+            drift()
+        return result
+
+    def read(identity):
+        if armed and fault in {"io", "interrupt"} and Path(identity["path"]) == recipe:
+            raise primary if fault == "interrupt" else OSError("synthetic recipe IO")
+        return read_pinned(identity)
+
+    monkeypatch.setattr(validation, "_manager_retests", retest)
+    monkeypatch.setattr(workspace, "_inventory", inspect)
+    monkeypatch.setattr(validation, "_read_pinned", read)
+    if fault == "interrupt":
+        with pytest.raises(KeyboardInterrupt) as caught:
+            legacy.invoke(case)
+        assert caught.value is primary
+        observed = legacy.observations(case)
+        assert observed["status"] == "Interrupted"
+    else:
+        observed = legacy.invoke(case)
+        assert observed["status"] == "Failed", observed
+        assert observed == legacy.observations(case)
+        if fault == "after_inventory":
+            assert observed["error_code"] == "IdentityChanged"
+    assert observed["launch_count"] == len(case.calls) == 1 and len(case.manager_calls) == 2
+    assert observed["runtime_acceptance"] == observed["layered_acceptance"] == "Unverified"
+    assert (case.base / "fixture-permit.consumed.json").is_file()

@@ -1082,7 +1082,9 @@ def _manager_retests(sheet: dict, roots: dict, context: dict, collection: dict, 
     return facts
 
 
-def _saved_manager_evidence(identities: dict, context: dict, collection: dict, roots: dict) -> None:
+def _saved_manager_evidence(
+    identities: dict, context: dict, collection: dict, roots: dict, *, recipe_identity: dict
+) -> None:
     task_run._object(identities, {"baseline", "candidate", "recipes", "host_lifecycle"})
     values = {
         name: contract.decode_strict_json_bytes(_read_pinned(identity), label="management evidence")
@@ -1101,12 +1103,33 @@ def _saved_manager_evidence(identities: dict, context: dict, collection: dict, r
         ),
         "ManagerRetestBindingMismatch",
     )
+    deadline = task_run.task_input._Deadline.starting_now(context["task"]["deadline_seconds"])
+    files, directories = task_workspace._inventory(
+        roots["task_root"] / "control/snapshot/source",
+        context["task"]["source_output_bytes_limit"],
+        deadline,
+    )
+    expected_trees = {
+        "baseline": task_workspace._tree_sha(files, directories),
+        "candidate": collection["continuation"]["candidate_tree_sha256"],
+    }
+    relative_recipe = task_run._absolute(recipe_identity["path"]).relative_to(roots["task_root"])
     for name, phase in (("baseline", "reproduce"), ("candidate", "regression")):
         stage = roots["manager_retest"] / name
         _require(
             Path(identities[name]["path"]) == stage / "command.json",
             "ManagerRetestBindingMismatch",
         )
+        # Recheck retained work at the terminal boundary, from frozen roots and
+        # permit recipe identity rather than paths declared in command facts.
+        current_files, current_directories = task_workspace._inventory(
+            stage / "work", context["task"]["source_output_bytes_limit"], deadline
+        )
+        _require(
+            task_workspace._tree_sha(current_files, current_directories) == expected_trees[name],
+            "ManagerSourceChanged",
+        )
+        _read_pinned({"path": str(stage / relative_recipe), "sha256": recipe_identity["sha256"]})
         counts, report = _manager_report(
             stage / "out" / (phase + ".xml"), context["task"]["source_output_bytes_limit"]
         )
@@ -1121,11 +1144,6 @@ def _saved_manager_evidence(identities: dict, context: dict, collection: dict, r
         "argv": [*values["recipes"]["argv"][:-1], "reproduce"],
         "cwd": str(roots["manager_retest"] / "baseline"),
     }
-    files, directories = task_workspace._inventory(
-        roots["task_root"] / "control/snapshot/source",
-        context["task"]["source_output_bytes_limit"],
-        task_run.task_input._Deadline.starting_now(context["task"]["deadline_seconds"]),
-    )
     _require(
         baseline["tests"] == baseline["failures"] == baseline["exit_code"] == 1
         and baseline["errors"] == 0
@@ -1133,7 +1151,7 @@ def _saved_manager_evidence(identities: dict, context: dict, collection: dict, r
         and layered_acceptance._command_matches(
             {**baseline, "exit_code": 0, "failures": 0},
             context["task"],
-            task_workspace._tree_sha(files, directories),
+            expected_trees["baseline"],
             baseline_recipe,
             "ManagementIndependent",
         ),
@@ -1329,7 +1347,11 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
                                 "RunEvidenceChanged",
                             )
                             _saved_manager_evidence(
-                                manager_evidence, initial_context, collection, roots
+                                manager_evidence,
+                                initial_context,
+                                collection,
+                                roots,
+                                recipe_identity=sheet["recipes"][0]["identity"],
                             )
                     except BaseException as secondary:
                         run_sha256 = collection_sha256 = None
