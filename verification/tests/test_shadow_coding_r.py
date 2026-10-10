@@ -370,6 +370,141 @@ def test_interrupt_survives_diagnostic_failure_and_is_not_retried(case, monkeypa
         invoke(case)
 
 
+def _console_close_failures(monkeypatch, targets):
+    """Reuse the independent review's close-after-real-close fault injection."""
+    original_open = Path.open
+    streams = {}
+    failures = {}
+    closed = []
+
+    class FailingConsoleClose:
+        def __init__(self, stream, name):
+            self.stream = stream
+            self.name = name
+
+        def __enter__(self):
+            return self.stream
+
+        def __exit__(self, kind, error, traceback):
+            self.stream.close()
+            closed.append(self.name)
+            raise failures[self.name]
+
+    def opening(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path.name in {"stdout.txt", "stderr.txt"} and args and args[0] == "xb":
+            streams[path.name] = stream
+            if path.name in targets:
+                failures[path.name] = OSError("secondary synthetic console close failure")
+                return FailingConsoleClose(stream, path.name)
+        return stream
+
+    monkeypatch.setattr(Path, "open", opening)
+    return SimpleNamespace(streams=streams, failures=failures, closed=closed)
+
+
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize(
+    "targets", [("stdout.txt",), ("stderr.txt",), ("stdout.txt", "stderr.txt")]
+)
+@pytest.mark.parametrize("diagnostic_fails", [False, True])
+def test_primary_interrupt_survives_console_close_faults(
+    case, monkeypatch, failure_type, targets, diagnostic_fails
+):
+    console = _console_close_failures(monkeypatch, targets)
+    primary = failure_type(73) if failure_type is SystemExit else failure_type("primary interrupt")
+
+    def interrupt(argv, **kwargs):
+        case.calls.append(Path(kwargs["cwd"]).name)
+        kwargs["stdout"].write(b"retained interrupted stdout\n")
+        kwargs["stderr"].write(b"retained interrupted stderr\n")
+        raise primary
+
+    if diagnostic_fails:
+        original_persist = task_run._persist
+
+        def reject_diagnostic(path, value):
+            if path.name == "failure.json":
+                raise OSError("secondary synthetic diagnostic failure")
+            return original_persist(path, value)
+
+        monkeypatch.setattr(task_run, "_persist", reject_diagnostic)
+    monkeypatch.setattr(retests.subprocess, "run", interrupt)
+    with pytest.raises(failure_type) as caught:
+        invoke(case)
+    assert caught.value is primary
+    if failure_type is SystemExit:
+        assert caught.value.code == 73
+    assert case.calls == ["baseline_public"]
+    assert all(stream.closed for stream in console.streams.values())
+    assert console.closed == [name for name in ("stderr.txt", "stdout.txt") if name in targets]
+    stage = case.roots["manager_retest"] / "baseline_public"
+    assert (stage / "stdout.txt").read_bytes() == b"retained interrupted stdout\n"
+    assert (stage / "stderr.txt").read_bytes() == b"retained interrupted stderr\n"
+    if diagnostic_fails:
+        assert not (stage / "failure.json").exists()
+    else:
+        fact = task_run._read(stage / "failure.json")
+        assert fact["exception_type"] == failure_type.__name__
+        assert fact["console_cleanup_exception_type"] == "OSError"
+    assert not (case.roots["manager_retest"] / "candidate_public").exists()
+    assert not (case.roots["manager_retest"] / "candidate_private").exists()
+    with pytest.raises(FileExistsError):
+        invoke(case)
+    assert case.calls == ["baseline_public"]
+
+
+@pytest.mark.parametrize(
+    "targets", [("stdout.txt",), ("stderr.txt",), ("stdout.txt", "stderr.txt")]
+)
+def test_normal_process_console_close_fault_still_fails_and_stops(case, monkeypatch, targets):
+    console = _console_close_failures(monkeypatch, targets)
+    with pytest.raises(OSError) as caught:
+        invoke(case)
+    # Keep the normal context exit order/last close failure when no operation
+    # failed. A report produced before that failure cannot become success.
+    last = "stdout.txt" if "stdout.txt" in targets else "stderr.txt"
+    assert caught.value is console.failures[last]
+    assert case.calls == ["baseline_public"]
+    assert all(stream.closed for stream in console.streams.values())
+    stage = case.roots["manager_retest"] / "baseline_public"
+    assert (stage / "out/tests.xml").exists()
+    assert not (stage / "command.json").exists()
+    fact = task_run._read(stage / "failure.json")
+    assert fact["exception_type"] == "OSError"
+    assert "console_cleanup_exception_type" not in fact
+    assert not (case.roots["manager_retest"] / "candidate_public").exists()
+    with pytest.raises(FileExistsError):
+        invoke(case)
+    assert case.calls == ["baseline_public"]
+
+
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit])
+def test_stream_open_interrupt_is_saved_before_existing_console_cleanup(
+    case, monkeypatch, failure_type
+):
+    console = _console_close_failures(monkeypatch, ("stdout.txt",))
+    original_open = Path.open
+    primary = failure_type("primary opening interrupt")
+
+    def opening(path, *args, **kwargs):
+        if path.name == "stderr.txt" and args and args[0] == "xb":
+            raise primary
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opening)
+    with pytest.raises(failure_type) as caught:
+        invoke(case)
+    assert caught.value is primary
+    assert not case.calls
+    assert console.streams["stdout.txt"].closed
+    stage = case.roots["manager_retest"] / "baseline_public"
+    fact = task_run._read(stage / "failure.json")
+    assert fact["exception_type"] == failure_type.__name__
+    assert fact["console_cleanup_exception_type"] == "OSError"
+    assert not (case.roots["manager_retest"] / "candidate_public").exists()
+
+
 @pytest.mark.parametrize("fault", ["timeout", "missing_xml"])
 def test_control_failure_retains_stage_and_stops_remaining_commands(case, monkeypatch, fault):
     original = retests.subprocess.run

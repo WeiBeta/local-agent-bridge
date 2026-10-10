@@ -89,8 +89,12 @@ identity, stdout/stderr, and a binding of Task, receipt, collection, source tree
 recipe, interpreter and roots. Saved reread repeats these checks and validates
 argv/cwd, actor, times, named reports and retained source/recipe bytes. Rehashing
 a changed command or report identity does not waive these bindings. Diagnostic
-failure cannot replace the original interrupt; a failure leaves partial output
-reserved and stops the remaining commands. There is no retry or cleanup.
+failure cannot replace the original interrupt. Stream acquisition/process errors
+are saved before fallible console closure; the last observed secondary close
+error's type is retained as `console_cleanup_exception_type` when possible.
+Without an earlier operation error, a console close error still fails the phase.
+A failure leaves partial output reserved and stops the remaining commands.
+There is no retry or cleanup.
 
 These facts describe the management subprocesses. `ManagementRetestsPass`
 does not establish Worker execution, strict R, product acceptance or deployment.

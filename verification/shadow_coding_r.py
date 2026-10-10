@@ -257,6 +257,8 @@ def run_manager_retests(*, context: dict, roots: dict, collection: dict, recipe_
         stage = parent / phase
         stage.mkdir()
         started = datetime.now(UTC).isoformat()
+        operation_error = None
+        console_cleanup_exception_type = None
         try:
             baseline = phase == "baseline_public"
             source = Path(binding["baseline_source" if baseline else "candidate_source"])
@@ -266,19 +268,33 @@ def run_manager_retests(*, context: dict, roots: dict, collection: dict, recipe_
             command = _command(binding, phase)
             task_run._verify_file_identity(binding["executable_identity"])
             started = datetime.now(UTC).isoformat()
-            with (
-                (stage / "stdout.txt").open("xb") as stdout,
-                (stage / "stderr.txt").open("xb") as stderr,
-            ):
-                process = subprocess.run(
-                    command["argv"],
-                    cwd=command["cwd"],
-                    timeout=TIMEOUT_SECONDS,
-                    shell=False,
-                    check=False,
-                    stdout=stdout,
-                    stderr=stderr,
-                )
+            try:
+                with contextlib.ExitStack() as consoles:
+                    try:
+                        stdout = consoles.enter_context((stage / "stdout.txt").open("xb"))
+                        stderr = consoles.enter_context((stage / "stderr.txt").open("xb"))
+                        process = subprocess.run(
+                            command["argv"],
+                            cwd=command["cwd"],
+                            timeout=TIMEOUT_SECONDS,
+                            shell=False,
+                            check=False,
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+                    except BaseException as error:
+                        # Save the original before either stream's fallible exit.
+                        operation_error = error
+                        raise
+            except BaseException as error:
+                if operation_error is None:
+                    raise
+                if error is not operation_error:
+                    console_cleanup_exception_type = type(error).__name__
+            # Leave the cleanup handler before re-raising the original, so its
+            # cause is not replaced by the secondary error's exception context.
+            if operation_error is not None:
+                raise operation_error
             ended = datetime.now(UTC).isoformat()
             _require(_inputs(context, roots, collection, recipe_root) == binding, "BindingChanged")
             _require(_inventory(stage / "work", limit) == source_inventory, "ManagerSourceChanged")
@@ -305,10 +321,14 @@ def run_manager_retests(*, context: dict, roots: dict, collection: dict, recipe_
             identities[phase] = {"command": _identity(stage / "command.json"), "report": report}
         except BaseException as error:
             with contextlib.suppress(BaseException):
-                task_run._persist(
-                    stage / "failure.json",
-                    {"phase": phase, "exception_type": type(error).__name__, "start_utc": started},
-                )
+                failure = {
+                    "phase": phase,
+                    "exception_type": type(error).__name__,
+                    "start_utc": started,
+                }
+                if console_cleanup_exception_type is not None:
+                    failure["console_cleanup_exception_type"] = console_cleanup_exception_type
+                task_run._persist(stage / "failure.json", failure)
             raise
     read_manager_evidence(
         identities=identities,
