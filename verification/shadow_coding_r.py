@@ -82,11 +82,20 @@ def _inventory(root: Path, limit: int) -> tuple[dict, set]:
     )
 
 
-def _source(root: Path, limit: int, *, baseline: bool) -> tuple[dict, set]:
+def _source(
+    root: Path, limit: int, *, baseline: bool, wrapper_sha256: str | None = None
+) -> tuple[dict, set]:
     files, directories = _inventory(root, limit)
+    expected = {"tool.py", "recipe/run_tests.py", "recipe/public_tests.py"}
+    if wrapper_sha256 is not None:
+        task_run._hash(wrapper_sha256)
+        expected.add("recipe/shadow_worker_tests.py")
+        _require(
+            files.get("recipe/shadow_worker_tests.py", (None, None))[1] == wrapper_sha256,
+            "WrapperChanged",
+        )
     _require(
-        set(files) == {"tool.py", "recipe/run_tests.py", "recipe/public_tests.py"}
-        and directories == {"recipe"},
+        set(files) == expected and directories == {"recipe"},
         "SourceScopeChanged",
     )
     for name in ("run_tests.py", "public_tests.py"):
@@ -140,8 +149,13 @@ def _inputs(context: dict, roots: dict, collection: dict, recipe_root: Path) -> 
     )
     executable = tools[0]["identity_files"][0]
     task_run._verify_file_identity(executable)
-    base_files, base_dirs = _source(baseline, limit, baseline=True)
-    final_files, final_dirs = _source(candidate, limit, baseline=False)
+    # The live caller supplies this only after checking its pinned task contract.
+    # Original SELECT three-file callers retain the original exact inventory.
+    wrapper_sha256 = context.get("shadow_wrapper_sha256")
+    base_files, base_dirs = _source(baseline, limit, baseline=True, wrapper_sha256=wrapper_sha256)
+    final_files, final_dirs = _source(
+        candidate, limit, baseline=False, wrapper_sha256=wrapper_sha256
+    )
     candidate_tree = task_workspace._tree_sha(final_files, final_dirs)
     _require(
         collection["task_id"] == task["task_id"]
@@ -396,6 +410,7 @@ def read_manager_evidence(
             stage / "work",
             binding["source_output_bytes_limit"],
             baseline=phase == "baseline_public",
+            wrapper_sha256=context.get("shadow_wrapper_sha256"),
         )
         tree = binding[
             "baseline_tree_sha256" if phase == "baseline_public" else "candidate_tree_sha256"

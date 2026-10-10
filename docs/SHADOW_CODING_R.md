@@ -1,147 +1,134 @@
-# Shadow PPTX package retest component
+# Shadow PPTX coding validation
 
-Task: LAB-SHADOW-CODING-ADAPT-01. Frozen base:
-`225ee6d98cedc5db30ffea1fd9d1c8445540400a`. This source-only candidate adds
-`verification/shadow_coding_r.py` and synthetic tests. It does not change the
-product, the existing `first_task_r.py`, the wheel, installation or Task schema.
-It is **NotExecutionReady**; no real execution authority is supplied here.
+LAB-SHADOW-CODING-LIVE-INTEGRATE-01 extends frozen base
+5d5842d009d883fff08f27c25683974d10d7d2e7 with task-specific source-only integration.
+Product src, first_task_r.py, original SELECT inputs/recipes, production and
+configuration are unchanged. Fresh independent Review and a new concentrated real
+approval remain required. Offline checks do not establish installed CLI compatibility.
 
-Task-only tests live at `verification/tests/test_shadow_coding_r.py`, outside
-the frozen shipped `tests/` inventory. They are not shipped in the current wheel
-or sdist and must be invoked explicitly alongside the applicable product tests:
+## Input and test matrix
 
-```powershell
-uv run --no-sync python -B -m pytest verification/tests/test_shadow_coding_r.py tests/test_distribution.py --basetemp '<task-owned-scratch>/final-tests'
-```
+Historical capsule e99a4fcc-6212-4278-8cd8-818c48590280 contributes only PPTX
+package reading and finite slide-number selection. The new Worker input is exactly
+tool.py, recipe/run_tests.py, recipe/public_tests.py and recipe/shadow_worker_tests.py.
+Only work/tool.py is editable. Freeze a new four-file manifest; preserve the old
+SELECT three-file archive. Private tests and reference answers stay on the
+acceptance side and never enter Worker input.
 
-Use the project-local locked environment with its frozen product distribution
-installed; this command does not run a Worker or change runtime acceptance.
+| Caller / phase | Tests | Failures | Errors | Actual child exit |
+| --- | ---: | ---: | ---: | ---: |
+| Worker reproduce / management baseline_public | 8 | 0 | 4 | 1 |
+| Worker regression / management candidate_public | 8 | 0 | 0 | 0 |
+| Management candidate_private | 2 | 0 | 0 | 0 |
 
-## Fixed task matrix
+The protected wrapper calls the unchanged public recipe with pinned Python,
+-I -B, absolute paths and ten-second child timeout. It verifies all eight case IDs,
+counts, source files/tree and recipe/interpreter identity before/after execution.
+Child console output is discarded so source output cannot masquerade as the one
+bounded summary. Actual child exit stays in that summary. Wrapper exit zero means
+a well-formed report was produced, including the expected failing baseline.
+Regression requires prior reproduction output. A failed/completed phase directory
+stays reserved. Changed inputs, missing XML, timeout or other error stop without
+a success summary; partial evidence remains.
 
-The selected historical Shadow capsule is
-`e99a4fcc-6212-4278-8cd8-818c48590280`. Only its PPTX package-reading and finite
-slide-number selection slice is in scope. `tool.py` is the only editable source;
-`recipe/run_tests.py` and `recipe/public_tests.py` stay byte-frozen. The original
-tests are not padded, renamed or changed to match an executor.
+## Task-side lifecycle and authority
 
-| Management subprocess | Suite | Tests | Failures | Errors | Exit |
-| --- | --- | ---: | ---: | ---: | ---: |
-| baseline_public | public | 8 | 0 | 4 | 1 |
-| candidate_public | public | 8 | 0 | 0 | 0 |
-| candidate_private | private | 2 | 0 | 0 | 0 |
+shadow_coding_live.py owns this task's strict v3 permit/context checks for the real
+8/8 counts. It does not call the old 1/6 validator or monkeypatch its globals.
+It reuses environment/root and installation checks, exclusive consumed marker,
+first-execution record, product _execute_once, collector and saved lifecycle checks.
+Configuration lease, restoration and owned job cleanup remain product operations.
 
-Each command has a 10-second timeout and uses pinned Python with `-I -B`, an
-absolute acceptance recipe, `--source`, `--out` and `--suite`. The output report
-is `<stage>/out/tests.xml`. The helper checks the exact eight public or two
-private case IDs as well as aggregate counts, skips and individual error/failure
-nodes. Public and private results remain separate.
+The unchanged v3 permit's budget_ref pins an external ShadowCodingContract. This
+freezes four input files, all six verification-code identities, a separate private
+acceptance recipe root and exact budget. The acceptance recipe contains exactly
+the original runner/public/private tests with original byte hashes, outside task,
+result, run, appdata and installation roots. Public recipe identity remains under
+protected work/recipe. Only LayeredAcceptanceUnverified can be waived for this
+one execution; other blockers stop before consumption. Existing runtime/layered
+acceptances remain empty. This validator records evidence, never product acceptance.
 
-The baseline tool hash is
-`fdecaccf115229e86c834dcaa30e533bf0bc2869625c02009da49d1a9e9285cd`.
-Recipe and test hashes are pinned in the component from SELECT-01. Acceptance
-uses an isolated recipe directory containing exactly `run_tests.py`,
-`public_tests.py` and `private_tests.py`. No reference answer, private test,
-management helper or acceptance directory may enter Worker input.
+Proposed budget: one host launch, two Worker public runs, two management public runs
+and one management private run. Host deadline is 300 seconds; each test child has
+ten seconds. Capture creation loads its key once; the separate stdout reader loads
+once and authenticates stdout once. Engineering must freeze native backend
+credential-read bounds and real runtime/host/config/route identities before approval.
+No fallback, second job or automatic retry.
 
-## Existing lifecycle and trusted caller boundary
+Launch facts retain 0, 1 or null. Original failures/interrupts are saved before
+fallible collection, diagnostics and environment restoration. Secondary failures
+cannot replace KeyboardInterrupt/SystemExit. Failed outputs and consumed markers
+remain reserved; there is no automatic cleanup.
 
-The current `first_task_r.py` binds one consumed permit, installation, trusted
-inputs, configuration lease, `_execute_once`, saved run/launch, collection,
-restoration and owned cleanup. Keep that lifecycle. This component does not
-invoke or replace it. Its live `main()` always returns exit 2 with
-`Blocked/WorkerTestEvidenceInterfaceUnverified`, launch_count 0, before any
-permit consumption, configuration IO, capture/key access or subprocess.
+## Native CLI evidence
 
-The retest functions are management-side library functions, not an authorization
-API. In a future separately reviewed integration, the trusted caller must first
-check the existing saved run and collection gates, then call:
+The [official headless documentation](https://antigravity.google/docs/cli/headless/#tool-calls-in-the-stream),
+checked on 2026-10-11, documents completed tool events with conversation/step ID,
+tool name, command parameters, output and failure information. It does not verify
+the installed binary or OS-observed child argv/shell/numeric exit. Numeric child
+exit here comes from the protected wrapper's real subprocess return carried in
+native tool output.
 
-```python
-identities = run_manager_retests(
-    context=checked_context,
-    roots=checked_roots,
-    collection=checked_collection,
-    recipe_root=frozen_acceptance_recipe_root,
-)
-summary = read_manager_evidence(
-    identities=identities,
-    context=checked_context,
-    roots=checked_roots,
-    collection=checked_collection,
-    recipe_root=frozen_acceptance_recipe_root,
-)
-```
+shadow_worker_results.py accepts only the two exact frozen PowerShell command
+strings, completed run_command events, one conversation and one successful terminal
+event, ordered reproduction then regression. The summary must match input/candidate
+trees, recipe, Python, full case set, actual exits and collected XML hashes.
+Collected summary files must also match. Model final response never supplies
+missing tool results. Missing, duplicate, conflicting, incomplete, truncated or
+oversized evidence yields Unknown.
 
-The existing roots are `task_root`, `result_root` and `manager_retest`; baseline
-is `task_root/control/snapshot/source` and candidate is `result_root/candidate`.
-The caller provides the Task and deployment receipt through the existing context,
-with one Python identity and recipe ref `shadow_pptx_package_v1`. It must freeze
-these real bindings and acceptance-recipe identities as trusted inputs, include
-their read scope and the three retest commands in authorization, and retain the
-returned identities as management evidence. The helper accepts no authority
-merely from a caller-supplied `origin` field.
+Bounds reuse the existing reader: 256 KiB stream/file, 64 KiB line, 1024 lines,
+256 steps and strict JSON depth/node/container limits. Sealed-stdout authentication
+uses this invocation's isolated appdata and checked lifecycle UID; stdout is
+authenticated once, plaintext/key stay in memory, and only scoped hashes/counts
+are persisted. Attempt consumption precedes key access. No memory zeroization
+or OS attestation is claimed.
 
-The helper reserves a fresh output root once, copies each source and recipe to
-management-only stages, and rechecks all inputs before and after each process.
-It records existing layered `COMMAND_KEYS`, original exit/counts and report
-identity, stdout/stderr, and a binding of Task, receipt, collection, source trees,
-recipe, interpreter and roots. Saved reread repeats these checks and validates
-argv/cwd, actor, times, named reports and retained source/recipe bytes. Rehashing
-a changed command or report identity does not waive these bindings. Diagnostic
-failure cannot replace the original interrupt. Stream acquisition/process errors
-are saved before fallible console closure; the last observed secondary close
-error's type is retained as `console_cleanup_exception_type` when possible.
-Without an earlier operation error, a console close error still fails the phase.
-A failure leaves partial output reserved and stops the remaining commands.
-There is no retry or cleanup.
+CliPublicTestsMatch has origin CliToolResult, a task-specific predicate. Product
+worker_execution stays Unknown, shell identity remains unknown, runtime acceptance
+is Unverified and accepted is false. Management combines these facts with its own
+retests and decides the scoped task outcome. DONE, top-level success, hashes or
+Worker-written XML alone cannot establish the predicate.
 
-These facts describe the management subprocesses. `ManagementRetestsPass`
-does not establish Worker execution, strict R, product acceptance or deployment.
-`HostObserved` here refers only to this caller's subprocess return and checked
-local files; candidate code runs within the already declared same-user boundary,
-without an OS sandbox or independent audit. Retained console files are diagnostic
-material, not the test oracle or a native Worker result.
+## Management and saved checks
 
-## Concrete remaining blocker
+shadow_coding_r.py preserves exact three-file behavior for original callers.
+A live caller supplies the wrapper hash after checking the new pinned contract,
+enabling an exact four-file inventory. Each management stage copies source and the
+separate recipe, invokes original tests, rechecks inputs and records actual exit,
+counts, named XML, layered command bindings and source/recipe/Python identities.
 
-In the frozen source, `agy_stdout_reanalysis.py` recognizes
-`step_update.tool_info.parameters.CommandLine`. Optional `tool_info.exit_code`
-is a synthetic-covered extension, not an officially verified native interface.
-Its origin remains `CliDeclared`; `DONE` and top-level success do not prove that
-the protected test recipe ran against the required source version. See
-[the existing evidence boundary](AGY_LIVE_ADAPTER.md).
+Console/process errors retain the original exception before fallible closure;
+a secondary closure type may be recorded. Without an earlier error, a close
+failure fails the phase. Remaining stages stop and partial files remain reserved.
+HostObserved here describes only management's own subprocess return and checked
+local files in the declared same-user boundary, without an OS sandbox.
 
-There is no verified producer in this frozen candidate that links native Worker
-test results to the baseline-before-edit and final-candidate source bytes,
-protected recipe/test identities, invocation and eight named outcomes. Worker
-XML or a model's statement can be `WorkerReported`; neither becomes OS observed
-because it has a hash. Native tool results, if later verified, must retain their
-own CLI provenance separately from optional OS facts. Missing facts stay Unknown.
+The live validator persists shadow-validation.json. Saved reread requires an
+externally frozen observation SHA and checks first-execution/run/collection/controls,
+candidate source, management facts and retained CLI evidence hashes. It reloads
+frozen controls, permitting the legitimately changed collected candidate.
+It never consumes another permit, launches a process or accesses a key.
 
-The smallest next engineering step is to establish one bounded native result
-schema and its source/recipe/result linkage using existing capture/collection,
-then independently review the task-specific lifecycle integration and Worker
-result predicate. Do not add general OS tracing, guess a schema, weaken positive
-Worker-test acceptance or modify product source under this work order. If that
-linkage cannot be established, report code delivery and management regression
-separately while Worker execution remains Unknown and the task stays open.
+After binding and real approval, invoke the bound installation Python with -I -B,
+the frozen shadow_coding_live.py path, --permit and --permit-sha256. Saved reread
+also requires --saved --observation-sha256. Real values remain null in the draft
+packet until engineering binds them. Luna verifies supplied hashes and executes
+the bound run_once.ps1 once; it does not construct fields, diagnose, retry or accept.
+The script rejects an unbound draft before invoking Python. The old standalone
+shadow_coding_r.py entry remains stop-only for compatibility.
 
-## Luna fixed steps and stop conditions
+## Offline checks and next gate
 
-1. Verify the supplied packet and script identities. Only the stop-only
-   `broker_preflight.ps1` in this task's execution packet is executable now.
-2. Run that exact preflight once. Expected terminal result is exit 2,
-   `Blocked/WorkerTestEvidenceInterfaceUnverified`, launch_count 0. Relay the
-   retained result reference once and stop.
-3. Any identity/path mismatch, unexpected exit/result or missing script: stop
-   and relay the fixed failure reference; do not retry, repair or fill fields.
-4. Do not run a host/model, alter configuration, read keys/decrypt, call the old
-   1/6 helper, or write a launch script. A future real launch requires a new sealed
-   package after independent Review and management's concentrated real approval.
+Task tests live in verification/tests, outside the shipped tests inventory.
+Invoke all four test_shadow_*.py modules explicitly alongside applicable product
+tests, in the locked/copy environment with task-owned --basetemp and JUnit XML.
+Ordinary tests use synthetic host/config/session keys. Real local Python checks
+run the unchanged public recipe on synthetic task copies and a reference feasibility
+witness; these are self-checks, not independent Review or real Worker acceptance.
 
-Real route, host/config, Task/snapshot/profile/authorization/receipt/bundle/plan,
-new single-use permit, capture scope and Worker result interface remain unbound.
-The reference-only offline feasibility check is not a Worker candidate or an
-independent Review. Luna only executes supplied steps and relays references;
-engineering binds and diagnoses, management decides acceptance.
+The task archive records source identities, exact counts, retained failures,
+the four-file manifest, fixed broker draft and unresolved real bindings. Management
+arranges fresh integration Review, then one concentrated real authorization.
+No OS tracing framework, production refresh, Skill/config change, provider switch
+or paid probe is added.
