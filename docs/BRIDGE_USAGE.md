@@ -87,6 +87,12 @@ v2的`launches`是`0/1/null`，来自本次调用方持有的同一份LaunchLife
 `prepare/plan/run` 的可信根和 bundle 摘要必须由管理作为单独 CLI 参数供给；不能写进 spec 或从 Worker/任务内容自算接受。Cursor 仅 task plan 可准备管理绑定的固定项目文件，原始模板字节保留。task run 默认在新运行根保存 NotRun，不初始化 key、不启动；显式 --execute 仍须原 C 全部门禁，无新 Task R 合法 Blocked。
 stdout 是原业务 JSON 加一个传输 LF，固定错误在 stderr；CLI 退出码不构成业务接受。离线 fake/self-check、独立 Review、首次真实 R 与部署分别记录，本候选没有实机声明。
 
+### 日常 Coding Worker 范围
+
+对 Task v1 Coding，工单指定的 task 目录和允许文件范围内可进行必要目录/源码检查、哈希核对、代码编辑、本地测试与辅助脚本操作；指定管理配方是必须完成的验收，不是 Worker 可用操作的完整清单。冻结控制文件、验收配方与 protected_paths 不可修改；任务外写入、账户或凭据操作、额外网络、依赖安装、生产与远端仍须单独授权。declared_scope 不是 OS 沙箱，也不授予 Full Access。
+
+验收仍以实际交付范围/内容/完整性、受保护文件不变、管理独立固定测试、宿主终态、加密采集与配置恢复为准。Worker/CLI 声明与 OS 执行事实分开；逐条 OS 命令证明不是普通 Coding 默认前提，但可见越范围证据必须处理，Unknown 不自动判为通过或违规。本节不改变管理配方、次数、预算或 Accepted 语义。
+
 普通计划写入异常退出 2，原中断退出 130，材料原样保留。receipt 存在但 plan 缺失，或 Cursor 材料存在而计划不完整时，原 B collect 必须报告 ControlChanged、scope_status=Fail、continuation=null；纯 prepare 无这些材料仍合法。读取句柄保持有效到最终路径复核及最后一次句柄变化观察；这是有限观察，不保证观察后文件不变。LAB-TASK-CLI-REPAIR-01 自检仍须新的独立 Review。
 
 ### 首次 Task R 的独立验证材料

@@ -1,115 +1,77 @@
 # Local Agent Bridge 参数与输出参考
 
-本文件随 Skill 安装，不依赖仓库外的绝对文档路径。命令与参数以当前 CLI `--help` 实测为准（核验版本 `0.1.0.dev0`）。
+本文件随 Skill 安装，不依赖仓库外绝对路径。命令与参数以当前安装 CLI `--help` 实测为准；本 Skill 不安装、不升级、不登录、不改配置、不初始化密钥。
 
-## 安装位置怎么找
+## 安装位置与版本
 
-CLI 是 `local-agent-bridge`（切片桥）与 `local-agent-bridge-h3`（H3 MCP，**本 Skill 不使用**）。Windows 上常见位置：
+Windows 常见位置：用户级工具目录、`%APPDATA%\uv\tools\bin`、某个 venv 的 `Scripts\`，或用户/部署回执给出的精确路径。先确认入口存在并记录路径，再运行 help。
 
-- 用户级工具目录：`%USERPROFILE%\.local\bin`、`%APPDATA%\uv\tools\bin`
-- 某个虚拟环境的 `Scripts\`（如项目 `.venv\Scripts`）
-- 用户明确给出的路径或部署回执里记录的路径
-
-先确认可执行文件存在并记录其路径，再跑 `--help`。**不要**把某一台机器的绝对路径写进脚本当作通用要求。
-
-## 版本
-
-CLI 没有 `--version`（传入会被当作未知命令）。读包元数据：
+CLI 没有 `--version`。需要版本时读包元数据：
 
 ```bash
 python -c "import importlib.metadata as m; d=m.distribution('local-agent-bridge'); print(d.version, d.metadata['Requires-Python'])"
 ```
 
-## 子命令与参数（实测）
+## Task v1 工作流
+
+新日常任务树优先使用五条固定命令：
 
 ```text
-prepare [-h] [--repository REPOSITORY] --commit COMMIT --file FILE
-        [--editable EDITABLE] --task-note TASK_NOTE --out OUT
-collect [-h] --task-root TASK_ROOT
-plan    [-h] --task-root TASK_ROOT
-run     [-h] --task-root TASK_ROOT --run-root RUN_ROOT --exe EXE
-        --exe-sha256 EXE_SHA256 --settings SETTINGS [--execute]
-cursor  run --task-root TASK_ROOT --run-root RUN_ROOT
-        --exe EXE --exe-sha256 EXE_SHA256 [--execute]
-shadow  {fingerprint,snapshot,replay,compare} ...
-session-status      （无参数）
-session-key-init    （无参数，写 Credential Manager）
+task import  --spec <absolute-json-spec>
+task prepare --spec <absolute-json-spec> --trusted-control-root <absolute-root> --trusted-inputs-sha256 <64-lowercase-hex>
+task plan    --spec <absolute-json-spec> --trusted-control-root <absolute-root> --trusted-inputs-sha256 <64-lowercase-hex>
+task run     --spec <absolute-json-spec> --trusted-control-root <absolute-root> --trusted-inputs-sha256 <64-lowercase-hex> [--execute]
+task collect --spec <absolute-json-spec>
 ```
 
-`--repository` 缺省是当前目录；`--file` 可重复以给出多个文件。`shadow` 子项：
+Spec 由管理或调用方明确供给：`cli_contract_version=1`，字段随命令闭合；路径是未 trim/展开/折叠的绝对路径。import spec 含 source/policy/snapshot_root；prepare 含 snapshot/task-manifest/task-note/task-root；plan 含 task-root/host；run 含 task-root/run-root；collect 含 task-root/run-root/result-root。prepare/plan/run 的可信根和 bundle SHA 必须来自外部固定材料，不能写进 Worker 说明或由候选自算。
 
-- `fingerprint {sessions|shadow} uid`
-- `snapshot uid input_sha256`（写入 shadow 域并占用其滚动额度，不是只读操作）
-- `replay {sessions|shadow} uid input_sha256`
-- `compare {sessions|shadow} first_uid first_input_sha256 {sessions|shadow} second_uid second_input_sha256`
+Task v1 Coding 在工单指定目录和允许文件范围内可做必要检查、哈希核对、编辑、本地测试与辅助脚本。管理配方是必需验收，不是完整命令白名单；冻结控制、验收配方与 protected_paths 不可修改。任务外写入、凭据、额外网络、依赖安装、生产与远端仍须单独授权。Task v1 支持授权 work 内普通新增/删除/修改/重命名；不要套用旧 slice “只改既有文本”的限制。
 
-uid 必须是规范 UUID，摘要必须是小写 64 位 SHA-256，否则拒绝。
+`task run` 缺省预检、不初始化 key、不启动；`--execute` 仅在明确授权后使用，一次一个。0 只表示对应命令的产品合同结果，不等于模型业务成功；2 表示 Blocked/Failed/收集或门禁拒绝，3 只属于旧 adapter 生命周期入口。Task plan Ready/Blocked 均可能分别以 0/2 返回原 Plan。
 
-## 退出码
+## Legacy source slice 工作流
 
-| 码 | 含义 |
+旧小切片命令保留如下：
+
+```text
+prepare --commit <sha> --file <path> [--editable <path>] --task-note <path> --out <new-root> [--repository <root>]
+collect --task-root <root>
+plan    --task-root <root>
+run     --task-root <root> --run-root <new-root> --exe <absolute-exe> --exe-sha256 <sha> --settings <absolute-settings> [--execute]
+cursor  run --task-root <root> --run-root <new-root> --exe <agent.ps1> --exe-sha256 <sha> [--execute]
+```
+
+旧 slice 只支持既有文本文件；新增、删除、重命名、符号链接、子模块、跨根 diff 与二进制内容均拒绝。运行根必须全新，且不得位于任务根或安装包目录内。
+
+## 运行边界与验收
+
+- Bridge argv、模型、effort 和固定参数由代码决定，调用方不能覆盖；未知可执行文件绝不启动。
+- agy 配置生命周期是原字节备份、精确受控增量、finally 恢复；恢复失败不算成功。Cursor 项目权限来自冻结模板，`--force` 不等于目录隔离。
+- Worker/CLI 自述与 OS 执行事实分开。管理验收看交付范围/完整性、受保护文件不变、独立固定测试、宿主终态、加密采集和配置恢复；Unknown 不自动判为通过或违规，可见越范围证据必须处理。
+- `collect`/`task collect` 产物仍是候选，不自动应用、不推送、不创建 PR。失败现场保留，不自动重试、不换模型、不建第二个 job。
+- 上游实际模型身份、token/费用通常不可观测；不要从路由名或退出码补猜。
+
+## 其他固定入口
+
+- `session-status` 只读输出 sessions/shadow 文件长度用量、上限和封口数；不读 key。
+- `session-key-init` 显式写 Windows Credential Manager，仅在用户明确要求时执行。
+- `shadow fingerprint/snapshot/replay/compare` 只接受规范 UUID 与小写 SHA-256；snapshot 写 shadow 域并占额度，不是只读操作。
+- `local-agent-bridge-h3` 是独立 H3 MCP 入口，本 Skill 不使用。
+
+## 常见拒绝
+
+| 现象 | 处理 |
 | --- | --- |
-| 0 | 生命周期完成且捕获完整；**不代表模型任务成功** |
-| 2 | 未改配置、未启动的受控拒绝（含未知命令与缺参数）；输入捕获拒绝时可能已留下运行根、计划及私有配置备份 |
-| 3 | 生命周期未完成，或证据无法落盘 |
+| Task spec 键/类型/路径不符 | 核对管理供给的严格 JSON 和绝对路径；不修改 spec 来绕过 |
+| Trusted SHA 或控制材料不符 | 停止并保留现场；不重算、覆盖或换根 |
+| Legacy 源文件被拒 | 旧 slice 合同只支持既有文本；Task v1 才支持授权树内增删改重命名 |
+| 路径越界 | 核对任务读写/保护根和解析后路径；不放宽权限 |
+| 缺 key | 需用户显式授权 `session-key-init`；普通运行不自动创建 |
+| `over_limit` | 保留完整/受保护包，不清理未知文件或绕过滚动规则 |
 
-## `run` 的行为边界
+## 上游版本与权限排障
 
-- 缺省只预检：不写文件、不启动进程；`--execute` 才执行**一次**固定调用。
-- `--exe` 必须是绝对路径且与 `--exe-sha256` 匹配；身份不符即拒绝，未知可执行文件绝不启动。
-- argv、模型、effort、`--output-format stream-json`、`--disable-slash-commands`、`--print-timeout` 全部由代码固定，调用方无法覆盖。
-- 配置生命周期：原字节备份 → 精确插入读写规则 → `finally` 内恢复；恢复失败时该次运行不算成功。
-- 运行根必须全新且不复用，且不得位于任务根或安装包目录内。
+启动失败、参数不识别、模型缺失或输出异常时，先核对本次解析到的入口、实际后端版本/模型目录和最近成功记录；区分 Bridge 包版本、启动器版本和后端版本。非推理探测也可能触发厂商自动更新，不承诺零写入。哈希变化先确认预期来源，再刷新本次冻结依据；不直接覆盖旧证据。
 
-## `cursor run` 的行为边界
-
-- 与 `run` 共用任务根合同（`prepare` 冻结源副本与 `.cursor/cli.json`）、加密会话与退出码分层。
-- `--exe` 指向 Cursor 的 `agent.ps1` 启动器（绝对路径 + SHA-256）；不使用 agy 的 `--settings`。
-- 固定模型 `grok-4.7-high`（非 Fast）；固定使用 `--force`（不等于目录隔离，未显式 deny 的操作可放行）。
-- 允许上游自动更新；启动失败或输出异常时先核对实际后端版本，不承诺版本冻结。
-- 无 agy 式 settings 回写/恢复；不改 `AGY_CLI_DISABLE_AUTO_UPDATE`。
-- 退出码 0 仅表示生命周期与捕获完整，不表示编码或模型任务成功。
-
-## 输出与产物
-
-- `collect` 输出单行 JSON 摘要与 unified diff（按 LF 拆行，不给文件补换行）。
-- `plan` 输出固定主机运行计划，含 `execution_authorized=false`。
-- `session-status` 输出 sessions/shadow 两域的**文件长度**用量、上限、封口数；该上限是目录内文件长度之和，不是 NTFS 簇或磁盘可用空间。
-- `run --execute` 与 `cursor run --execute` 的输入与 CLI 原字节写成本产品独立密钥的 AES-256-GCM 加密会话；`capture/` 不留明文管道副本；任务副本与 `settings.*.bin` 仍可能是 ACL 私有明文。
-
-## 常见拒绝与处理
-
-| 现象 | 原因与处理 |
-| --- | --- |
-| 源文件被拒 | 只支持**既有文本文件**；新增/删除/重命名/符号链接/子模块一律拒绝 |
-| 路径越界 | 访问必须在白名单根内；盘符根与宽泛用户根会被拒 |
-| `plan` 报工作树不干净 | `plan` 要求任务根未被修改；先 `collect` 查看改动 |
-| 缺 key | 需用户显式运行 `session-key-init`；缺 key 在启动前拒绝，不会自动创建 |
-| `over_limit` | 会话/影子域容量不足；只有完整、无引用且复验通过的整包才可能被滚动，受保护项存在时停止新写入 |
-
-## 上游 CLI 版本排障（出现故障时按需读）
-
-允许厂商自动更新，不要求用户长期锁死版本。必要时使用厂商支持的手动更新方式；本调用 Skill 只诊断并提出更新建议，更新由单独授权的维护步骤执行，不在活动任务中更新。
-
-- 启动失败、参数不识别、模型缺失或结果解析异常时，先核对实际启动路径、上游 CLI 版本及相关 `--help`/模型目录，与最近成功记录比较。上游支持时用其版本命令，而不是网络 ping；Bridge 本身仍用上文包元数据。非推理探测也可能触发厂商自动更新，不承诺零写入。
-- 区分 Bridge 包版本、启动器版本与实际后端版本；PATH 多份安装、旧快捷入口或启动器自动选择新版，都可能让路径/启动器哈希不变而后端已变。无需扫描整机，优先检查本次解析到的入口。
-- 模型缺失可能来自旧 CLI 未支持新模型，也可能是账户权限、地区或服务端开放范围。核对厂商说明及实际模型目录；不能把“更新可解决”当作已证实原因，不能用更新反复试探 Free plan/订阅拒绝。
-- 哈希变化先确认是预期官方更新，再刷新本次预检依据；不直接用新哈希覆盖旧冻结证据。新参数或输出结构变化做对应小样例/离线解析回归，不因版本号变化自动重审全项目，也不忽略未知输出冒充成功。
-- 发生中途更新、超时或输出不完整，先核对已有运行与捕获，确认是否已执行；保留本次失败记录。手动更新成功不等于模型调用成功，也不自动授予第二次真实调用。
-
-本次排障只记实际路径、可得版本、必要哈希、错误类别与检查结论；不建常驻版本轮询器。Antigravity 旧版导致模型缺失目前作为排查假设，不作本机已证实缺陷。
-
-## 权限模式排障（按需）
-
-先区分审批模式与文件访问规则：自动批准/完全访问不一定取消显式 deny，冻结副本也不是 OS 隔离。检查本次 cwd/workspace、实际配置位置/作用域/优先级及规则是否加载；不要仅凭配置文件存在或模型自述认定生效。Windows 路径按当前 CLI 实现核验分隔符、绝对/相对路径与大小写；本机 Cursor 已复现正斜杠规则不匹配原生目标，不能推广为所有厂商规则。
-
-权限失败不自动改成完全访问。可建议单独维护步骤，由用户选择模式并确认配置差异，优先任务/项目级且可回退；全局变更须明确选择。完全访问须如实说明不提供文件访问隔离，重新明确对应验收标准，不把原 deny 失败改判通过。诊断不自动启动新的模型任务。
-
-## 不要做的事
-
-- 不安装、不升级、不登录、不改 `settings`、不改主机配置；不在测试中触发真实 agy/H3/provider。
-- 不重复提交、不自动换模型、不为失败运行创建第二个 job。
-- 不把上游模型路由当作实际模型身份的证明；用量与费用不可观测时如实说明。
-- 不擅自应用 `run` 的产物；它只是候选，需验收。
-
-如需更多背景，可在用户已安装 Bridge 的源码或发行包内查找 `docs/BRIDGE_USAGE.md`、`docs/SESSION_STORAGE.md`、`docs/SHADOW_USAGE.md`；那只是可选背景，本文件已含调用所需内容。
+权限问题先区分审批模式与文件访问规则。自动批准/完全访问不一定取消显式 deny，冻结副本也不是 OS 隔离；检查实际配置位置、作用域、优先级和加载证据。不要把模型自述当强制证明，不要为绕过失败改全局配置；维护或更新始终另项授权。

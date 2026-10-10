@@ -500,6 +500,22 @@ def test_plan_combinations_and_dry_run(tmp_path, monkeypatch, host, role, caps, 
     assert result["test_observations"] == []
 
 
+def test_request_states_the_daily_coding_scope(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch)
+    context = {
+        "task": case.task,
+        "bundle": {"authorization": case.auth},
+        "note": (case.root / "control" / "TASK.md").read_bytes(),
+    }
+    request = runner._request(context)
+
+    assert "Coding may inspect authorized files, verify hashes" in request
+    assert "create/edit/delete/rename authorized ordinary copies" in request
+    assert "necessary local tests, builds, diagnostics, authorized helper scripts" in request
+    assert "No credentials, host changes, publishing, other tasks" in request
+    assert "declared_scope is not an OS sandbox" in request
+
+
 @pytest.mark.parametrize("host", ["agy", "cursor"])
 def test_missing_task_r_blocks_even_explicit_execute(tmp_path, monkeypatch, host):
     case = prepare(tmp_path, monkeypatch, host=host, accepted=False)

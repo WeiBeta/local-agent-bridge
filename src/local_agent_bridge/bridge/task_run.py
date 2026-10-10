@@ -1199,10 +1199,12 @@ def _request(context: dict) -> str:
     }
     return (
         "Engineering task v1. Follow the frozen role and enabled capabilities. "
-        "Coding may create/edit/delete/rename authorized ordinary copies. "
+        "Coding may inspect authorized files, verify hashes, and create/edit/delete/rename "
+        "authorized ordinary copies. "
         "Review must not write work; write-producing Review tests use a separate scratch copy. "
-        "Enabled execute permits reproduction, "
-        "repair and regression inside this single invocation. Disabled capabilities are forbidden. "
+        "Enabled execute permits necessary local tests, builds, diagnostics, authorized helper "
+        "scripts, reproduction, repair and regression inside this single invocation. "
+        "Disabled capabilities are forbidden. "
         "Scope is contractual; declared_scope is not an OS sandbox. No credentials, host changes, "
         "publishing, other tasks, self-delegation or another host invocation. "
         "Preserve failures, report gaps truthfully, and write out/progress.json with exactly "
