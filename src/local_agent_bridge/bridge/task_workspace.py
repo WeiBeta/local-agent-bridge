@@ -914,7 +914,13 @@ def _plan(value: Any, task: Any, task_sha: str) -> None:
 
 
 def _run_receipt(
-    root: Path, run_root: Path | None, task: Any, task_sha: str, blockers: list[str]
+    root: Path,
+    run_root: Path | None,
+    task: Any,
+    task_sha: str,
+    blockers: list[str],
+    *,
+    first_execution: dict | None = None,
 ) -> tuple[Any, str | None]:
     if run_root is None:
         return None, None
@@ -966,7 +972,21 @@ def _run_receipt(
             _fail("RunReceiptInvalid")
         if value["capture_state"] == "Sealed" and value["capture_uid"] is None:
             _fail("RunReceiptInvalid")
-        if plan["preflight_status"] == "Blocked" and launch_count != 0:
+        if first_execution is not None:
+            from . import task_run
+
+            try:
+                task_run._verify_first_execution(first_execution, root, task, plan, run_root)
+            except task_run.TaskRunError as error:
+                _fail(error.code)
+            if not any(
+                item["ref"] == "first-execution.json"
+                and item["origin"] == "HostObserved"
+                and item["sha256"] == first_execution["sha256"]
+                for item in value["evidence_refs"]
+            ):
+                _fail("FirstExecutionBindingMismatch")
+        elif plan["preflight_status"] == "Blocked" and launch_count != 0:
             _fail("RunReceiptInvalid")
         blockers.extend(value["blockers"])
         if value["transport_state"] in {"Failed", "TimedOut"}:
@@ -1221,17 +1241,22 @@ def collect_task(
     task_root: Path,
     run_root: Path | None,
     result_root: Path,
+    first_execution: dict | None = None,
 ) -> dict[str, object]:
     """Collect safe byte artifacts and observations without a business verdict."""
     try:
-        return _collect(task_root, run_root, result_root)
+        return _collect(task_root, run_root, result_root, first_execution=first_execution)
     except TaskWorkspaceError:
         raise
     except (TaskInputError, BridgeContractError, BridgePathError, OSError) as error:
         raise _map_error(error) from error
 
 
-def _collect(root: Path, run_root: Path | None, result_root: Path) -> Any:
+def _collect(
+    root: Path, run_root: Path | None, result_root: Path, *, first_execution: dict | None = None
+) -> Any:
+    if first_execution is not None and run_root is None:
+        _fail("FirstExecutionBindingMismatch")
     _root(root, fresh=False)
     _root(result_root, fresh=True)
     staging = result_root.with_name(result_root.name + ".staging")
@@ -1378,7 +1403,9 @@ def _collect(root: Path, run_root: Path | None, result_root: Path) -> Any:
             if coverage == "Invalid":
                 outputs = "Fail"
                 blockers.append("ReviewOutputsInvalid")
-        receipt, plan_sha = _run_receipt(root, run_root, task, task_sha, blockers)
+        receipt, plan_sha = _run_receipt(
+            root, run_root, task, task_sha, blockers, first_execution=first_execution
+        )
         transport = (
             "NotRun"
             if run_root is None

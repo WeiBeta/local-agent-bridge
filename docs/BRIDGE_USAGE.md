@@ -113,4 +113,12 @@ v2 receipt 明确 `host_composition={status:"Unknown",scope:"FirstObservation"}`
 
 CLI 参数不变。普通 prepare/plan 能保存首次材料，Plan 始终被 HostCompositionUnverified 与 RuntimeAcceptanceUnverified 阻断；普通 `run --execute` 仍 NotRun/0。只在另行批准的首次验收单下，冻结验证程序使用原 C 一次生命周期和 B null-run 回收。ObservationRecorded 仍保存 R Unverified/decision=null，并明确实际 Shell Unknown、命令证据 Unverified；实际 Shell 文件身份及 recipe 完整 argv/cwd/完成/退出事实需接受前独立取证。若实际材料不能提供这些事实，保持未接受。
 
+### 显式首次分层 Coding 材料 v3
+
+[合同 §16](TASK_WORKSPACE_CONTRACT.md#16-显式单次-v3-首次证据生产lab-agy-layered-first-run-repair-01) 沿用 first_task_r 的两个固定参数与一次消费机制，新增完整 v3 permit/environment 与显式 first-execution.json。普通缺接受 Plan 仍 Blocked，仅批准单次首次取证可覆盖 LayeredAcceptanceUnverified；其它门禁不放宽，原 Plan/blockers 不改。v1/v2 仍按原 null-run 观察处理。
+
+v3 入口用明确首次记录身份回收，绑定原 Plan 与实际新 UID；仅在原 run/collection 完整后执行管理冻结 recipe 的 baseline reproduce 和实际 candidate regression，各一次/至多60s。分别生成独立 ManagementIndependent 命令事实，保留整树/recipe/toolchain/exe/argv/cwd/UTC/真实退出和本地 XML计数；不使用 Worker 自报 XML。没有真实许可时不得照本节运行 host、读取 key 或修改配置。
+
+成功只产生 ObservationRecorded 与可供管理裁决的材料。runtime/layered acceptance、strict R 仍 Unverified，Worker 命令证据仍 Unverified，不写 Accepted、扩大能力、自动重跑或启用第二次生产调用。实际新程序/包/许可必须在独立 Review 与集中授权后重新冻结；历史 wheel、成功报告、UID 和已消费许可不迁移为新任务接受。
+
 本轮是离线合同候选，未授权或执行新的真实 host/model/key/配置调用；历史 LIVE01 的安装、组件和 version/help 不重跑。产品源码已变，后续必须冻结新 wheel/sdist、验证程序和部署身份，不沿用旧包 SHA；独立Review与新的适用实测授权由管理安排，生产部署/Skill更新及历史自动修复上限不随本合同改变。

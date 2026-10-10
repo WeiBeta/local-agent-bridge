@@ -66,6 +66,7 @@ EXPECTED_TEST_MODULES = {
     "tests/test_cursor_run.py",
     "tests/test_distribution.py",
     "tests/test_first_task_r.py",
+    "tests/test_first_layered_run.py",
     "tests/test_h3_adapter.py",
     "tests/test_h3_mcp.py",
     "tests/test_legacy_launch_receipts.py",

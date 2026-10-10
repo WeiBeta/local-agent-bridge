@@ -106,6 +106,51 @@ _RECEIPT_KEYS = {
 }
 FIRST_OBSERVATION_COMPOSITION = {"status": "Unknown", "scope": "FirstObservation"}
 FIRST_OBSERVATION_BLOCKER = "HostCompositionUnverified"
+FIRST_LAYERED_BLOCKER = "LayeredAcceptanceUnverified"
+FIRST_LAYERED_PERMIT_KEYS = {
+    "contract_version",
+    "kind",
+    "permit_id",
+    "task_id",
+    "management_task_id",
+    "approval",
+    "grant_ref",
+    "budget_ref",
+    "max_host_launches",
+    "host",
+    "role",
+    "capabilities",
+    "execution_boundary",
+    "task_root",
+    "trusted_control_root",
+    "run_root",
+    "result_root",
+    "task_manifest_sha256",
+    "plan_sha256",
+    "trusted_inputs_sha256",
+    "receipt_binding_sha256",
+    "deadline_seconds",
+    "validator",
+    "installation",
+    "environment",
+    "recipes",
+    "permissions",
+    "acceptance_method",
+    "waived_blockers",
+    "manager_retest",
+}
+FIRST_EXECUTION_KEYS = {
+    "contract_version",
+    "kind",
+    "permit_identity",
+    "consumption_identity",
+    "task_id",
+    "task_manifest_sha256",
+    "task_scope_sha256",
+    "receipt_binding_sha256",
+    "plan_sha256",
+    "waived_blockers",
+}
 _PLAN_KEYS = {
     "contract_version",
     "task_id",
@@ -1194,7 +1239,130 @@ def _capture_bytes(writer: session.SessionWriter, name: str, raw: bytes) -> None
             raise TaskRunError("CaptureUnavailable")
 
 
-def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: float) -> dict:
+def _verify_first_execution(
+    identity: dict, task_root: Path, task: dict, plan: dict, run_root: Path
+) -> dict:
+    """Bind an explicit management first-execution record; never discover one.
+
+    The trusted standalone producer owns permit approval and exclusive consumption.
+    This check retains their exact bytes and all ordinary task/bundle bindings.
+    It authenticates no arbitrary same-user caller and produces no acceptance.
+    """
+
+    def pinned(item: dict) -> tuple[dict, bytes]:
+        _identity(item)
+        raw = read_host_input_bytes(path=item["path"])
+        if _digest(raw) != item["sha256"]:
+            raise TaskRunError("FirstExecutionChanged")
+        return contract.decode_strict_json_bytes(raw, label="first execution evidence"), raw
+
+    _identity(identity)
+    if Path(identity["path"]) != run_root / "first-execution.json":
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    value, raw = pinned(identity)
+    _object(value, FIRST_EXECUTION_KEYS)
+    _version(value)
+    if raw != _canonical(value) or value["kind"] != "LayeredFirstExecution":
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    permit, _ = pinned(value["permit_identity"])
+    _object(permit, FIRST_LAYERED_PERMIT_KEYS)
+    _object(permit["approval"], {"status", "author_confirmed"})
+    if (
+        type(permit["contract_version"]) is not int
+        or permit["contract_version"] != 3
+        or permit["kind"] != "TaskRuntimeValidationPermit"
+        or not contract.deep_equal_strict(
+            permit["approval"], {"status": "Approved", "author_confirmed": True}
+        )
+        or permit["management_task_id"] != "019fe10b-df55-7b82-a9ba-3702dc08c55f"
+        or type(permit["max_host_launches"]) is not int
+        or permit["max_host_launches"] != 1
+        or permit["acceptance_method"] != layered_acceptance.METHOD
+        or permit["waived_blockers"] != [FIRST_LAYERED_BLOCKER]
+        or value["waived_blockers"] != [FIRST_LAYERED_BLOCKER]
+    ):
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    permissions = _object(
+        permit["permissions"],
+        {
+            "synthetic_copies",
+            "same_user_declared_scope",
+            "configuration_lease",
+            "owned_job_termination",
+            "capture_key_read",
+            "isolated_capture_write",
+            "management_local_retest",
+        },
+    )
+    if not all(type(flag) is bool and flag for flag in permissions.values()) or not _observed(
+        _evidence([permit["budget_ref"]])
+    ):
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    _text(permit["permit_id"])
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", permit["permit_id"]) is None:
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    marker, _ = pinned(value["consumption_identity"])
+    _object(marker, {"kind", "permit_sha256", "permit_id", "task_id", "consumed_utc"})
+    _text(marker["consumed_utc"])
+    if (
+        Path(value["consumption_identity"]["path"])
+        != run_root.parent / (permit["permit_id"] + ".consumed.json")
+        or marker["kind"] != "ConsumedTaskRuntimeValidationPermit"
+        or marker["permit_sha256"] != value["permit_identity"]["sha256"]
+        or marker["permit_id"] != permit["permit_id"]
+        or marker["task_id"] != task["task_id"]
+        or Path(permit["task_root"]) != task_root
+        or Path(permit["run_root"]) != run_root
+        or permit["host"] != "agy"
+        or permit["role"] != "Coding"
+        or permit["capabilities"] != layered_acceptance.CAPABILITIES
+        or permit["execution_boundary"] != "declared_scope"
+        or permit["deadline_seconds"] != task["deadline_seconds"]
+        or plan["preflight_status"] != "Blocked"
+        or plan["blockers"] != [FIRST_LAYERED_BLOCKER]
+    ):
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    bundle = load_trusted_inputs(
+        trusted_control_root=_absolute(permit["trusted_control_root"]),
+        trusted_inputs_sha256=permit["trusted_inputs_sha256"],
+        task_root=task_root,
+        run_root=run_root,
+    )
+    receipt = bundle["deployment_receipt"]
+    if (
+        receipt["contract_version"] != 3
+        or receipt["layered_acceptances"] != []
+        or receipt["runtime_acceptances"] != []
+        or permit["grant_ref"] != bundle["authorization"]["grant_ref"]
+        or _read(task_root / "control/deployment-receipt.json") != receipt
+        or _read(task_root / "control/plan.json") != plan
+        or not contract.deep_equal_strict(_make_plan({"task": task, "bundle": bundle}, "agy"), plan)
+    ):
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    expected = {
+        "task_id": task["task_id"],
+        "task_manifest_sha256": _digest(_canonical(task)),
+        "task_scope_sha256": layered_acceptance.scope_digest(task),
+        "receipt_binding_sha256": layered_acceptance.receipt_binding(receipt),
+        "plan_sha256": _digest(_canonical(plan)),
+    }
+    if any(value[key] != item for key, item in expected.items()) or any(
+        permit[key] != expected[key]
+        for key in ("task_id", "task_manifest_sha256", "receipt_binding_sha256", "plan_sha256")
+    ):
+        raise TaskRunError("FirstExecutionBindingMismatch")
+    return value
+
+
+def _execute_once(
+    context: dict,
+    plan: dict,
+    run_root: Path,
+    recheck,
+    started: float,
+    *,
+    first_execution: dict | None = None,
+) -> dict:
     result = _receipt(plan)
     receipt = context["bundle"]["deployment_receipt"]
     config = receipt["configuration"]["agy_settings"]
@@ -1204,6 +1372,20 @@ def _execute_once(context: dict, plan: dict, run_root: Path, recheck, started: f
     interrupted: BaseException | None = None
     with lease:
         try:
+            if first_execution is not None:
+                _verify_first_execution(
+                    first_execution, context["task_root"], context["task"], plan, run_root
+                )
+                # Only this new, explicitly permitted invocation omits the prior-
+                # acceptance requirement. The original Plan stays Blocked and pinned.
+                result["blockers"] = []
+                result["evidence_refs"].append(
+                    {
+                        "ref": "first-execution.json",
+                        "sha256": first_execution["sha256"],
+                        "origin": "HostObserved",
+                    }
+                )
             _verify_runtime_identity(receipt)
             settings_path, before, after = _read_configuration(context)
             request = _request(context)

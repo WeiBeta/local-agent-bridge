@@ -648,4 +648,33 @@ evaluation 恰为 contract_version=1、acceptance_method、receipt_binding_sha25
 
 评价器只返回 Eligible/Blocked/Unverified：三个必需层 code_delivery/manager_retest/host_lifecycle 都有 HostObserved Pass 才 Eligible；任一必需层 Fail 则 Blocked，缺证为 Unverified。Worker 层独立，不以管理复测提升。Eligible 不是 Accepted。管理核验原材料后，才能在**新**部署回执的 layered_acceptances 中明确冻结 Accepted + management_acceptance_ref，并重新绑定 profile/auth/任务和 trusted bundle。不得在已准备的冻结控制树里改 receipt 或 Plan；新接受材料须准备新的专用 task 副本。
 
-普通生产路径仍为既有 `task prepare → task plan → task run → task collect`。普通 Plan 不自动取旧观察为接受证据；没有精确新记录时为 LayeredAcceptanceUnverified，范围不支持时另 LayeredScopeUnverified。首次真实观察许可与 standalone first_task_r v1/v2 不升级为 v3；新增实机证据生产方式和授权另冻。历史 R Unverified、旧退出码、旧消费 marker 和一次密文机会不变。
+普通生产路径仍为既有 `task prepare → task plan → task run → task collect`。普通 Plan 不自动取旧观察为接受证据；没有精确新记录时为 LayeredAcceptanceUnverified，范围不支持时另 LayeredScopeUnverified。standalone first_task_r v1/v2 不升级为 v3；§16 单独定义 v3 首次证据生产候选，实际许可仍须另冻。历史 R Unverified、旧退出码、旧消费 marker 和一次密文机会不变。
+
+## 16. 显式单次 v3 首次证据生产（LAB-AGY-LAYERED-FIRST-RUN-REPAIR-01）
+
+本节只补作者已选 B 的首次交付证据入口。实现自检、独立 Review、真实执行与管理 Accepted 分别裁决；没有实测许可时不得执行。普通 `task run --execute` 不接受首次许可参数，缺接受仍 NotRun/0。v1/v2 材料和 null-run 观察语义不变，不改旧记录或旧消费 marker。
+
+沿用 sdist-only `verification/first_task_r.py` 的固定两个参数、完整管理 permit/env/installation/recipe 身份核验和排他消费。没有新增 CLI/MCP、host/model/argv 覆盖、解密入口或通用执行框架。Permit v3 使用 v1 的原字段，恰好追加：
+
+| 字段 | 闭合合同 |
+| --- | --- |
+| contract_version | 严格 int=3；仅 DeploymentReceipt v3，同 Coding/execute=true/web=false/dependencies=false/declared_scope |
+| acceptance_method | trusted_coding_v1 |
+| waived_blockers | 恰好 `["LayeredAcceptanceUnverified"]`；原始 Plan 必须 Blocked 且仅此 blocker；任何额外 blocker 拒绝 |
+| manager_retest | 恰好 `{root,timeout_seconds,baseline_tests,candidate_tests}`；根与全部任务/控制/运行/结果/安装/捕获根互不重叠、初始不存在；timeout 严格 int 1..60，baseline_tests=1/candidate_tests=6 |
+| permissions | v1 原六个 true 布尔字段外恰好新增 management_local_retest=true |
+| Environment v3 | 原 v2 闭合字段；scope=LayeredFirstExecution，worker_shell 仍 `{status,identity}`，Unknown 必须 null，Known 核普通单链接身份 |
+
+receipt 仍无 runtime_acceptances/layered_acceptances；不能伪造或注入 Accepted 来取得 Ready。完整 Task/profile/auth/trusted bundle/Plan/receipt/environment/program/wheel/toolchain/recipe/root/预算绑定和既有 deny、配置租约/恢复、capture/key、owned Job 门禁继续核验。缺少既往接受之外无覆盖项。
+
+消费 marker 仍采用既有排他 `xb` 创建；完整/部分 marker 均不重用，失败不释放或换名重跑。本次新 run 根排他保存 `first-execution.json`：严格 contract_version=1/kind=LayeredFirstExecution，恰好含 permit_identity、consumption_identity、task_id、task_manifest_sha256、task_scope_sha256、receipt_binding_sha256、plan_sha256、waived_blockers。FileIdentity 指向原许可和已消费 marker 的实际原字节；三个摘要使用当前合同的域。共享验证核源许可的闭合批准/预算/权限、marker 和同一 Task/receipt/Plan/bundle。该记录是显式管理证据声明，不认证任意同用户调用方，也不表示接受。
+
+C 仅在验证该记录的本次内部生命周期中不携带获准覆盖的缺少既往接受阻断；其余实际失败与 0/1/null launch 保留。原 `control/plan.json` 的 Blocked 状态、blockers 和 SHA 不改；run/capture 均绑定它。first-execution.json 作为 HostObserved 文件引用保存在 run 和 collector 的原始副本，不清理历史 blocker 或补造旧 UID。
+
+B `collect_task` 新增可选 `first_execution: FileIdentity` Python 参数，普通 CLI spec 不变。仅显式传入固定 run 根中的精确记录身份时可核该新 Blocked-Plan 生命周期；无参数仍拒绝非零启动，不自动发现文件放宽规则。collect 保存真实 Plan SHA 和 continuation.session_id=本次 capture UID，核单链接/字节/控制/许可/marker/task/receipt；失败或缺失不提升。v3 验证程序使用 BoundFirstExecution；v1/v2 仍 ArtifactsOnlyNullRun。
+
+管理复测只在本次 run/collection/原控制最终核验成功后执行。分别从原 snapshot/source 与实际已核 result/candidate 物化两个新 `work/out` 根，冻结整树与原 protected recipe，固定 argv 为 `[permit Python,-I,-B,recipe相对路径,reproduce|regression]`。不接收任意命令，Python same-user declared_scope 不宣称 OS 沙箱。每条仅一次、各自限定 timeout；stdout/stderr 丢弃，不把 Worker XML/自报当独立命令。命令前后核 executable、recipe、原始/物化整树，超时/异常/变动即停，保留原失败，不自动执行下一条或重试。
+
+仅从管理新 out 读取有界、无 DTD/entity 的单 testsuite XML，校验 case 数、failure/error 数及无 skip；baseline 一例预期失败/exit1，candidate 六例通过/exit0。事实 `command.json` 恰为 §15 COMMAND_KEYS：actor=ManagementIndependent、task、整树、recipe/toolchain/exe、worker_shell_identity=null、实际 argv/cwd/带时区 UTC 起止/exit/counts。成功保存独立 baseline/candidate、recipes、已核原 run/launch 派生 host-lifecycle 身份；原 Worker 声明只留原层，actual Worker Shell/command 仍 Unknown/Unverified。
+
+新材料可提交给现有 evaluate_delivery，由管理核验必需三层后裁决；程序只记录 ObservationRecorded/Failed/Interrupted 与 strict R、layered/runtime acceptance=Unverified、management_decision=null。Eligible 也不自动成为 Accepted 或批准第二次普通生产调用。真实 host/key/config/native/超时和业务接受仍按集中实测授权与独立 Review 门禁办理。

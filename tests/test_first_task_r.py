@@ -13,7 +13,13 @@ from types import SimpleNamespace
 import pytest
 from test_task_run import FakeProcess, digest, fake_spawn, identity, plan, prepare, sync, write_json
 
-from local_agent_bridge.bridge import slice_run, task_run, task_workspace, winjob
+from local_agent_bridge.bridge import (
+    layered_acceptance,
+    slice_run,
+    task_run,
+    task_workspace,
+    winjob,
+)
 from local_agent_bridge.capture.session import SessionWriter
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verification" / "first_task_r.py"
@@ -38,7 +44,9 @@ def freeze(case):
             "task_manifest_sha256": digest(case.task),
             "plan_sha256": digest(case.frozen_plan),
             "trusted_inputs_sha256": case.expected,
-            "receipt_binding_sha256": digest(
+            "receipt_binding_sha256": layered_acceptance.receipt_binding(case.receipt)
+            if case.receipt["contract_version"] == 3
+            else digest(
                 {
                     key: value
                     for key, value in case.receipt.items()
@@ -74,6 +82,14 @@ def case(tmp_path, monkeypatch, request):
             host_identity_files=[],
             host_composition=task_run.FIRST_OBSERVATION_COMPOSITION.copy(),
         )
+    elif version == 3:
+        value.receipt.update(
+            contract_version=3,
+            host_identity_files=[],
+            host_composition=layered_acceptance.COMPOSITION.copy(),
+            acceptance_method=layered_acceptance.METHOD,
+            layered_acceptances=[],
+        )
     value.base = tmp_path
     value.saved_controls = {}
     value.profile["roles"] = ["Coding"]
@@ -90,9 +106,10 @@ def case(tmp_path, monkeypatch, request):
         "local_appdata": str(tmp_path / "isolated-appdata"),
         "worker_shell": identity(shell),
     }
-    if version == 2:
+    if version >= 2:
         environment.update(
-            scope="FirstObservation", worker_shell={"status": "Unknown", "identity": None}
+            scope="LayeredFirstExecution" if version == 3 else "FirstObservation",
+            worker_shell={"status": "Unknown", "identity": None},
         )
     write_json(environment_path, environment)
     value.profile["enforcement"]["evidence_refs"] = [
@@ -142,6 +159,18 @@ def case(tmp_path, monkeypatch, request):
         "permissions": dict.fromkeys(validation.PERMISSIONS, True),
     }
     value.identity_checks = []
+    if version == 3:
+        value.sheet.update(
+            acceptance_method=layered_acceptance.METHOD,
+            waived_blockers=[task_run.FIRST_LAYERED_BLOCKER],
+            manager_retest={
+                "root": str(tmp_path / "manager-retest"),
+                "timeout_seconds": 30,
+                "baseline_tests": 1,
+                "candidate_tests": 6,
+            },
+        )
+        value.sheet["permissions"]["management_local_retest"] = True
 
     def fake_installation(sheet, receipt):
         value.identity_checks.append(sheet["installation"]["root"])

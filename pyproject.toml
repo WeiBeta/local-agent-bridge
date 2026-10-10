@@ -38,6 +38,7 @@ only-include = [
   "tests/test_h3_mcp.py",
   "tests/test_distribution.py",
   "tests/test_first_task_r.py",
+  "tests/test_first_layered_run.py",
   "verification/first_task_r.py",
   "verification/agy_stdout_reanalysis.py",
   "verification/agy_stdout_reanalysis.json",

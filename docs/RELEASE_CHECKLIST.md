@@ -99,3 +99,12 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 - wheel 包含 bridge/layered_acceptance.py；sdist 包含 test_layered_acceptance.py 及现有合同/接受表/本清单。独立 copy 安装核验 import/文件集合，不复用旧 runtime 或 live 授权。
 - 三个必需层与可选 Worker 来源分开；Eligible 不自动变 Accepted，strict R 固定 Unverified。生产 runtime 没有本轮自动接受记录，历史材料不追溯改写。
 - 独立 Review、对应实机验证、生产接受/部署仍是分开的门禁；完整 CRUD/rename/真实强制超时未覆盖时不能写产品全能力 Pass。
+
+## 显式 v3 首次分层执行候选复核项
+
+- [ ] fresh 独立 Review 核闭合 v3 permit/env、唯一 waiver、预算/权限、排他消费、跨 task/Plan/receipt/identity/根漂移及旧v1/v2兼容；离线自检不代替该门禁。
+- [ ] 普通未接受 v3 run 仍 NotRun/0；普通 collect 不自动发现首次记录。显式 collector 核原 Blocked Plan、许可/marker 原字节、实际 run/UID 与候选整树。
+- [ ] 原 Plan/blockers、失败、0/1/null、中断均留存；没有真实/合成 Accepted 写入，没有清除旧 blocker 或重用旧 marker/UID。
+- [ ] 管理固定两条本地 recipe 独立事实完整，实际 candidate 六例与 baseline 一例预期失败；Worker XML 不可代替，失败/超时/漂移不重试。
+- [ ] 新 sdist 包含首次程序及配套测试；wheel 仅含既有产品文件，受影响 C/B 源码和 runtime 身份重新冻结。旧 wheel/uv sync 不作为生产刷新。
+- [ ] 实现自检、独立复审、真实 host/key/config/native/恢复/进程行为、部署与业务接受分别核收；旧56Unrun/1平台skip不因本次候选而提升。
