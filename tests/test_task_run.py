@@ -405,6 +405,380 @@ def fake_spawn(case, monkeypatch, behavior=None, **process_args):
     return process
 
 
+def bind_native_project(case, *, refresh_r=True, project_id="fixture-native-project"):
+    """An explicitly synthetic native record, never a host configuration file."""
+    record = case.settings.parent / (project_id + ".json")
+    case.native_record = {
+        "id": project_id,
+        "name": "offline fixture",
+        "projectResources": {"resources": [{"folderUri": "file://" + case.root.as_posix()}]},
+    }
+    write_json(record, case.native_record)
+    case.receipt["native_project"] = {
+        "id": project_id,
+        "root": str(case.root),
+        "record": identity(record),
+    }
+    case.receipt["configuration"]["agy_settings"] = None
+    sync(case, refresh_r=refresh_r)
+    return record
+
+
+def forbid_global_settings(monkeypatch, settings):
+    read = runner.read_host_input_bytes
+
+    def guarded_read(*, path):
+        assert Path(path) != settings, "native mode read global settings"
+        return read(path=path)
+
+    monkeypatch.setattr(runner, "read_host_input_bytes", guarded_read)
+    for owner, name in (
+        (runner, "_configuration_lease"),
+        (runner, "_permission_delta"),
+        (slice_run, "_apply_settings_patch"),
+        (slice_run, "_restore_settings"),
+    ):
+        monkeypatch.setattr(owner, name, lambda *a, **k: pytest.fail("global settings access"))
+
+
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+@pytest.mark.parametrize(
+    "caps",
+    [
+        {"execute": True, "web_reference": False, "prepare_dependencies": False},
+        {"execute": True, "web_reference": True, "prepare_dependencies": True},
+    ],
+)
+def test_native_project_one_launch_absolute_request_without_global_settings(
+    tmp_path, monkeypatch, role, caps
+):
+    case = prepare(tmp_path, monkeypatch, role=role, caps=caps)
+    record = bind_native_project(case)
+    forbid_global_settings(monkeypatch, case.settings)
+    frozen = plan(case)
+    assert frozen["preflight_status"] == "Ready"
+    fake_spawn(case, monkeypatch)
+    target = tmp_path / "native-run"
+    result = run(case, frozen, target, execute=True)
+    assert result["launch_count"] == 1 and result["transport_state"] == "Completed"
+    assert result["capture_state"] == "Sealed" and result["restore_state"] == "Unchanged"
+    assert not result["blockers"] and not (target / "private").exists()
+    assert not (target / "config-restore.json").exists()
+    argv, cwd = case.calls[0]
+    assert argv[:3] == [str(case.host_entry), "--project", case.native_record["id"]]
+    assert cwd == str(case.root) == case.receipt["native_project"]["root"]
+    assert "--dangerously-skip-permissions" not in argv
+    request = argv[argv.index("--print") + 1]
+    controls = json.loads(next(line for line in request.splitlines() if line.startswith("{")))
+    for field in ("read_roots", "write_roots", "protected_paths", "required_outputs"):
+        assert controls[field] == [(case.root / path).as_posix() for path in case.task[field]]
+    assert controls["progress_contract"]["path"] == (case.root / "out/progress.json").as_posix()
+    assert controls["toolchains"] == case.receipt["toolchains"]
+    assert controls["capabilities"] == caps and controls["role"] == role
+    assert "Use absolute paths" in request
+    check = json.loads((target / "native-project-check.json").read_bytes())
+    assert check["record_sha256"] == slice_run._sha256_file(record)
+    assert check["binding_status"] == "Matched"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "cursor",
+        "settings",
+        "null",
+        "extra",
+        "unsafe_id",
+        "record_name",
+        "record_hash",
+    ],
+)
+def test_native_project_receipt_schema_rejects_mixed_or_unbound_mode(
+    tmp_path, monkeypatch, invalid
+):
+    case = prepare(tmp_path, monkeypatch)
+    bind_native_project(case)
+    if invalid == "cursor":
+        case.receipt["host"] = "cursor"
+        case.receipt["adapter"] = "cursor_task_v1"
+    elif invalid == "settings":
+        case.receipt["configuration"]["agy_settings"] = identity(case.settings)
+    elif invalid == "null":
+        case.receipt["native_project"] = None
+    elif invalid == "extra":
+        case.receipt["native_project"]["permission_mode"] = "always-proceed"
+    elif invalid == "unsafe_id":
+        case.receipt["native_project"]["id"] = "--different-project"
+    elif invalid == "record_name":
+        case.receipt["native_project"]["record"]["path"] = str(case.settings)
+    else:
+        case.receipt["native_project"]["record"]["sha256"] = None
+    with pytest.raises((runner.TaskRunError, runner.task_input.TaskInputError)) as refused:
+        runner._validate_receipt(case.receipt)
+    assert refused.value.code == "InvalidContract"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "id",
+        "other_root",
+        "nested_root",
+        "many",
+        "empty",
+        "non_list",
+        "extra_resource",
+        "extra_resource_set",
+        "relative",
+        "remote",
+        "query",
+        "fragment",
+        "bad_escape",
+        "bad_utf8",
+        "dot_component",
+        "malformed_json",
+        "missing",
+    ],
+)
+def test_native_project_resource_binding_blocks_before_key_or_launch(
+    tmp_path, monkeypatch, invalid
+):
+    case = prepare(tmp_path, monkeypatch)
+    record = bind_native_project(case)
+    value = copy.deepcopy(case.native_record)
+    folders = value["projectResources"]["resources"]
+    if invalid == "id":
+        value["id"] = "some-other-project"
+    elif invalid in {"other_root", "nested_root"}:
+        folder = tmp_path if invalid == "other_root" else case.root / "nested"
+        folders[0]["folderUri"] = "file://" + folder.as_posix()
+    elif invalid == "many":
+        folders.append(folders[0].copy())
+    elif invalid == "empty":
+        folders.clear()
+    elif invalid == "non_list":
+        value["projectResources"]["resources"] = {}
+    elif invalid == "extra_resource":
+        folders[0]["gitUri"] = "https://example.invalid/repo"
+    elif invalid == "extra_resource_set":
+        value["projectResources"]["other"] = []
+    else:
+        folders[0]["folderUri"] = {
+            "relative": "file://work",
+            "remote": "https://example.invalid/workspace",
+            "query": folders[0]["folderUri"] + "?other=root",
+            "fragment": folders[0]["folderUri"] + "#different",
+            "bad_escape": folders[0]["folderUri"] + "%zz",
+            "bad_utf8": folders[0]["folderUri"] + "%ff",
+            "dot_component": folders[0]["folderUri"] + "/../fixture",
+        }.get(invalid, folders[0]["folderUri"])
+    write_json(record, value)
+    if invalid == "malformed_json":
+        record.write_bytes(b'{"id":')
+    case.receipt["native_project"]["record"] = identity(record)
+    if invalid == "missing":
+        record.unlink()  # Task-owned synthetic fixture only.
+    sync(case, refresh_r=True)
+    monkeypatch.setattr(slice_run, "_session_store", lambda: pytest.fail("key read"))
+    frozen = plan(case)
+    assert "RuntimeIdentityUnverified" in frozen["blockers"]
+    result = run(case, frozen, tmp_path / "blocked-run", execute=True)
+    assert result["launch_count"] == 0 and result["transport_state"] == "NotRun"
+    assert not case.calls
+
+
+@pytest.mark.parametrize("root", ["nested", "other", "record_in_task"])
+def test_native_project_task_root_binding_is_exact(tmp_path, monkeypatch, root):
+    case = prepare(tmp_path, monkeypatch)
+    record = bind_native_project(case)
+    if root == "record_in_task":
+        target = case.root / "out" / record.name
+        target.write_bytes(record.read_bytes())
+        case.receipt["native_project"]["record"] = identity(target)
+    else:
+        case.receipt["native_project"]["root"] = str(
+            case.root / "nested" if root == "nested" else tmp_path
+        )
+    sync(case, refresh_r=True)
+    with pytest.raises(runner.TaskRunError, match="NativeProjectBindingMismatch"):
+        plan(case)
+    assert not case.calls
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_native_project_does_not_inherit_acceptance_from_global_mode(
+    tmp_path, monkeypatch, accepted
+):
+    case = prepare(tmp_path, monkeypatch, accepted=accepted)
+    bind_native_project(case, refresh_r=False)
+    frozen = plan(case)
+    assert "RuntimeAcceptanceUnverified" in frozen["blockers"]
+    result = run(case, frozen, tmp_path / "old-acceptance", execute=True)
+    assert result["launch_count"] == 0 and not case.calls
+
+
+def test_native_project_record_byte_drift_after_plan_never_launches(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch)
+    record = bind_native_project(case)
+    frozen = plan(case)
+    record.write_bytes(record.read_bytes() + b"\n")
+    monkeypatch.setattr(slice_run, "_session_store", lambda: pytest.fail("key read"))
+    with pytest.raises(runner.TaskRunError, match="PlanChanged"):
+        run(case, frozen, tmp_path / "drift", execute=True)
+    assert not case.calls
+
+
+@pytest.mark.parametrize("drift", ["metadata", "global", "resource", "id", "malformed"])
+def test_native_project_post_launch_checks_target_binding_without_restore(
+    tmp_path, monkeypatch, drift
+):
+    case = prepare(tmp_path, monkeypatch)
+    record = bind_native_project(case)
+    original = case.settings.read_bytes()
+    forbid_global_settings(monkeypatch, case.settings)
+    frozen = plan(case)
+
+    def mutate():
+        value = copy.deepcopy(case.native_record)
+        if drift == "metadata":
+            value["name"] = "CLI-maintained metadata"
+        elif drift == "global":
+            case.settings.write_bytes(b"unrelated shared-state change")
+        elif drift == "resource":
+            value["projectResources"]["resources"][0]["folderUri"] = "file://" + tmp_path.as_posix()
+        elif drift == "id":
+            value["id"] = "different-id"
+        write_json(record, value)
+        if drift == "malformed":
+            record.write_bytes(b"not JSON")
+
+    fake_spawn(case, monkeypatch, behavior=mutate)
+    result = run(case, frozen, tmp_path / "post-run", execute=True)
+    matches = drift in {"metadata", "global"}
+    assert result["launch_count"] == 1 and result["capture_state"] == "Sealed"
+    assert result["restore_state"] == ("Unchanged" if matches else "Failed")
+    assert result["transport_state"] == ("Completed" if matches else "Failed")
+    assert ("NativeProjectBindingUnverified" in result["blockers"]) == (not matches)
+    assert case.settings.read_bytes() == (
+        b"unrelated shared-state change" if drift == "global" else original
+    )
+
+
+def test_native_project_cleanup_preserves_primary_interrupt(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch)
+    record = bind_native_project(case)
+    frozen = plan(case)
+    original = KeyboardInterrupt()
+    process = fake_spawn(
+        case, monkeypatch, behavior=lambda: record.write_bytes(b"bad"), wait_error=original
+    )
+    target = tmp_path / "interrupted"
+    with pytest.raises(KeyboardInterrupt) as raised:
+        run(case, frozen, target, execute=True)
+    assert raised.value is original and process.closed
+    result = json.loads((target / "run.json").read_bytes())
+    assert result["launch_count"] == 1 and "NativeProjectBindingUnverified" in result["blockers"]
+
+
+def test_native_project_retains_existing_root_gates(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch)
+    bind_native_project(case)
+    marker = case.root / "old-evidence.txt"
+    marker.write_bytes(b"preserve prior failure")
+    with pytest.raises(runner.TaskRunError, match="ControlChanged"):
+        plan(case)
+    assert marker.read_bytes() == b"preserve prior failure" and not case.calls
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_native_project_preserves_unaccepted_receipt_version_gates(tmp_path, monkeypatch, version):
+    case = prepare(tmp_path, monkeypatch, accepted=False)
+    if version == 2:
+        first_observation_receipt(case)
+    else:
+        case.receipt.update(
+            contract_version=3,
+            host_composition=runner.layered_acceptance.COMPOSITION.copy(),
+            acceptance_method=runner.layered_acceptance.METHOD,
+            host_identity_files=[],
+            layered_acceptances=[],
+        )
+    bind_native_project(case, refresh_r=False)
+    frozen = plan(case)
+    assert frozen["blockers"] == (
+        [runner.FIRST_OBSERVATION_BLOCKER, "RuntimeAcceptanceUnverified"]
+        if version == 2
+        else ["LayeredAcceptanceUnverified"]
+    )
+    result = run(case, frozen, tmp_path / "unaccepted-native", execute=True)
+    assert result["launch_count"] == 0 and not case.calls
+
+
+@pytest.mark.parametrize("uri_style", ["native", "standard", "escaped"])
+def test_native_project_windows_folder_uri_spellings(tmp_path, monkeypatch, uri_style):
+    case = prepare(tmp_path, monkeypatch)
+    record = bind_native_project(case)
+    path = case.root.as_posix()
+    uri = "file://" + path
+    if uri_style == "standard":
+        uri = "file:///" + path
+    elif uri_style == "escaped":
+        uri = uri.replace("fixture", "%66ixture")
+    case.native_record["projectResources"]["resources"][0]["folderUri"] = uri
+    write_json(record, case.native_record)
+    case.receipt["native_project"]["record"] = identity(record)
+    sync(case, refresh_r=True)
+    assert plan(case)["preflight_status"] == "Ready"
+
+
+def test_native_project_two_fake_launches_overlap_without_global_lease(tmp_path, monkeypatch):
+    cases = []
+    for label in ("A", "B"):
+        parent = tmp_path / label
+        parent.mkdir()
+        case = prepare(parent, monkeypatch)
+        bind_native_project(case, project_id="fixture-native-" + label)
+        forbid_global_settings(monkeypatch, case.settings)
+        case.frozen_plan = plan(case)
+        case.fake_process = FakeProcess()
+        cases.append(case)
+    by_root = {str(case.root): case for case in cases}
+    overlap = threading.Barrier(2, timeout=10)
+
+    def spawn(argv, cwd, *, lifecycle, env=None):
+        case = by_root[cwd]
+        case.calls.append((argv, cwd))
+        lifecycle.execution_state = "confirmed"
+        lifecycle.pid = case.fake_process.pid
+        overlap.wait()
+        return case.fake_process
+
+    monkeypatch.setattr(slice_run, "spawn_suspended_in_job", spawn)
+    results, errors = {}, []
+
+    def execute(case):
+        try:
+            results[str(case.root)] = run(
+                case, case.frozen_plan, case.root.parent.parent / "run", execute=True
+            )
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=execute, args=(case,)) for case in cases]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+        assert not thread.is_alive()
+    assert not errors
+    assert len(results) == 2
+    for case in cases:
+        result = results[str(case.root)]
+        assert result["launch_count"] == 1 and result["transport_state"] == "Completed"
+        assert result["restore_state"] == "Unchanged" and case.fake_process.closed
+    assert results[str(cases[0].root)]["capture_uid"] != results[str(cases[1].root)]["capture_uid"]
+
+
 @pytest.mark.parametrize("moment", ["after_read_observation", "after_path_observation"])
 def test_reader_observes_changes_until_final_handle_check(tmp_path, monkeypatch, moment):
     """Review R01 equivalent: actual same-length writes, with mtime restored."""

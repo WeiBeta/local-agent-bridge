@@ -111,3 +111,11 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 - [ ] 管理固定两条本地 recipe 独立事实完整，实际 candidate 六例与 baseline 一例预期失败；Worker XML 不可代替，失败/超时/漂移不重试。
 - [ ] 新 sdist 包含首次程序及配套测试；wheel 仅含既有产品文件，受影响 C/B 源码和 runtime 身份重新冻结。旧 wheel/uv sync 不作为生产刷新。
 - [ ] 实现自检、独立复审、真实 host/key/config/native/恢复/进程行为、部署与业务接受分别核收；旧56Unrun/1平台skip不因本次候选而提升。
+
+## agy 原生项目模式候选复核项
+
+- [ ] fresh 独立 Review 核 native_project 的完整 receipt/R/Plan 绑定、唯一资源根=cwd=task_root、有界普通记录读取及紧前漂移拒绝。
+- [ ] 无全局 settings 读取/写入/租约，原模式的锁/恢复和 Cursor 仍保持；fake 重叠只作离线证据，不能升级为真实并发/隔离。
+- [ ] 请求脚本/输出绝对路径，固定 argv 仅增项目 ID；启动后绑定检查材料经原 collector 留存，主中断、原失败和 0/1/null 不降级。
+- [ ] 优先复用现有 A/B 根的窄合同另完成：保留旧证据，明确新输出空间和 exact inventory；不得通过清根、嵌套 cwd、手写项目 JSON 绕过当前 RootNotFresh/ControlChanged。
+- [ ] 新冻结部署材料、接受/首次执行材料适配、真实双调用许可、业务 artifact-first 验收和生产部署各自核收；当前只为离线候选，原预算不续借。

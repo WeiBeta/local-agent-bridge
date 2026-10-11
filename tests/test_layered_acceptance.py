@@ -150,6 +150,23 @@ def test_eligible_keeps_unknown_worker_and_strict_r(case):
     assert case.receipt["layered_acceptances"] == case.receipt["runtime_acceptances"] == []
 
 
+def test_native_project_requires_new_layered_binding(case, tmp_path, monkeypatch):
+    accepted(case)
+    fixtures.bind_native_project(case, refresh_r=False)
+    blocked = runner._make_plan(runner._load_inputs(case.root, case.trust, case.expected), "agy")
+    assert blocked["blockers"] == ["LayeredAcceptanceUnverified"]
+    case.collection["task_manifest_sha256"] = fixtures.digest(case.task)
+    case.collection["continuation"]["task_manifest_sha256"] = fixtures.digest(case.task)
+    accepted(case)  # Explicit new synthetic acceptance, not inherited from legacy mode.
+    fixtures.forbid_global_settings(monkeypatch, case.settings)
+    frozen = fixtures.plan(case)
+    assert frozen["preflight_status"] == "Ready" and frozen["contract_version"] == 2
+    fixtures.fake_spawn(case, monkeypatch)
+    result = fixtures.run(case, frozen, tmp_path / "native-layered-run", execute=True)
+    assert result["launch_count"] == 1 and result["transport_state"] == "Completed"
+    assert result["restore_state"] == "Unchanged" and not result["blockers"]
+
+
 @pytest.mark.parametrize("origin", ["WorkerReported", "CliDeclared"])
 def test_declaration_never_proves_worker_execution(case, origin):
     result = evaluate(

@@ -49,6 +49,30 @@ def collect(case, tmp_path, run_root=None):
     )
 
 
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+def test_native_project_actual_b_prepare_fake_run_and_collect(tmp_path, monkeypatch, role):
+    case = actual_case(tmp_path, monkeypatch, role=role)
+    fixtures.bind_native_project(case)
+    fixtures.forbid_global_settings(monkeypatch, case.settings)
+    frozen = fixtures.plan(case)
+    assert frozen["preflight_status"] == "Ready"
+    fixtures.fake_spawn(case, monkeypatch)
+    run_root = tmp_path / "native-run"
+    receipt = fixtures.run(case, frozen, run_root, execute=True)
+    outputs(case)
+    result = collect(case, tmp_path, run_root)
+    assert receipt["launch_count"] == 1 and receipt["restore_state"] == "Unchanged"
+    assert result["host_observations"]["scope_status"] == "Pass"
+    assert result["host_observations"]["outputs_status"] == "Pass"
+    assert result["management_decision"] is None and not result["blockers"]
+    assert (tmp_path / "collected/run/native-project-check.json").read_bytes() == (
+        run_root / "native-project-check.json"
+    ).read_bytes()
+    assert (tmp_path / "collected/host/control/deployment-receipt.json").read_bytes() == (
+        case.root / "control/deployment-receipt.json"
+    ).read_bytes()
+
+
 def test_public_host_verification_follows_external_trust_validation(tmp_path, monkeypatch):
     case = actual_case(tmp_path, monkeypatch)
     monkeypatch.setattr(

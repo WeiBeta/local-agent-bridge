@@ -319,7 +319,7 @@ DeploymentReceipt 准确字段：
 | launch_shell | FileIdentity 或 null；agy=null；Cursor 为已验收且代码支持的 pwsh 路径/身份，不变成任意解释器入口 |
 | host_version | S；已验收本机 CLI/后端版本事实，不从 entry hash 推断版本 |
 | host_identity_files | 非空 list[FileIdentity]；管理从已验收本机部署确定的后端版本/实现标记；无法点时验证当前后端身份则 Blocked，不为查版本额外启动 CLI |
-| configuration | `{agy_settings:ConfigIdentity|null,cursor_global:ConfigIdentity|null,cursor_project:FileIdentity|null}`；agy 只前者非 null 且 hash 非 null；Cursor 后两者非 null，global 可声明准确路径应不存在；project.path 固定为 task_root/.cursor/cli.json |
+| configuration | `{agy_settings:ConfigIdentity|null,cursor_global:ConfigIdentity|null,cursor_project:FileIdentity|null}`；默认 agy 只前者非 null 且 hash 非 null；§17 原生项目模式三者必须 null；Cursor 后两者非 null，global 可声明准确路径应不存在；project.path 固定为 task_root/.cursor/cli.json |
 | profile_fields_sha256 | H；对规范 DeploymentProfile 去掉且仅去掉 receipt_sha256 后的对象求 SHA |
 | toolchains | list[Toolchain]；ref 唯一，按 ref UTF-8 字节排序；与 profile.toolchain_refs 一一对应；execute 或 prepare_dependencies 启用时不得为空 |
 | runtime_acceptances | list[RuntimeAcceptance]；可空；role/capabilities/boundary 三元组唯一，不创建组合 profile |
@@ -684,3 +684,17 @@ B `collect_task` 新增可选 `first_execution: FileIdentity` Python 参数，�
 仅从管理新 out 读取有界、无 DTD/entity 的单 testsuite XML，校验 case 数、failure/error 数及无 skip；baseline 一例预期失败/exit1，candidate 六例通过/exit0。事实 `command.json` 恰为 §15 COMMAND_KEYS：actor=ManagementIndependent、task、整树、recipe/toolchain/exe、worker_shell_identity=null、实际 argv/cwd/带时区 UTC 起止/exit/counts。成功保存独立 baseline/candidate、recipes、已核原 run/launch 派生 host-lifecycle 身份；原 Worker 声明只留原层，actual Worker Shell/command 仍 Unknown/Unverified。
 
 新材料可提交给现有 evaluate_delivery，由管理核验必需三层后裁决；程序只记录 ObservationRecorded/Failed/Interrupted 与 strict R、layered/runtime acceptance=Unverified、management_decision=null。Eligible 也不自动成为 Accepted 或批准第二次普通生产调用。真实 host/key/config/native/超时和业务接受仍按集中实测授权与独立 Review 门禁办理。
+
+## 17. agy 原生项目模式候选（LAB-AGY-NATIVE-PROJECT-IMPL-01）
+
+仅给 DeploymentReceipt v1/v2/v3 增加一个可选、非 null 的 `native_project` 字段；无此字段时沿用旧模式。其闭合对象为 `{id:S,root:A,record:FileIdentity}`。仅 agy 可用，configuration 三项必须 null，launch_shell 仍 null。id 为 1..128 位 ASCII 字母、数字、下划线或连字符，首位必须字母/数字；record 文件名必须为 `<id>.json`，由管理登记实际原生记录的路径和原字节 SHA，不能把手写或归档副本登记为当前配置。
+
+`native_project.root` 必须与精确 task_root 相同，仍为 workspace_parent 的普通直接子目录；记录必须在 task_root 之外。计划与启动紧前有界读取记录，核原字节 SHA、记录 id 和唯一的 `projectResources.resources=[{folderUri:S}]`。目前只支持这一已观察的本地文件夹结构；额外资源/资源字段、远端 URI、相对路径、路径逃逸、普通链或文件身份失败均拒绝。支持 `file://C:/...`、`file:///C:/...` 和合法百分号编码，解码后复用既有 Windows 路径校验，不在输入 Path 化之前折叠点段。
+
+native_project 纳入原 receipt/bundle/Plan 摘要及 R 或 layered acceptance 的完整绑定，不能沿用旧全局配置模式的接受记录。v2 仍是首次观察阻断；v3 的 Coding/execute/declared_scope 及精确 scope 接受限制不变。Task/Plan/RunReceipt、三能力、角色与 collector 合同不新增键，CLI 的 spec 和参数不变。测试是既有 execute 能力：Coding 可在允许的 work/out/scratch 内进行普通工程操作，Review 测试使用 scratch 副本；不新增 Testing 角色或逐命令许可框架。
+
+agy argv 只在固定入口之后增加 `--project <id>`，固定 model/tail、精确外层 deadline、一次启动、owned Job 和加密采集继续复用；cwd 固定为 task_root。生成请求把读写/保护/输出根和 progress 路径改为绝对路径，附上冻结 toolchain 身份，要求脚本、命令文件参数、文件工具目标和 artifact 使用绝对路径。说明中的相对标签只按 task_root 解析。请求是合同声明，不证明 Worker 实际照做或 OS 强制隔离。
+
+本模式不读取/合并/写回全局 settings，不创建 settings 备份/恢复材料，不取得旧全局配置租约；不写项目记录/项目 settings，也不增加 skip-permissions。启动后（含异常/中断）只读复核项目 id 与资源根，成功在 run 根保存 `native-project-check.json`，含 project_id/root/record_sha256/binding_status=Matched，由原 evidence_refs 和 collector 留存。CLI 名称等元数据变化可改变 raw SHA，不单凭此判失败；绑定漂移或无法读取则 restore_state=Failed、NativeProjectBindingUnverified 和 RestoreFailed，保留失败并使 transport 失败。这里的 restore_state 沿用已有回执字段，本模式不会执行恢复。原启动中断优先于后续检查异常。该检查不核权限语义或共享设置；原生继承权限、always-proceed、资源绑定均不能证明反向 deny 或隔离。
+
+**现有根复用限制（未实施）**：B prepare 的 `_root(fresh=True)` 要求 task_root 不存在，否则 RootNotFresh；C `_verify_prepared_tree` 拒绝根中 task 布局之外的历史文件，否则 ControlChanged，且仍要求 work 与冻结 snapshot 相符。原生模式不绕过这些条件。A/B 的旧根不能直接经过本候选 prepare，不能通过删旧证据、改到嵌套 cwd 或手写项目 JSON 规避。若继续复用同一 A/B 根，最小后续设计是显式冻结现有树及本任务输出命名空间，定义在原根排他添加控制布局、保护旧文件、核原清单与收集本任务增量的合同；当前没有此接口。需先完成该窄合同修补及独立 Review，再冻结适用真实许可；本节不授权实施或真实调用。

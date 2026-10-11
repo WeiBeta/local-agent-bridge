@@ -89,6 +89,12 @@ v2的`launches`是`0/1/null`，来自本次调用方持有的同一份LaunchLife
 `prepare/plan/run` 的可信根和 bundle 摘要必须由管理作为单独 CLI 参数供给；不能写进 spec 或从 Worker/任务内容自算接受。Cursor 仅 task plan 可准备管理绑定的固定项目文件，原始模板字节保留。task run 默认在新运行根保存 NotRun，不初始化 key、不启动；显式 --execute 仍须原 C 全部门禁，无新 Task R 合法 Blocked。
 stdout 是原业务 JSON 加一个传输 LF，固定错误在 stderr；CLI 退出码不构成业务接受。离线 fake/self-check、独立 Review、首次真实 R 与部署分别记录，本候选没有实机声明。
 
+### agy 原生项目模式候选
+
+管理可在可信部署回执登记 `native_project={id,root,record}`，同时将 configuration 三项置 null；详情见 [合同 §17](TASK_WORKSPACE_CONTRACT.md#17-agy-原生项目模式候选lab-agy-native-project-impl-01)。原 CLI 命令/spec 无需新参数：`task plan/run` 自动按该冻结绑定附加 `--project <id>`，资源根、task_root 与 cwd 必须相同，请求中的脚本/产物目标使用绝对路径。本模式不会读写全局 settings 或占用其租约锁。官方 [项目文档](https://antigravity.google/docs/projects/) 支持以项目 ID 接入已有原生项目，具体记录结构来自已保留本机样本；本轮不启动 agy 或修改本机配置。
+
+原始 v1/v2/v3 接受门禁继续适用，旧配置模式的接受记录不能转用。Coding、Review 及其已启用 execute 测试共用原工程边界，不新增 Testing 角色；权限继承和反向 deny 尚未由本候选证明。已有 A/B 根的非空保留树仍受 prepare RootNotFresh 和 run ControlChanged 门禁限制，当前不能直接复用，须先补窄合同。独立 Review、现有根复用合同、首次真实调用材料适配及新许可、业务验收和部署均未完成。
+
 ### 日常 Coding Worker 范围
 
 对 Task v1 Coding，工单指定的 task 目录和允许文件范围内可进行必要目录/源码检查、哈希核对、代码编辑、本地测试与辅助脚本操作；指定管理配方是必须完成的验收，不是 Worker 可用操作的完整清单。冻结控制文件、验收配方与 protected_paths 不可修改；任务外写入、账户或凭据操作、额外网络、依赖安装、生产与远端仍须单独授权。declared_scope 不是 OS 沙箱，也不授予 Full Access。

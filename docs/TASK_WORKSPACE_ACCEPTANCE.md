@@ -329,3 +329,17 @@ v2 精确 schema 见合同“首次观测合同 v2”；以下离线合成自检
 | LA-PACKAGE | 锁定离线依赖、适用 pytest/ruff/format/diff、sdist→wheel、独立 noneditable copy | 仅自检；不作为独立 Review 或真实 runtime 接受 |
 
 本实现的 fixture 接受记录全部是合成注入，不落生产回执。下一门禁为新独立 Review；实际 native/模型/真实超时、完整 CRUD/rename、生产配置和部署均另授权并单独报告 NotRun。本轮不触现有 first_task_r/reanalysis helper 或旧捕获机会。
+
+## agy 原生项目模式离线矩阵（LAB-AGY-NATIVE-PROJECT-IMPL-01）
+
+| 组 | 必须核对 |
+| --- | --- |
+| NP-BIND | receipt 的 id/root/record 闭合；任务根=资源根=cwd；多/空/远端/额外资源、记录 ID 错配、路径逃逸、记录缺失/漂移先于 key/launch 拒绝 |
+| NP-REQUEST | 绝对读写/保护/输出/progress 路径及冻结 toolchain；同固定 model/argv tail/外层 deadline，只增加项目 ID，无 skip-permissions |
+| NP-NOSETTINGS | 明确禁止全局 settings 读取、权限合并、租约、patch/restore 的 fake run 仍完成；两不同项目 fake 启动可重叠，不宣称真实并发或权限隔离 |
+| NP-LIFECYCLE | 单次启动、采集、清理、0/1/null 和主中断语义复用；启动后只核目标 ID/资源根，元数据/global raw SHA 漂移不单凭此失败，不恢复或覆盖原材料 |
+| NP-ACCEPT | native 字段改变完整 R/layered binding；旧接受无效，v2/v3 未接受仍 Blocked/NotRun0；新合成 v3 接受只用于自检 |
+| NP-BC | 实际 B prepare + C fake run + B collect 的 Coding/Review 材料/项目检查原字节留存，management_decision=null；现有根 fresh/额外文件门禁不放宽 |
+| NP-LEGACY | 原 agy settings 租约/恢复、Cursor、Task CLI、首观/分层和 launch 生命周期适用回归 |
+
+以上为实现自检范围，不是独立 Review、真实 agy/model/key/捕获解密、权限反向 deny、A/B 业务验收或生产刷新。现有 A/B 根复用合同尚未实施；首次真实执行材料也须按新无 settings 绑定核适用性，不能直接套旧 first_task_r 许可或旧双调用预算。
