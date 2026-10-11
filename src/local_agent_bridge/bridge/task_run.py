@@ -1279,7 +1279,9 @@ def _request(context: dict) -> str:
         "remaining_paths": "array of authorized relative paths; empty when Completed",
     }
     native_instructions = ""
-    receipt = context["bundle"]["deployment_receipt"]
+    # Legacy request-only callers supply task/auth; launch still requires the
+    # complete trusted context loaded and verified by the shared run path.
+    receipt = context["bundle"].get("deployment_receipt", {})
     if "native_project" in receipt:
         root = context["task_root"]
         controls["native_project_id"] = receipt["native_project"]["id"]
@@ -1290,7 +1292,7 @@ def _request(context: dict) -> str:
         controls["toolchains"] = receipt["toolchains"]
         native_instructions = (
             "Native project resource root, cwd and task_root are the same absolute directory. "
-            "Use absolute paths for every file tool target, script, command argument and "
+            "Use absolute paths for every file tool target, script, file-path command argument and "
             "artifact output. Resolve relative path labels in the frozen note against task_root. "
             "Write progress to the absolute progress_contract.path.\n"
         )
