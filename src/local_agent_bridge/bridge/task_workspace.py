@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import task_input as inputs
-from .contract import BridgeContractError, decode_strict_json_bytes
+from .contract import TASK_DEADLINE_MAX_SECONDS, BridgeContractError, decode_strict_json_bytes
 from .paths import BridgePathError
 
 __all__ = ["TaskWorkspaceError", "collect_task", "prepare_task", "verify_input_controls"]
@@ -231,7 +231,7 @@ def _task_shape(task: Any) -> None:
     _enum(task["role"], _ROLES)
     _enum(task["execution_boundary"], _MODES)
     _capabilities(task["capabilities"])
-    _integer(task["deadline_seconds"], 1, 1020)
+    _integer(task["deadline_seconds"], 1, TASK_DEADLINE_MAX_SECONDS)
     _integer(task["source_output_bytes_limit"], 1)
     for name in ("read_roots", "write_roots", "protected_paths", "required_outputs"):
         _paths(task[name])

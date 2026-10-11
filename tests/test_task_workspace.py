@@ -302,7 +302,7 @@ def test_prepare_independent_raw_bytes_and_notrun(tmp_path, role):
         {"extra": True},
         {"contract_version": True},
         {"deadline_seconds": True},
-        {"deadline_seconds": 1021},
+        {"deadline_seconds": 3601},
         {"source_output_bytes_limit": 0},
         {"role": "Debug"},
         {"execution_boundary": "skip"},
@@ -420,6 +420,27 @@ def prepare_documents(root, source, task, note, profile, auth):
         authorization=auth,
         task_root=root / "task",
     )
+
+
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+@pytest.mark.parametrize("seconds", [1, 300, 1020, 3600])
+def test_work_deadline_all_existing_roles_and_shorter_limits(tmp_path, role, seconds):
+    source, snapshot = snapshot_fixture(tmp_path)
+    task, note, profile, auth = documents(snapshot, role)
+    task["deadline_seconds"] = seconds
+    bind(task, profile, auth)
+    assert prepare_documents(tmp_path, source, task, note, profile, auth) == task
+    assert json.loads((tmp_path / "task/task.json").read_bytes())["deadline_seconds"] == seconds
+
+
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+@pytest.mark.parametrize("seconds", [0, -1, 3601, True, False, 3600.0, "3600", None])
+def test_work_deadline_type_and_bounds(tmp_path, role, seconds):
+    _, snapshot = snapshot_fixture(tmp_path)
+    task, _, _, _ = documents(snapshot, role)
+    task["deadline_seconds"] = seconds
+    with pytest.raises(TaskWorkspaceError):
+        entry._task_shape(task)
 
 
 def verify_documents(root, task, profile, auth):

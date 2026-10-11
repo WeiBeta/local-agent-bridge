@@ -197,6 +197,27 @@ def update_sheet(case):
     case.sheet_sha = task_run._digest(case.sheet_path.read_bytes())
 
 
+@pytest.mark.parametrize("seconds", [1, 300, 1020, 3600, 0, -1, 3601, True, 3600.0, "3600", None])
+def test_permit_work_deadline_boundaries(case, seconds):
+    case.sheet["deadline_seconds"] = seconds
+    update_sheet(case)
+    if type(seconds) is int and 1 <= seconds <= 3600:
+        assert validation._sheet(case.sheet_path, case.sheet_sha)["deadline_seconds"] == seconds
+    else:
+        with pytest.raises(validation.ValidationError, match="PermitInvalid"):
+            validation._sheet(case.sheet_path, case.sheet_sha)
+    assert not case.calls and not Path(case.sheet["run_root"]).exists()
+
+
+def test_extended_permit_still_requires_exact_task_deadline(case):
+    case.sheet["deadline_seconds"] = 3600
+    update_sheet(case)
+    with pytest.raises(validation.ValidationError, match="PermitBindingMismatch"):
+        invoke(case)
+    assert not case.calls and not Path(case.sheet["run_root"]).exists()
+    assert not list(case.base.glob("*.consumed.json"))
+
+
 def complete_output(case):
     write_json(
         case.root / "out/progress.json",

@@ -81,7 +81,7 @@ def case(tmp_path, monkeypatch):
         execution_modes=["declared_scope"],
     )
     value.task.update(
-        deadline_seconds=300,
+        deadline_seconds=live.BUDGET["deadline_seconds"],
         protected_paths=sorted([*value.task["protected_paths"], "work/recipe"]),
     )
     value.receipt["toolchains"][0]["recipe_refs"] = [live.RECIPE_REF]
@@ -151,7 +151,7 @@ def case(tmp_path, monkeypatch):
         "trusted_control_root": str(value.trust),
         "run_root": str(tmp_path / "live-run"),
         "result_root": str(tmp_path / "live-result"),
-        "deadline_seconds": 300,
+        "deadline_seconds": live.BUDGET["deadline_seconds"],
         "validator": fixture.identity(ROOT / "verification/shadow_coding_live.py"),
         "installation": {
             "root": str(value.host_entry.parent),
@@ -332,7 +332,13 @@ def manager(case, monkeypatch, callback=None):
     monkeypatch.setattr(live.retests.subprocess, "run", run)
 
 
-def test_initial_saved_one_use_real_collector_and_source_binding(case, monkeypatch):
+@pytest.mark.parametrize("seconds", [300, 1020, 3600])
+def test_initial_saved_one_use_real_collector_and_source_binding(case, monkeypatch, seconds):
+    case.task["deadline_seconds"] = case.sheet["deadline_seconds"] = seconds
+    case.contract["budget"]["deadline_seconds"] = seconds
+    fixture.write_json(case.contract_path, case.contract)
+    case.sheet["budget_ref"]["sha256"] = fixture.identity(case.contract_path)["sha256"]
+    freeze(case)
     before = case.settings.read_bytes()
     previous = os.environ.get("LOCALAPPDATA")
     fake_host(case, monkeypatch)
@@ -437,6 +443,36 @@ def test_initial_wrong_collected_case_outcomes_stop_before_reader(case, monkeypa
     result = invoke(case)
     assert result["status"] == "Stopped" and result["error_code"] == "WorkerCaseOutcomesChanged"
     assert len(case.calls) == 1 and not case.key_reads
+
+
+@pytest.mark.parametrize("seconds", [1, 300, 1020, 3600, 0, -1, 3601, True, 3600.0, "3600", None])
+def test_shadow_permit_work_deadline_boundaries(case, seconds):
+    case.sheet["deadline_seconds"] = seconds
+    fixture.write_json(case.sheet_path, case.sheet)
+    case.sheet_sha = fixture.identity(case.sheet_path)["sha256"]
+    if type(seconds) is int and 1 <= seconds <= 3600:
+        assert live._sheet(case.sheet_path, case.sheet_sha)["deadline_seconds"] == seconds
+    else:
+        with pytest.raises(live.lifecycle.ValidationError, match="BudgetUnverified"):
+            live._sheet(case.sheet_path, case.sheet_sha)
+    assert not case.calls and not case.key_reads and not Path(case.sheet["run_root"]).exists()
+
+
+@pytest.mark.parametrize("mismatch", ["task", "budget", "budget_type"])
+def test_shadow_extended_deadline_preserves_exact_bindings(case, mismatch):
+    if mismatch == "task":
+        case.task["deadline_seconds"] = 300
+    else:
+        case.contract["budget"]["deadline_seconds"] = True if mismatch == "budget_type" else 300
+        fixture.write_json(case.contract_path, case.contract)
+        case.sheet["budget_ref"]["sha256"] = fixture.identity(case.contract_path)["sha256"]
+    freeze(case)
+    with pytest.raises(
+        live.lifecycle.ValidationError, match=r"PermitBindingMismatch|BudgetUnverified"
+    ):
+        invoke(case)
+    assert not case.calls and not case.key_reads and not Path(case.sheet["run_root"]).exists()
+    assert not list(case.base.glob("*.consumed.json"))
 
 
 def _swap_error_names(path):

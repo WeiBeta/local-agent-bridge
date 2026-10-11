@@ -540,7 +540,7 @@ def test_missing_task_r_blocks_even_explicit_execute(tmp_path, monkeypatch, host
         lambda c: c.task.update(role="Repair"),
         lambda c: c.task.update(write_roots=["control"]),
         lambda c: c.task.update(read_roots=["../work"]),
-        lambda c: c.task.update(deadline_seconds=1021),
+        lambda c: c.task.update(deadline_seconds=3601),
         lambda c: c.receipt.update(argv=["arbitrary"]),
         lambda c: c.receipt.update(adapter="other"),
         lambda c: c.profile.update(url="https://example.invalid"),
@@ -742,8 +742,11 @@ def test_existing_permissions_merged_and_original_bytes_restored(tmp_path, monke
         "interrupt",
     ],
 )
-def test_failure_lifecycle_preserves_counts_and_config(tmp_path, monkeypatch, kind):
+@pytest.mark.parametrize("seconds", [12, 3600])
+def test_failure_lifecycle_preserves_counts_and_config(tmp_path, monkeypatch, kind, seconds):
     case = prepare(tmp_path, monkeypatch)
+    case.task["deadline_seconds"] = seconds
+    sync(case, refresh_r=True)
     original = case.settings.read_bytes()
     if kind == "deny":
         case.settings.write_bytes(b'{"permissions":{"deny":["command(*)"]}}')
@@ -959,8 +962,12 @@ def test_capture_time_drift_rechecked_before_configuration_write(tmp_path, monke
     assert case.settings.read_bytes() == original and not case.calls
 
 
-def test_task_deadline_passed_to_shared_launcher(tmp_path, monkeypatch):
-    case = prepare(tmp_path, monkeypatch)
+@pytest.mark.parametrize("host", ["agy", "cursor"])
+@pytest.mark.parametrize("seconds", [12, 3600])
+def test_task_deadline_passed_to_shared_launcher(tmp_path, monkeypatch, host, seconds):
+    case = prepare(tmp_path, monkeypatch, host=host)
+    case.task["deadline_seconds"] = seconds
+    sync(case, refresh_r=True)
     frozen = plan(case)
     timeouts = []
     process = fake_spawn(case, monkeypatch)
@@ -973,6 +980,82 @@ def test_task_deadline_passed_to_shared_launcher(tmp_path, monkeypatch):
     monkeypatch.setattr(process, "wait", record)
     assert run(case, frozen, tmp_path / "bounded", execute=True)["launch_count"] == 1
     assert 0 < timeouts[0] <= case.task["deadline_seconds"]
+    assert len(timeouts) == 1 and not process.terminated and process.closed
+
+
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+@pytest.mark.parametrize("seconds", [1, 300, 1020, 3600, 0, -1, 3601, True, 3600.0, "3600", None])
+def test_runner_deadline_schema_all_existing_roles(tmp_path, monkeypatch, role, seconds):
+    case = prepare(tmp_path, monkeypatch)
+    case.task.update(role=role, deadline_seconds=seconds)
+    if role == "Review":
+        case.task["write_roots"] = ["out", "scratch"]
+    if type(seconds) is int and 1 <= seconds <= 3600:
+        runner._validate_task(case.task)
+    else:
+        with pytest.raises(runner.TaskRunError, match="InvalidContract"):
+            runner._validate_task(case.task)
+    assert not case.calls
+
+
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+@pytest.mark.parametrize("host", ["agy", "cursor"])
+@pytest.mark.parametrize(
+    ("seconds", "elapsed", "native_minutes"),
+    [(1, 0.25, 1), (300, 13.25, 5), (1020, 60.25, 16), (3600, 13.25, 60), (3600, 60, 59)],
+)
+def test_host_deadlines_use_same_remaining_budget(
+    monkeypatch, role, host, seconds, elapsed, native_minutes
+):
+    context = {
+        "bundle": {"deployment_receipt": {"host": host, "host_entry": {"path": "frozen-entry"}}},
+        "task": {"role": role, "deadline_seconds": seconds},
+        "task_root": Path("C:/synthetic-task"),
+    }
+    calls = []
+    monkeypatch.setattr(runner.time, "monotonic", lambda: 100 + elapsed)
+
+    def capture(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"fake": True}
+
+    monkeypatch.setattr(slice_run, "_launch_and_capture", capture)
+    writer = SimpleNamespace(stream=lambda name: name)
+    assert runner._launch(context, writer, "frozen request", 100, SimpleNamespace()) == {
+        "fake": True
+    }
+    ((args, kwargs),) = calls
+    remaining = seconds - elapsed
+    assert kwargs["timeout_seconds"] == remaining
+    if host == "agy":
+        assert args[1] == [
+            "frozen-entry",
+            "--print",
+            "frozen request",
+            *slice_run.FIXED_ARGV_TAIL[:-1],
+            f"{native_minutes}m",
+        ]
+        assert remaining <= native_minutes * 60 < remaining + 60
+    else:
+        assert args[1] == runner.cursor_run._cursor_argv(
+            "frozen-entry", "C:\\synthetic-task", "frozen request"
+        )
+        assert "--print-timeout" not in args[1]
+    assert slice_run.FIXED_ARGV_TAIL[-2:] == ["--print-timeout", "15m"]
+    assert slice_run.OBSERVATION_TIMEOUT_SECONDS == 1020
+    assert slice_run.KILL_GRACE_SECONDS == slice_run.CAPTURE_JOIN_SECONDS == 30
+
+
+@pytest.mark.parametrize("host", ["agy", "cursor"])
+def test_expired_work_budget_refuses_before_shared_launcher(monkeypatch, host):
+    context = {
+        "bundle": {"deployment_receipt": {"host": host, "host_entry": {"path": "unused"}}},
+        "task": {"deadline_seconds": 12},
+    }
+    monkeypatch.setattr(runner.time, "monotonic", lambda: 112)
+    monkeypatch.setattr(slice_run, "_launch_and_capture", lambda *a, **k: pytest.fail("no launch"))
+    with pytest.raises(runner.TaskRunError, match="DeadlineExceeded"):
+        runner._launch(context, SimpleNamespace(), "unused", 100, SimpleNamespace())
 
 
 @pytest.mark.parametrize("outcome", ["normal", "error", "interrupt"])

@@ -105,12 +105,16 @@ task.json 必需字段（路径均为任务根内相对路径；下面值是合�
   "protected_paths": ["control", "task.json", "work/vendor"],
   "required_outputs": ["out/progress.json"],
   "acceptance_ids": ["CODING-01", "TEST-01"],
-  "deadline_seconds": 1020,
+  "deadline_seconds": 3600,
   "source_output_bytes_limit": 536870912
 }
 ```
 
-role 只取 Coding/Review；排障是 Coding 的目标，不增加第三个 runner。角色和能力字段显式必填，不创建各组合命名 profile。snapshot、instructions、部署 profile、能力、边界模式和授权记录绑定计划摘要。未知字段、重复 JSON 键、类型不符、越界根、write 根本身落在 protected 内、未登记 deployment/host 和 manifest 漂移均在启动前拒绝。task能力/读写根须在可信Authorization与DeploymentProfile允许集合内，task边界与授权一致且在deployment.execution_modes内；不得自行升级。protected子树优先收紧父write根。deadline v1为1–1020秒，不延长真实调用预算。
+role 只取 Coding/Review；排障是 Coding 的目标，不增加第三个 runner。角色和能力字段显式必填，不创建各组合命名 profile。snapshot、instructions、部署 profile、能力、边界模式和授权记录绑定计划摘要。未知字段、重复 JSON 键、类型不符、越界根、write 根本身落在 protected 内、未登记 deployment/host 和 manifest 漂移均在启动前拒绝。task能力/读写根须在可信Authorization与DeploymentProfile允许集合内，task边界与授权一致且在deployment.execution_modes内；不得自行升级。protected子树优先收紧父write根。deadline v1为必填整数1–3600秒，所有已有角色及agy/Cursor通路共用上限；较短显式值继续生效，字段扩容不延长既有真实调用授权。
+
+工作时限从runner/validator入口计时，启动时减去已消耗时间，剩余秒数传给共享采集器；正常进程结束后立即进入收束，不等满期限。agy Task的固定`--print-timeout`值按剩余秒数向上取整为1–60分钟（`ceil(remaining/60)m`），精确截止仍由外层等待控制；Cursor沿用既有argv，仅使用外层剩余工作预算，不添加未经验证的native时限flag。新增分钟值的CLI原生支持与provider/tool独立期限仍需新实测核验。旧slice默认1020秒及固定15m保持，kill和pipe join宽限各30秒、单项配方预算与配置互斥保持。
+
+prepare、collect及saved collection核验仍在各自入口按同一字段新建阶段deadline，不改为全流程计时框架；因此3600不是整个工具/经纪过程的墙钟上界。配置恢复、封口、后置收集/复测/reader及工具最外层预算必须在新实测包中单列，不能在3600秒直接终止validator而截断恢复/终态回执。
 
 Coding 的合同允许 work 内普通文件创建、修改、删除和重命名，protected子树收紧；实际运行仍须有效授权。Review write_roots只能有out/scratch；可选execute若运行写入性构建，只用独立scratch副本，不改冻结work。Host不自动应用业务树。
 
@@ -216,7 +220,7 @@ A 先按下表交可复用快照 fixture；B/C 可使用同一冻结 schema 并�
 | InputSource（A参数） | 共用 kind=git/zip/directory。git：root:S（已授权绝对根）、commit:S（精确40位SHA）、paths:list[P]（精确文件，不是glob）；zip：path:S、sha256:H、strip_prefix:P或null；directory：root:S、manifest_path:S、manifest_sha256:H。仅所选kind字段存在 |
 | InputPolicy（A参数） | package_bytes_limit:I=67108864、entry_count_limit:I=20000、expanded_bytes_limit:I=536870912、file_bytes_limit:I=67108864、expansion_ratio_limit:I=200、depth_limit:I=32、component_codepoints_limit:I=255、physical_path_utf16_limit:I=240、deadline_seconds:I=60；source_paths:list[P]（原声明源码清单）、excluded_paths:list[{path:P,reason:S}]（明确排除）、sensitive_paths:list[P]、trusted_control_files:dict[P,H]。数字为正且不超过已授权上限；数字上限键可省略以使用冻结默认值，四个非数字键必填；不是可传入正则/任意命令的policy语言 |
 | SnapshotManifest（A→B/C） | contract_version:int=1、snapshot_id:H、source:{kind:S,identity:S,selection_sha256:H}、entries:list[Entry]、source_paths:list[P]、excluded_paths:list[{path:P,reason:S}]；snapshot_root/manifest.json，普通字节树在snapshot_root/source。Entry={path:P,kind:file/directory,bytes:I,sha256:H或null,git_mode:100644/100755或null}；目录bytes=0/hash和mode=null，所有父目录显式一次、根不列入；file hash必填，git_mode仅来源记录。source_paths每项必须在file entries或excluded_paths中 |
-| TaskManifest（B→C） | 第4节JSON就是准确键集合：contract_version:int=1，task_id:S，role:Coding/Review，snapshot_id/snapshot_manifest_sha256/instructions_sha256/deployment_profile_sha256/authorization_sha256:H，deployment_profile_id:S，capabilities:{execute:bool,web_reference:bool,prepare_dependencies:bool}，execution_boundary:declared_scope/required_enforced，read_roots/write_roots/protected_paths/required_outputs:list[P]，acceptance_ids:list[S]，deadline_seconds:int1–1020，source_output_bytes_limit:正整数；task_root/task.json |
+| TaskManifest（B→C） | 第4节JSON就是准确键集合：contract_version:int=1，task_id:S，role:Coding/Review，snapshot_id/snapshot_manifest_sha256/instructions_sha256/deployment_profile_sha256/authorization_sha256:H，deployment_profile_id:S，capabilities:{execute:bool,web_reference:bool,prepare_dependencies:bool}，execution_boundary:declared_scope/required_enforced，read_roots/write_roots/protected_paths/required_outputs:list[P]，acceptance_ids:list[S]，deadline_seconds:int1–3600，source_output_bytes_limit:正整数；task_root/task.json |
 | DeploymentProfile（B/C） | contract_version:int=1、id:S、host:agy/cursor、receipt_sha256:H、roles:list[Coding/Review]、supported_capabilities:上述三bool对象、execution_modes:list[declared_scope/required_enforced]、read_roots/write_roots:list[P]（任务相对根，经回执映射到已授权物理父根）、toolchain_refs:list[S]、enforcement:{method:S,file_scope:Declared/Enforced/Unverified,network_scope:Declared/Enforced/Unverified,evidence_refs:list[Evidence]}；control/deployment-profile.json。refs仅引用登记工具链/证据，不接自定义命令 |
 | Authorization（B/C） | contract_version:int=1、task_id:S、grant_ref:S、receipt_sha256:H、capabilities:上述三bool对象、execution_boundary:上述枚举、read_roots/write_roots:list[P]、web_scope:S或null、dependency_scope:S或null、input_control_bindings:{task_fields_sha256:H,files:dict[P,H]}；control/authorization.json。binding必填且不能null，files允许空；摘要构造顺序及原名匹配见§7.4。grant_ref/各scope只引用已有可信管理授权，C须与部署回执核对；自填字符串不能创建授权，启用能力要求对应有效scope |
 | Plan（C） | contract_version:int=1，task_id:S，task_manifest_sha256:H，deployment_receipt_sha256:H，host:agy/cursor，route:{model:S,effort:S或null}，execution_boundary:上述枚举，capabilities:上述三bool对象，preflight_status:Ready/Blocked，blockers:list[S]，evidence_refs:list[Evidence]；可信control中的plan.json。model/effort只能由固定adapter选择，不能caller定义；Ready还须有效实际授权与对应R |
@@ -549,7 +553,7 @@ Caps.execute 是 Worker 测试/命令能力，`--execute` 是宿主是否启动�
 | approval；grant_ref；budget_ref；max_host_launches | approval={status:Proposed/Approved,author_confirmed:bool}；grant_ref等于可信Auth.grant_ref；budget_ref为一个HostObserved且hash非null的Evidence（管理预先核实，程序不自动解析ref）；max_host_launches严格int=1，限制一次生命周期调用，不证明provider请求数或费用 |
 | host；role；capabilities；execution_boundary | 精确agy/Coding/上述三bool/declared_scope；Task/Auth/Profile均不得提供其他角色/能力/边界 |
 | task_root；trusted_control_root；run_root；result_root | 普通窄绝对根；可信根及其SHA沿用原三文件bundle；run/result必须不存在且父目录已存在；相互、安装根、capture根不重叠；不得覆盖旧产物 |
-| task_manifest_sha256；plan_sha256；trusted_inputs_sha256；receipt_binding_sha256；deadline_seconds | 前三者绑定规范task/Plan/bundle；R binding仅排除receipt.runtime_acceptances/provenance_refs；deadline为1–1020秒并准确等于Task值 |
+| task_manifest_sha256；plan_sha256；trusted_inputs_sha256；receipt_binding_sha256；deadline_seconds | 前三者绑定规范task/Plan/bundle；R binding仅排除receipt.runtime_acceptances/provenance_refs；deadline为1–3600秒并准确等于Task值；专用首单R仍保持既定host/role范围 |
 | validator；installation | validator为本程序自身FileIdentity；installation={root:A,python:FileIdentity,wheel:FileIdentity}，root必须是当前sys.prefix，python是当前sys.executable；非editable安装、实际产品路径及全部wheel包内payload原字节核验，不能使用源码editable运行环境 |
 | environment | FileIdentity指向严格对象{contract_version:1,kind:TaskRuntimeValidationEnvironment,local_appdata:A,worker_shell:FileIdentity}；其raw SHA/路径必须在profile.enforcement.evidence_refs以HostObserved登记。Worker Shell这里只是冻结预期身份，实际使用仍需实机独立取证 |
 | recipes | 恰好一项{ref:first_task_r_unittest_v1,identity:FileIdentity}；绑定receipt唯一Python工具链recipe_refs，文件在work内并受protected_paths保护；程序只核字节，不执行任意recipe/argv |

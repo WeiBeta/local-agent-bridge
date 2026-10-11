@@ -48,7 +48,7 @@ BUDGET = {
     "reader_key_reads": 1,
     "stdout_authentications": 1,
     "test_timeout_seconds": 10,
-    "deadline_seconds": 300,
+    "deadline_seconds": contract.TASK_DEADLINE_MAX_SECONDS,
     "extra_egress": False,
 }
 VERIFIERS = {
@@ -90,8 +90,9 @@ def _task_contract(sheet: dict, roots: dict) -> dict:
         "ContractBindingMismatch",
     )
     _require(
-        contract.deep_equal_strict(value["budget"], BUDGET)
-        and sheet["deadline_seconds"] == BUDGET["deadline_seconds"],
+        contract.deep_equal_strict(
+            value["budget"], {**BUDGET, "deadline_seconds": sheet["deadline_seconds"]}
+        ),
         "BudgetUnverified",
     )
     verifiers = task_run._list(value["verifiers"])
@@ -184,7 +185,8 @@ def _sheet(path: Path, expected: str) -> dict:
     ):
         task_run._hash(sheet[key])
     _require(
-        type(sheet["deadline_seconds"]) is int and sheet["deadline_seconds"] == 300,
+        type(sheet["deadline_seconds"]) is int
+        and 1 <= sheet["deadline_seconds"] <= contract.TASK_DEADLINE_MAX_SECONDS,
         "BudgetUnverified",
     )
     permissions = task_run._object(sheet["permissions"], PERMISSIONS | {"management_local_retest"})

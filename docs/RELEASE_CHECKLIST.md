@@ -1,5 +1,8 @@
 # Local Agent Bridge 发布检查表（0.1.0.dev0 内部预览候选）
 
+- LAB-BRIDGE-DEADLINE-1H-01候选：Task全部已有角色及agy/Cursor上限3600秒，较短值保持；验证3600/3601和类型边界、两host剩余预算/argv、早退、timeout/异常恢复、task/permit/budget一致性及旧slice1020/15m兼容。自测不替代fresh独立Review或真实验收。
+- 新一小时实测包须冻结新wheel/runtime、task/root/grant、permit/预算及全部身份/hash绑定，纠正新任务说明中过时unapproved提示，最外shell立即保存LASTEXITCODE并显式传播退出码；不得改旧失败现场或复用已消费许可。确认agy新增分钟值的原生支持、Cursor/provider/tool更早期限和最外工具停止合同，另列恢复/封口/collect/复测预算，不把3600作为全流程上界。先新授权单任务成功，再另做配置隔离和双任务验证；本候选不实现并发。
+
 - AGY adapter 新行为需离线矩阵与独立 Review；冻结新 wheel/sdist/部署身份，不沿用旧包 SHA。source-only 重析器不得进入 wheel/MCP/CLI，第二阶段只在独立 Review 通过后的单 UID 授权下执行，详见 [AGY_LIVE_ADAPTER.md](AGY_LIVE_ADAPTER.md)。此项尚不代表真实验证或发布通过。
 
 适用范围：Windows 11 / Python 3.13 的 `local-agent-bridge` 内部预览包。本表把发布前要做的事分成

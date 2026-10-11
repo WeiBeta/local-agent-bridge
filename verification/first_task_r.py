@@ -138,7 +138,8 @@ def _sheet(path: Path, expected_sha256: str) -> dict:
     ):
         task_run._hash(sheet[key])
     _require(
-        type(sheet["deadline_seconds"]) is int and 1 <= sheet["deadline_seconds"] <= 1020,
+        type(sheet["deadline_seconds"]) is int
+        and 1 <= sheet["deadline_seconds"] <= contract.TASK_DEADLINE_MAX_SECONDS,
         "PermitInvalid",
     )
     permissions = task_run._object(

@@ -23,6 +23,8 @@ AGY Task 的进程环境/progress 合同修复及 source-only 单 UID 重析候�
 
 ## 2. 保留的原合同
 
+Task v1工作期限为显式整数1–3600秒，Coding/Review与Antigravity/Cursor共用上限。启动时只传剩余工作时间，较短值不被提升到一小时；提前结束即进入恢复/封口和终态回执。Antigravity Task的`--print-timeout`按剩余时间向上取整到分钟，Cursor保留既有argv、仅靠外层期限约束。原生新分钟值和最外工具期限尚需实测；详细阶段预算见[TASK_WORKSPACE_CONTRACT.md](TASK_WORKSPACE_CONTRACT.md)。以下旧slice合同保持原1020秒观察、15m CLI期限，收束宽限各30秒。
+
 - 只处理**既有文本文件**：新增、删除、重命名、符号链接与子模块一律拒绝；可编辑面必须是已准备文件清单的子集。
 - 冻结语义：内容取自指定 commit 的 Git blob 而非工作树；清单按原始字节数 + SHA-256 绑定，diff 只按 LF 拆行，不给文件补换行。
 - 单次固定调用：`run` 的 argv、模型（`gemini-3.8-flash-high`）、effort（`high`）、`--output-format stream-json`、

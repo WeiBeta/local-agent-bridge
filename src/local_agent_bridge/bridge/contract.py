@@ -12,6 +12,9 @@ import json
 import math
 from typing import Any
 
+# Task work budget for every supported role and host, excluding recovery grace.
+TASK_DEADLINE_MAX_SECONDS = 3600
+
 
 class BridgeContractError(ValueError):
     """Raised when bytes are not exactly one strict JSON document."""

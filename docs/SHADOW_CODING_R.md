@@ -65,10 +65,21 @@ one execution; other blockers stop before consumption. Existing runtime/layered
 acceptances remain empty. This validator records evidence, never product acceptance.
 
 Proposed budget: one host launch, two Worker public runs, two management public runs
-and one management private run. Host deadline is 300 seconds; each test child has
+and one management private run. New contract templates use a 3600-second work budget;
+an explicit integer 1..3600 is valid only when Task, permit and contract budget agree.
+The former 300-second budget remains a valid shorter value, without changing any
+historical or consumed packet. All other budget fields stay fixed; each test child has
 ten seconds. Capture creation loads its key once; the separate stdout reader loads
 once and authenticates stdout once. Engineering must freeze native backend
 credential-read bounds and real runtime/host/config/route identities before approval.
+
+Task work uses the remainder from validator entry. Antigravity's internal minute
+limit rounds that remainder up; the outer wait enforces the precise remainder.
+New native minute values are not live-verified. Recovery kill/join remain 30 seconds
+each, and prepare/collect/saved-collection retain their separate stage deadlines.
+Normal process exit continues immediately to cleanup and terminal evidence; there
+is no full-hour wait or callback timer. 3600 is not the whole broker/tool wall limit.
+The standalone legacy slice keeps 1020 seconds and its fixed 15m CLI limit.
 No fallback, second job or automatic retry.
 
 Launch facts retain 0, 1 or null. Original failures/interrupts are saved before

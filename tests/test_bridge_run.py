@@ -8,6 +8,7 @@ provider, network or real settings path is ever touched.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import stat
@@ -547,6 +548,56 @@ def test_restore_failure_is_visible(case: Case, capsys, monkeypatch, tmp_path) -
     assert code == 3
     assert document["restore"]["status"] == "restore_failed"
     assert document["restore"]["restored_original_bytes"] is False
+
+
+@pytest.mark.parametrize("seconds", [1020, 3600])
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_explicit_capture_work_limit_keeps_early_exit_and_recovery(
+    tmp_path, monkeypatch, seconds, timed_out
+):
+    writer = SessionStore(TEST_KEY, root=tmp_path / "synthetic-store").start()
+    process = _FakeProcess(io.BytesIO(b"synthetic stdout"), io.BytesIO(b""))
+    waits = []
+
+    def wait(timeout=None):
+        waits.append(timeout)
+        if timed_out and len(waits) == 1:
+            raise subprocess.TimeoutExpired("synthetic", timeout)
+        return 0
+
+    monkeypatch.setattr(process, "wait", wait)
+    monkeypatch.setattr(runner, "spawn_suspended_in_job", lambda *a, **k: process)
+    record = runner._launch_and_capture(
+        "synthetic",
+        ["synthetic"],
+        str(tmp_path),
+        writer.stream("stdout"),
+        writer.stream("stderr"),
+        timeout_seconds=seconds,
+    )
+    assert waits == ([seconds, 30] if timed_out else [seconds])
+    assert record["timed_out"] is timed_out and record["capture_state"] == "complete"
+    assert process.terminated is timed_out and process.closed_job
+    assert runner.OBSERVATION_TIMEOUT_SECONDS == 1020
+    assert runner.CAPTURE_JOIN_SECONDS == runner.KILL_GRACE_SECONDS == 30
+    assert runner.FIXED_ARGV_TAIL[-2:] == ["--print-timeout", "15m"]
+    writer.seal({"synthetic": True})
+
+
+@pytest.mark.parametrize("seconds", [0, -1, 3601, True, float("inf"), float("nan")])
+def test_capture_rejects_explicit_budget_before_spawn(tmp_path, monkeypatch, seconds):
+    writer = SessionStore(TEST_KEY, root=tmp_path / "synthetic-store").start()
+    monkeypatch.setattr(runner, "spawn_suspended_in_job", lambda *a, **k: pytest.fail("no spawn"))
+    with pytest.raises(runner.SliceRunError, match="deadline"):
+        runner._launch_and_capture(
+            "unused",
+            ["unused"],
+            str(tmp_path),
+            writer.stream("stdout"),
+            writer.stream("stderr"),
+            timeout_seconds=seconds,
+        )
+    writer.seal({"synthetic": True})
 
 
 def test_real_seam_runs_one_local_child_once(tmp_path: Path) -> None:

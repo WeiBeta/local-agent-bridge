@@ -16,6 +16,8 @@ local-agent-bridge cursor run --task-root <dir> --run-root <new dir>
 
 ## 项目权限配置合同
 
+Task v1的Cursor通路与agy共用1–3600秒工作上限，覆盖全部已有Coding/Review角色；较短显式预算继续约束剩余等待。Cursor的Task argv沿用已有参数，不猜测或添加native超时flag。进程提前退出即进入封口/回执；阶段收集和恢复宽限另计，不把3600秒当全工具总时限。本页旧`cursor`切片入口保持1020秒默认观察和各30秒收束宽限。真实一小时运行及上游内部期限尚未验证，配置隔离/并发不在本修订范围。
+
 - 任务根必须经 `prepare --file .cursor/cli.json` 把 Cursor 项目配置作为**冻结输入**带入（实测与 manifest/额外文件校验相容；本适配器未旁路任何冻结核验）。
 - 适配器只记录该文件的 SHA-256；启动前漂移（含 TASK.md、manifest、launcher）即拒绝。**适配器不解释 allow/deny 规则语义**——工具范围治理由调用方预置的 `cli.json` 与 Cursor 本体负责。
 - 无 agy 式 settings 回写/恢复生命周期，也不设置 `AGY_CLI_DISABLE_AUTO_UPDATE`。

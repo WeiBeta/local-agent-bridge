@@ -13,6 +13,7 @@ import contextlib
 import ctypes
 import fnmatch
 import inspect
+import math
 import os
 import re
 import stat
@@ -410,7 +411,7 @@ def _validate_task(task: dict) -> None:
     for key in ("deadline_seconds", "source_output_bytes_limit"):
         if type(task[key]) is not int or task[key] < 1:
             raise TaskRunError("InvalidContract")
-    if task["deadline_seconds"] > 1020:
+    if task["deadline_seconds"] > contract.TASK_DEADLINE_MAX_SECONDS:
         raise TaskRunError("InvalidContract")
     if not task["read_roots"] or not task["write_roots"]:
         raise TaskRunError("InvalidScope")
@@ -1570,13 +1571,16 @@ def _launch(
 ) -> dict:
     receipt = context["bundle"]["deployment_receipt"]
     entry = receipt["host_entry"]["path"]
-    if receipt["host"] == "agy":
-        argv = [entry, "--print", request, *slice_run.FIXED_ARGV_TAIL]
-    else:
-        argv = cursor_run._cursor_argv(entry, str(context["task_root"]), request)
     remaining = context["task"]["deadline_seconds"] - (time.monotonic() - started)
     if remaining <= 0:
         raise TaskRunError("DeadlineExceeded")
+    if receipt["host"] == "agy":
+        # Keep the legacy slice tail unchanged. Its last value uses minutes;
+        # round up so the native timer cannot shorten the exact outer budget.
+        timeout_minutes = math.ceil(remaining / 60)
+        argv = [entry, "--print", request, *slice_run.FIXED_ARGV_TAIL[:-1], f"{timeout_minutes}m"]
+    else:
+        argv = cursor_run._cursor_argv(entry, str(context["task_root"]), request)
 
     return slice_run._launch_and_capture(
         entry,

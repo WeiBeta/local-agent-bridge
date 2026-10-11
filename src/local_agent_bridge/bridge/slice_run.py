@@ -59,6 +59,7 @@ if str(PACKAGE_ROOT.parent) not in sys.path:
 
 from local_agent_bridge.bridge import slice_workspace  # noqa: E402
 from local_agent_bridge.bridge.contract import (  # noqa: E402
+    TASK_DEADLINE_MAX_SECONDS,
     BridgeContractError,
     decode_strict_json_bytes,
     deep_equal_strict,
@@ -537,7 +538,7 @@ def _launch_and_capture(
     before a process is returned. The callback remains a post-return observer.
     Interrupts propagate unchanged after cleanup. Stalled readers get no hash.
     """
-    if isinstance(timeout_seconds, bool) or not 0 < timeout_seconds <= OBSERVATION_TIMEOUT_SECONDS:
+    if isinstance(timeout_seconds, bool) or not 0 < timeout_seconds <= TASK_DEADLINE_MAX_SECONDS:
         raise SliceRunError("observation deadline is outside the fixed limit")
     started = time.monotonic()
     started_utc = datetime.now(UTC).isoformat()
