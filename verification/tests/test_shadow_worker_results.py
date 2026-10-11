@@ -99,7 +99,121 @@ def test_provenance_a_rejects_model_self_report_and_missing_summary(native_fixtu
         summaries=summaries,
         provenance=live.native.PROVENANCE_FINAL_TOOL_SUMMARY,
     )
-    assert result["status"] == "Unknown" and result["error_code"] == "ToolOutputMissingOrLarge"
+    assert result["status"] == "Unknown"
+    assert result["error_code"] == "PhaseEvidenceMissingOrOrder"
+
+
+@pytest.mark.parametrize(
+    ("command", "output", "strict_status"),
+    [
+        (
+            "Get-Content -LiteralPath synthetic/tool.py",
+            "synthetic ordinary file content",
+            live.native.STRICT_STATUS,
+        ),
+        (
+            "Get-Content -LiteralPath synthetic/shadow_worker_tests.py",
+            "synthetic wrapper source text",
+            "Unknown",
+        ),
+        ("git status --short", "", live.native.STRICT_STATUS),
+        ("python -c 'print(1)'", "1", live.native.STRICT_STATUS),
+    ],
+)
+def test_provenance_a_allows_ordinary_auxiliary_commands_without_marker(
+    native_fixture,
+    command,
+    output,
+    strict_status,
+):
+    stream, commands, summaries = native_fixture
+    stream.insert(
+        2,
+        {
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "native-fixture",
+                "step_index": 20,
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"CommandLine": command},
+                    "output": output,
+                },
+            },
+        },
+    )
+    strict = live.native.analyze(raw(stream), commands=commands, summaries=summaries)
+    artifacts = live.native.analyze(
+        raw(stream),
+        commands=commands,
+        summaries=summaries,
+        provenance=live.native.PROVENANCE_FINAL_TOOL_SUMMARY,
+    )
+    assert strict["status"] == strict_status
+    assert artifacts["status"] == live.native.ARTIFACT_STATUS
+    assert set(artifacts["outer_literal_match"]) == {"reproduce", "regression"}
+
+
+def test_provenance_a_still_rejects_failed_auxiliary_command(native_fixture):
+    stream, commands, summaries = native_fixture
+    stream.insert(
+        2,
+        {
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "native-fixture",
+                "step_index": 20,
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"CommandLine": "Get-Content -LiteralPath synthetic/tool.py"},
+                    "error": {"type": "ExecutionError", "message": "synthetic"},
+                },
+            },
+        },
+    )
+    result = live.native.analyze(
+        raw(stream),
+        commands=commands,
+        summaries=summaries,
+        provenance=live.native.PROVENANCE_FINAL_TOOL_SUMMARY,
+    )
+    assert result["status"] == "Unknown" and result["error_code"] == "DuplicateOrFailedTool"
+
+
+def test_provenance_a_rejects_malformed_marker_output(native_fixture):
+    stream, commands, summaries = native_fixture
+    stream.insert(
+        2,
+        {
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "native-fixture",
+                "step_index": 20,
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {"CommandLine": "Get-Content -LiteralPath synthetic/tool.py"},
+                    "output": live.wrapper.PREFIX + "not-json",
+                },
+            },
+        },
+    )
+    result = live.native.analyze(
+        raw(stream),
+        commands=commands,
+        summaries=summaries,
+        provenance=live.native.PROVENANCE_FINAL_TOOL_SUMMARY,
+    )
+    assert result["status"] == "Unknown"
+    assert result["error_code"] in {"SummaryMissingOrAmbiguous", "MalformedJson"}
 
 
 @pytest.mark.parametrize(

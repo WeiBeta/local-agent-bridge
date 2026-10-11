@@ -120,6 +120,15 @@ outer CommandLine literal as exact/prefix/prefix_ellipsis/different; that litera
 diagnostic is not sufficient and does not claim OS argv observation. The default
 absence of worker_provenance keeps the older OuterCommandExact/
 CliPublicTestsMatch contract unchanged, with no silent fallback between modes.
+The protected summary marker identifies a target-summary candidate. Ordinary DONE
+helper commands without that marker may have text, empty, or no output and are not
+required to be wrapper summaries, but still pass conversation, step/tool identity,
+state, error, ordering, and terminal checks. A malformed marked summary rejects;
+a missing target summary leaves the required two-phase evidence incomplete and
+returns Unknown. A helper command that only reads or mentions
+shadow_worker_tests.py is not thereby execution evidence. worker_provenance must
+be the exact A object when present; explicit null is not the documented absent
+field and is rejected.
 
 Bounds reuse the existing reader: 256 KiB stream/file, 64 KiB line, 1024 lines,
 256 steps and strict JSON depth/node/container limits. Sealed-stdout authentication

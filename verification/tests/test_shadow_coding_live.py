@@ -412,6 +412,37 @@ def test_worker_provenance_a_saved_summary_still_required(case, monkeypatch):
     assert observation.read_bytes() == original and case.key_reads == ["reader"]
 
 
+def test_worker_provenance_a_live_allows_read_helper_between_targets(case, monkeypatch):
+    enable_worker_provenance_a(case)
+    stream = truncated_native_stream(case)
+    stream.insert(
+        2,
+        {
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "native-fixture",
+                "step_index": 20,
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "run_command",
+                "tool_info": {
+                    "name": "run_command",
+                    "parameters": {
+                        "CommandLine": "Get-Content -LiteralPath synthetic/shadow_worker_tests.py"
+                    },
+                    "output": "synthetic wrapper source text",
+                },
+            },
+        },
+    )
+    fake_host(case, monkeypatch, stream, prepare=False)
+    manager(case, monkeypatch)
+    result = invoke(case)
+    assert result["status"] == "EvidenceReadyForManagement"
+    assert result["worker_evidence"]["value"]["status"] == "CliBoundPublicResults"
+    assert saved(case) == result and case.key_reads == ["reader"]
+
+
 def test_worker_provenance_a_saved_result_cannot_fall_back_to_strict(case, monkeypatch):
     enable_worker_provenance_a(case)
     fake_host(case, monkeypatch, truncated_native_stream(case), prepare=False)
@@ -447,6 +478,17 @@ def test_worker_provenance_a_contract_is_explicit_and_closed(case, value):
         if "version" in value
         else pytest.raises(live.task_run.TaskRunError)
     ):
+        invoke(case)
+    assert not case.calls and not case.key_reads
+    assert not Path(case.sheet["run_root"]).exists()
+
+
+def test_worker_provenance_explicit_null_is_not_the_documented_absence(case):
+    case.contract["worker_provenance"] = None
+    fixture.write_json(case.contract_path, case.contract)
+    case.sheet["budget_ref"]["sha256"] = fixture.identity(case.contract_path)["sha256"]
+    freeze(case)
+    with pytest.raises(live.task_run.TaskRunError, match="InvalidContract"):
         invoke(case)
     assert not case.calls and not case.key_reads
     assert not Path(case.sheet["run_root"]).exists()

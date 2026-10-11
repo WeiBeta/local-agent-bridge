@@ -42,6 +42,12 @@ def _summary_document(output: object) -> dict:
     return value
 
 
+def _has_summary_marker(output: object) -> bool:
+    # The protected marker identifies a target-summary candidate. An ordinary
+    # command that merely mentions the wrapper filename is not execution fact.
+    return type(output) is str and output.startswith(wrapper.PREFIX)
+
+
 def _summary(output: object, expected: dict) -> dict:
     value = _summary_document(output)
     _require(
@@ -169,6 +175,8 @@ def analyze(
                 continue
             if provenance == PROVENANCE_FINAL_TOOL_SUMMARY:
                 _require("error" not in info, "DuplicateOrFailedTool")
+                if not _has_summary_marker(info.get("output")):
+                    continue
                 document = _summary_document(info.get("output"))
                 phase = document.get("phase")
                 _require(

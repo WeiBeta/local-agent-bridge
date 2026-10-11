@@ -100,8 +100,8 @@ def _task_contract(sheet: dict, roots: dict) -> dict:
         ),
         "BudgetUnverified",
     )
-    provenance = value.get("worker_provenance")
-    if provenance is not None:
+    if "worker_provenance" in value:
+        provenance = value["worker_provenance"]
         task_run._object(provenance, {"basis", "version"})
         _require(
             contract.deep_equal_strict(provenance, WORKER_PROVENANCE_A),
