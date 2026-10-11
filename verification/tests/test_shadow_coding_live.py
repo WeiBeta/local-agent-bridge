@@ -302,9 +302,13 @@ def report_xml(phase):
         '<testcase name="'
         + name
         + '">'
-        + ("<error/>" if phase == "baseline_public" and index < 4 else "")
+        + (
+            "<error/>"
+            if phase == "baseline_public" and name in live.wrapper.BASELINE_ERRORS
+            else ""
+        )
         + "</testcase>"
-        for index, name in enumerate(names)
+        for name in names
     )
     errors = 4 if phase == "baseline_public" else 0
     return (
@@ -417,6 +421,66 @@ def test_native_gap_retains_unknown_and_never_second_reader(case, monkeypatch):
     assert result["status"] == "Stopped" and result["error_code"] == "CliEvidenceUnknown"
     assert result["worker_evidence"]["value"]["status"] == "Unknown"
     assert saved(case) == result and case.key_reads == ["reader"]
+
+
+def test_initial_wrong_collected_case_outcomes_stop_before_reader(case, monkeypatch):
+    fake_host(case, monkeypatch)
+    manager(case, monkeypatch)
+    original_expectations = live.expectations
+
+    def wrong_xml(context, roots, collection):
+        path = roots["result_root"] / "out/worker-tests/reproduce/report/tests.xml"
+        _swap_error_names(path)
+        return original_expectations(context, roots, collection)
+
+    monkeypatch.setattr(live, "expectations", wrong_xml)
+    result = invoke(case)
+    assert result["status"] == "Stopped" and result["error_code"] == "WorkerCaseOutcomesChanged"
+    assert len(case.calls) == 1 and not case.key_reads
+
+
+def _swap_error_names(path):
+    import xml.etree.ElementTree as ET
+
+    suite = ET.fromstring(path.read_bytes())
+    for node in suite:
+        for child in list(node):
+            node.remove(child)
+    for node in list(suite)[:4]:
+        ET.SubElement(node, "error")
+    assert {node.get("name") for node in suite if len(node)} != live.wrapper.BASELINE_ERRORS
+    path.write_bytes(ET.tostring(suite))
+
+
+@pytest.mark.parametrize("what", ["worker_xml", "worker_summary", "manager_xml"])
+def test_saved_checks_case_outcomes_even_after_inventory_seam(case, monkeypatch, what):
+    fake_host(case, monkeypatch)
+    manager(case, monkeypatch)
+    result = invoke(case)
+    assert result["status"] == "EvidenceReadyForManagement"
+    observation = Path(case.sheet["run_root"]) / "shadow-validation.json"
+    original = observation.read_bytes()
+    if what == "worker_xml":
+        path = Path(case.sheet["result_root"]) / "out/worker-tests/reproduce/report/tests.xml"
+        _swap_error_names(path)
+    elif what == "worker_summary":
+        path = Path(case.sheet["result_root"]) / "out/worker-tests/reproduce/summary.json"
+        value = json.loads(path.read_bytes())
+        outcomes = value["case_outcomes"]
+        error_name = sorted(live.wrapper.BASELINE_ERRORS)[0]
+        pass_name = sorted(set(live.wrapper.CASES) - live.wrapper.BASELINE_ERRORS)[0]
+        outcomes[error_name], outcomes[pass_name] = "pass", "error"
+        fixture.write_json(path, value)
+    else:
+        path = Path(case.sheet["manager_retest"]["root"]) / "baseline_public/out/tests.xml"
+        _swap_error_names(path)
+        # Only bypass the earlier retained-file hash gate to exercise named states.
+        monkeypatch.setattr(live.retests, "read_manager_evidence", lambda **_: None)
+    monkeypatch.setattr(live.lifecycle, "_saved_collection", lambda *_: result["collection_sha256"])
+    with pytest.raises((live.lifecycle.ValidationError, live.native.bounded.Refused)):
+        saved(case)
+    assert len(case.calls) == 1 and case.key_reads == ["reader"]
+    assert case.manager_calls == list(live.retests.PHASES) and observation.read_bytes() == original
 
 
 def test_saved_mutation_needs_external_observation_pin(case, monkeypatch):

@@ -373,6 +373,12 @@ def expectations(context: dict, roots: dict, collection: dict) -> tuple[dict, di
             roots["result_root"] / "out/worker-tests" / phase / "report/tests.xml", manager_phase
         )
         _require(counts == retests._counts(manager_phase), "WorkerReportChanged")
+        case_report = wrapper.report(Path(report["path"]))
+        _require(
+            case_report["case_outcomes"] == wrapper.expected_outcomes(phase)
+            and case_report["report_sha256"] == report["sha256"],
+            "WorkerCaseOutcomesChanged",
+        )
         argv = [
             python["path"],
             "-I",
@@ -416,9 +422,29 @@ def expectations(context: dict, roots: dict, collection: dict) -> tuple[dict, di
             **counts,
             "skipped": 0,
             "case_ids": wrapper.CASES.copy(),
+            "case_outcomes": case_report["case_outcomes"],
             "report_sha256": report["sha256"],
         }
     return commands, summaries
+
+
+def _check_collected_summaries(roots: dict, summaries: dict, value: dict) -> None:
+    for phase in ("reproduce", "regression"):
+        raw = task_run.read_host_input_bytes(
+            path=str(roots["result_root"] / "out/worker-tests" / phase / "summary.json")
+        )
+        summary = native._summary(wrapper.PREFIX + raw.decode("utf-8"), summaries[phase])
+        _require(
+            native.bounded._sha(native.bounded._canonical(summary))
+            == value["phases"][phase]["summary_sha256"],
+            "CliSummaryFileConflict",
+        )
+
+
+def _check_manager_cases(roots: dict) -> None:
+    for stage, phase in (("baseline_public", "reproduce"), ("candidate_public", "regression")):
+        value = wrapper.report(roots["manager_retest"] / stage / "out/tests.xml")
+        _require(value["case_outcomes"] == wrapper.expected_outcomes(phase), "ManagerCasesChanged")
 
 
 def _worker_evidence(context: dict, roots: dict, run: dict, collection: dict) -> dict:
@@ -432,16 +458,7 @@ def _worker_evidence(context: dict, roots: dict, run: dict, collection: dict) ->
         key_loader=load_key,
     )
     if value["status"] == "CliPublicTestsMatch":
-        for phase in ("reproduce", "regression"):
-            raw = task_run.read_host_input_bytes(
-                path=str(roots["result_root"] / "out/worker-tests" / phase / "summary.json")
-            )
-            summary = native.bounded._json(raw)
-            _require(
-                native.bounded._sha(native.bounded._canonical(summary))
-                == value["phases"][phase]["summary_sha256"],
-                "CliSummaryFileConflict",
-            )
+        _check_collected_summaries(roots, summaries, value)
     return {
         "identity": retests._identity(roots["run_root"] / "shadow-reader/result.json"),
         "value": value,
@@ -594,6 +611,7 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
                                 collection=collection,
                                 recipe_root=recipe_root,
                             )
+                            _check_manager_cases(roots)
                             worker_evidence = _worker_evidence(context, roots, run, collection)
                             _require(
                                 worker_evidence["value"]["status"] == "CliPublicTestsMatch",
@@ -734,6 +752,7 @@ def read_saved(*, sheet_path: Path, expected_sha256: str, observation_sha256: st
             collection=collection,
             recipe_root=Path(context["shadow_contract"]["acceptance_recipe"]),
         )
+        _check_manager_cases(roots)
     if saved["worker_evidence"] is not None:
         worker = saved["worker_evidence"]
         _require(
@@ -748,6 +767,9 @@ def read_saved(*, sheet_path: Path, expected_sha256: str, observation_sha256: st
             and worker["value"]["capture_uid"] == run["capture_uid"],
             "CliEvidenceChanged",
         )
+        if worker["value"]["status"] == "CliPublicTestsMatch":
+            _, summaries = expectations(context, roots, collection)
+            _check_collected_summaries(roots, summaries, worker["value"])
     if saved["status"] == "EvidenceReadyForManagement":
         _require(
             saved["error_code"] is None

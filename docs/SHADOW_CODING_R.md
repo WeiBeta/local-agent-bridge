@@ -1,7 +1,7 @@
 # Shadow PPTX coding validation
 
-LAB-SHADOW-CODING-LIVE-INTEGRATE-01 extends frozen base
-5d5842d009d883fff08f27c25683974d10d7d2e7 with task-specific source-only integration.
+LAB-SHADOW-CODING-LIVE-REPAIR-01 repairs LIVE-F01 and LIVE-F02 at frozen base
+98abad40d4b8526a3da45db0d7c8c1e827f3e872. Each defect is in its first repair round.
 Product src, first_task_r.py, original SELECT inputs/recipes, production and
 configuration are unchanged. Fresh independent Review and a new concentrated real
 approval remain required. Offline checks do not establish installed CLI compatibility.
@@ -24,12 +24,28 @@ acceptance side and never enter Worker input.
 The protected wrapper calls the unchanged public recipe with pinned Python,
 -I -B, absolute paths and ten-second child timeout. It verifies all eight case IDs,
 counts, source files/tree and recipe/interpreter identity before/after execution.
+Each summary also binds every case ID to its pass/error/failure state. The four
+baseline errors must be exactly default_range_has_numeric_source_order,
+repeatable_json_bytes, sparse_inclusive_filter and valid_archive_and_input_digest
+(each with the public_tests.PublicPackageTests.test_ prefix). Every other baseline
+case and all regression cases must pass. Totals and the case-name set alone do
+not satisfy this check. Collected XML, native summary, initial validation and saved
+reread enforce the same states; management public XML is checked independently.
 Child console output is discarded so source output cannot masquerade as the one
 bounded summary. Actual child exit stays in that summary. Wrapper exit zero means
 a well-formed report was produced, including the expected failing baseline.
 Regression requires prior reproduction output. A failed/completed phase directory
 stays reserved. Changed inputs, missing XML, timeout or other error stop without
 a success summary; partial evidence remains.
+
+The current WP05 matrix, as adjudicated by management on 2026-10-11, requires UTC
+start/end, an actual ten-second subprocess timeout and command/source/recipe/XML
+bindings carried in the CLI tool result. Child stdout/stderr use DEVNULL. Child
+console diagnostics and console identity are unavailable, and no monotonic fields
+are added. This is an explicit adjustment to historical preparation WP05, not a
+claim that all of its original requirements passed. WP07's historical "8/0 errors"
+baseline sentence is corrected here to SELECT's eight cases/four named errors;
+the historical preparation archive remains unchanged.
 
 ## Task-side lifecycle and authority
 
@@ -117,6 +133,17 @@ packet until engineering binds them. Luna verifies supplied hashes and executes
 the bound run_once.ps1 once; it does not construct fields, diagnose, retry or accept.
 The script rejects an unbound draft before invoking Python. The old standalone
 shadow_coding_r.py entry remains stop-only for compatibility.
+
+Use the new repair packet; preserve the historical integration packet. Its broker
+script rejects an occupied run_root before consuming a broker attempt or invoking
+Python. A returned observation must be newly created in the previously vacant
+root and bind this task ID and permit SHA, observation kind/version, count domain
+and unaccepted evidence state before its facts can enter a receipt. Missing,
+malformed or mismatched observation yields Unknown/null, with the actual outer
+exit and invocation_started recorded separately. Preflight rejection cannot borrow
+Ready/1 from an earlier run. All receipt/attempt writes are exclusive; a later
+entry neither executes again nor overwrites the earlier receipt. These checks are
+within the existing same-user boundary, without OS isolation claims.
 
 ## Offline checks and next gate
 

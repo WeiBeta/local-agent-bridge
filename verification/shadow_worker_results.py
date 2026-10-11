@@ -32,6 +32,12 @@ def _summary(output: object, expected: dict) -> dict:
         "SummaryMissingOrAmbiguous",
     )
     value = bounded._json(text[len(wrapper.PREFIX) :].encode())
+    _require(
+        task_run.contract.deep_equal_strict(
+            value.get("case_outcomes"), wrapper.expected_outcomes(expected["phase"])
+        ),
+        "CaseOutcomesChanged",
+    )
     keys = set(expected) | {"start_utc", "end_utc", "report_sha256"}
     _require(set(value) == keys, "SummaryShapeMismatch")
     for key, item in expected.items():

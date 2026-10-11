@@ -31,6 +31,28 @@ def test_documented_done_output_with_active_transition(native_fixture):
     assert "argv" not in json.dumps(result) and "CommandLine" not in json.dumps(result)
 
 
+@pytest.mark.parametrize("problem", ["missing", "wrong_status", "wrong_name", "polluted_expected"])
+def test_per_case_status_and_exact_error_distribution(native_fixture, problem):
+    stream, commands, summaries = native_fixture
+    info = stream[1]["step_update"]["tool_info"]
+    summary = json.loads(info["output"][len(live.wrapper.PREFIX) :])
+    outcomes = summary["case_outcomes"]
+    if problem == "missing":
+        summary.pop("case_outcomes")
+    elif problem == "wrong_status":
+        outcomes[sorted(live.wrapper.BASELINE_ERRORS)[0]] = "failure"
+    elif problem == "wrong_name":
+        outcomes["public_tests.ForeignCase"] = outcomes.pop(sorted(outcomes)[0])
+    else:
+        error_name = sorted(live.wrapper.BASELINE_ERRORS)[0]
+        pass_name = sorted(set(live.wrapper.CASES) - live.wrapper.BASELINE_ERRORS)[0]
+        outcomes[error_name], outcomes[pass_name] = "pass", "error"
+        summaries["reproduce"]["case_outcomes"] = copy.deepcopy(outcomes)
+    info["output"] = live.wrapper.PREFIX + json.dumps(summary)
+    result = live.native.analyze(raw(stream), commands=commands, summaries=summaries)
+    assert result["status"] == "Unknown" and result["accepted"] is False
+
+
 @pytest.mark.parametrize(
     "problem",
     [

@@ -39,6 +39,23 @@ CASES = sorted(
         "test_escaping_member_rejected",
     )
 )
+BASELINE_ERRORS = {
+    "public_tests.PublicPackageTests.test_" + name
+    for name in (
+        "default_range_has_numeric_source_order",
+        "repeatable_json_bytes",
+        "sparse_inclusive_filter",
+        "valid_archive_and_input_digest",
+    )
+}
+
+
+def expected_outcomes(phase: str) -> dict[str, str]:
+    require(phase in {"reproduce", "regression"}, "PhaseInvalid")
+    return {
+        name: "error" if phase == "reproduce" and name in BASELINE_ERRORS else "pass"
+        for name in CASES
+    }
 
 
 class WrapperError(RuntimeError):
@@ -137,13 +154,20 @@ def report(path: Path) -> dict:
         "CaseSetChanged",
     )
     actual = {"failures": 0, "errors": 0}
+    outcomes = {}
     for case in cases:
         require(len(case) <= 1, "InvalidReport")
+        outcomes[case.get("name")] = case[0].tag if len(case) else "pass"
         for outcome in case:
             require(outcome.tag in {"failure", "error"}, "InvalidReport")
             actual["failures" if outcome.tag == "failure" else "errors"] += 1
     require(all(counts[key] == value for key, value in actual.items()), "InvalidReport")
-    return {**counts, "case_ids": CASES.copy(), "report_sha256": sha(raw)}
+    return {
+        **counts,
+        "case_ids": CASES.copy(),
+        "case_outcomes": {name: outcomes[name] for name in CASES},
+        "report_sha256": sha(raw),
+    }
 
 
 def run_public(*, task_id: str, phase: str, source: Path, out: Path) -> dict:
@@ -192,6 +216,7 @@ def run_public(*, task_id: str, phase: str, source: Path, out: Path) -> dict:
     require(inventory(source) == (before, tree), "SourceChangedDuringTests")
     require(sha(read(executable, 16 * 1024 * 1024)) == python_sha, "PythonChanged")
     counts = report(out / "report/tests.xml")
+    require(counts["case_outcomes"] == expected_outcomes(phase), "CaseOutcomesChanged")
     require(
         type(process.returncode) is int
         and process.returncode == (1 if counts["errors"] or counts["failures"] else 0),

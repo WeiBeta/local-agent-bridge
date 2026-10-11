@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 from test_shadow_coding_live import SELECT, live, selected_files
@@ -50,11 +51,13 @@ def test_actual_unchanged_public_recipe_baseline_then_reference_candidate(work):
     first = json.loads(baseline.stdout[len(live.wrapper.PREFIX) :])
     assert (first["tests"], first["failures"], first["errors"], first["exit_code"]) == (8, 0, 4, 1)
     assert first["case_ids"] == live.wrapper.CASES and "Traceback" not in baseline.stdout.decode()
+    assert first["case_outcomes"] == live.wrapper.expected_outcomes("reproduce")
     shutil.copyfile(SELECT / "acceptance/reference/tool.py", work / "tool.py")
     candidate = run(work, "regression")
     assert candidate.returncode == 0, candidate.stderr
     final = json.loads(candidate.stdout[len(live.wrapper.PREFIX) :])
     assert (final["tests"], final["failures"], final["errors"], final["exit_code"]) == (8, 0, 0, 0)
+    assert final["case_outcomes"] == live.wrapper.expected_outcomes("regression")
     files, tree = live.wrapper.inventory(work)
     assert final["source_tree_sha256"] == tree and final["source_files"] == files
     repeat = run(work, "regression")
@@ -97,3 +100,35 @@ def test_missing_cases_and_unbounded_xml_cannot_make_a_summary(tmp_path, raw):
     path.write_bytes(raw)
     with pytest.raises(live.wrapper.WrapperError):
         live.wrapper.report(path)
+
+
+def test_wrong_four_error_names_stop_wrapper_before_summary(work, monkeypatch):
+    from test_shadow_coding_live import report_xml
+
+    wrong = report_xml("baseline_public")
+    first_error = sorted(live.wrapper.BASELINE_ERRORS)[0]
+    first_pass = sorted(set(live.wrapper.CASES) - live.wrapper.BASELINE_ERRORS)[0]
+    wrong = wrong.replace(
+        f'<testcase name="{first_error}"><error/></testcase>',
+        f'<testcase name="{first_error}"></testcase>',
+    )
+    wrong = wrong.replace(
+        f'<testcase name="{first_pass}"></testcase>',
+        f'<testcase name="{first_pass}"><error/></testcase>',
+    )
+
+    def child(argv, **kwargs):
+        output = work.parent / "out/worker-tests/reproduce/report"
+        output.mkdir()
+        (output / "tests.xml").write_text(wrong, encoding="utf-8")
+        assert kwargs["timeout"] == 10 and kwargs["stdout"] == subprocess.DEVNULL
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(live.wrapper, "__file__", str(work / "recipe/shadow_worker_tests.py"))
+    monkeypatch.setattr(live.wrapper.subprocess, "run", child)
+    out = work.parent / "out/worker-tests/reproduce"
+    with pytest.raises(live.wrapper.WrapperError, match="CaseOutcomesChanged"):
+        live.wrapper.run_public(
+            task_id="offline-wrong-names", phase="reproduce", source=work, out=out
+        )
+    assert not (out / "summary.json").exists() and (out / "report/tests.xml").exists()
