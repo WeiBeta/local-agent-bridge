@@ -39,6 +39,11 @@ CAPABILITIES = lifecycle.CAPABILITIES
 RECIPE_REF = retests.RECIPE_REF
 MANAGEMENT_TASK = lifecycle.MANAGEMENT_TASK
 PERMISSIONS = lifecycle.PERMISSIONS
+WORKER_PROVENANCE_A = {
+    "basis": native.PROVENANCE_FINAL_TOOL_SUMMARY,
+    "version": 1,
+}
+WORKER_EVIDENCE_STATUSES = {native.STRICT_STATUS, native.ARTIFACT_STATUS}
 BUDGET = {
     "host_launches": 1,
     "worker_public_runs": 2,
@@ -70,17 +75,17 @@ def _task_contract(sheet: dict, roots: dict) -> dict:
         not any(paths._is_within(path, root) for root in roots.values()), "ContractRootRejected"
     )
     value = contract.decode_strict_json_bytes(_read_pinned(identity), label="Shadow task contract")
+    base_keys = {
+        "contract_version",
+        "kind",
+        "task_id",
+        "input_files",
+        "acceptance_recipe",
+        "verifiers",
+        "budget",
+    }
     task_run._object(
-        value,
-        {
-            "contract_version",
-            "kind",
-            "task_id",
-            "input_files",
-            "acceptance_recipe",
-            "verifiers",
-            "budget",
-        },
+        value, base_keys | ({"worker_provenance"} if "worker_provenance" in value else set())
     )
     _require(
         type(value["contract_version"]) is int
@@ -95,6 +100,13 @@ def _task_contract(sheet: dict, roots: dict) -> dict:
         ),
         "BudgetUnverified",
     )
+    provenance = value.get("worker_provenance")
+    if provenance is not None:
+        task_run._object(provenance, {"basis", "version"})
+        _require(
+            contract.deep_equal_strict(provenance, WORKER_PROVENANCE_A),
+            "ProvenanceUnverified",
+        )
     verifiers = task_run._list(value["verifiers"])
     _require(len(verifiers) == len(VERIFIERS), "VerifierChanged")
     expected_paths = {str(Path(__file__).absolute().parent / name) for name in VERIFIERS}
@@ -449,8 +461,45 @@ def _check_manager_cases(roots: dict) -> None:
         _require(value["case_outcomes"] == wrapper.expected_outcomes(phase), "ManagerCasesChanged")
 
 
+def _worker_provenance(context: dict) -> str:
+    return (
+        native.PROVENANCE_FINAL_TOOL_SUMMARY
+        if contract.deep_equal_strict(
+            context["shadow_contract"].get("worker_provenance"), WORKER_PROVENANCE_A
+        )
+        else native.PROVENANCE_OUTER_COMMAND
+    )
+
+
+def _check_worker_provenance(context: dict, value: dict) -> None:
+    if _worker_provenance(context) == native.PROVENANCE_FINAL_TOOL_SUMMARY:
+        outer = value.get("outer_literal_match")
+        _require(
+            value["status"] == native.ARTIFACT_STATUS
+            and value.get("basis") == native.PROVENANCE_FINAL_TOOL_SUMMARY
+            and type(outer) is dict
+            and set(outer) == {"reproduce", "regression"}
+            and all(
+                set(item) == {"match", "classification"}
+                and type(item["match"]) is bool
+                and item["classification"] in {"exact", "prefix", "prefix_ellipsis", "different"}
+                and item["match"] == (item["classification"] == "exact")
+                for item in outer.values()
+            ),
+            "ProvenanceChanged",
+        )
+    else:
+        _require(
+            value["status"] == native.STRICT_STATUS
+            and "basis" not in value
+            and "outer_literal_match" not in value,
+            "ProvenanceChanged",
+        )
+
+
 def _worker_evidence(context: dict, roots: dict, run: dict, collection: dict) -> dict:
     commands, summaries = expectations(context, roots, collection)
+    provenance = _worker_provenance(context)
     value = native.read_capture_once(
         bundle=roots["local_appdata"] / "LocalAgentBridge/sessions" / run["capture_uid"],
         uid=run["capture_uid"],
@@ -458,9 +507,11 @@ def _worker_evidence(context: dict, roots: dict, run: dict, collection: dict) ->
         commands=commands,
         summaries=summaries,
         key_loader=load_key,
+        provenance=provenance,
     )
-    if value["status"] == "CliPublicTestsMatch":
+    if value["status"] in WORKER_EVIDENCE_STATUSES:
         _check_collected_summaries(roots, summaries, value)
+        _check_worker_provenance(context, value)
     return {
         "identity": retests._identity(roots["run_root"] / "shadow-reader/result.json"),
         "value": value,
@@ -616,7 +667,7 @@ def validate_once(*, sheet_path: Path, expected_sha256: str) -> dict:
                             _check_manager_cases(roots)
                             worker_evidence = _worker_evidence(context, roots, run, collection)
                             _require(
-                                worker_evidence["value"]["status"] == "CliPublicTestsMatch",
+                                worker_evidence["value"]["status"] in WORKER_EVIDENCE_STATUSES,
                                 "CliEvidenceUnknown",
                             )
                             _final_context(
@@ -769,15 +820,16 @@ def read_saved(*, sheet_path: Path, expected_sha256: str, observation_sha256: st
             and worker["value"]["capture_uid"] == run["capture_uid"],
             "CliEvidenceChanged",
         )
-        if worker["value"]["status"] == "CliPublicTestsMatch":
+        if worker["value"]["status"] in WORKER_EVIDENCE_STATUSES:
             _, summaries = expectations(context, roots, collection)
             _check_collected_summaries(roots, summaries, worker["value"])
+            _check_worker_provenance(context, worker["value"])
     if saved["status"] == "EvidenceReadyForManagement":
         _require(
             saved["error_code"] is None
             and saved["launch_count"] == run["launch_count"] == 1
             and saved["manager_evidence"] is not None
-            and saved["worker_evidence"]["value"]["status"] == "CliPublicTestsMatch",
+            and saved["worker_evidence"]["value"]["status"] in WORKER_EVIDENCE_STATUSES,
             "ObservationChanged",
         )
     return saved

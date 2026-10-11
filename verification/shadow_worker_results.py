@@ -13,6 +13,12 @@ import shadow_worker_tests as wrapper
 
 from local_agent_bridge.bridge import task_run
 
+PROVENANCE_OUTER_COMMAND = "OuterCommandExact"
+PROVENANCE_FINAL_TOOL_SUMMARY = "FinalToolSummaryAndArtifacts"
+PROVENANCES = {PROVENANCE_OUTER_COMMAND, PROVENANCE_FINAL_TOOL_SUMMARY}
+STRICT_STATUS = "CliPublicTestsMatch"
+ARTIFACT_STATUS = "CliBoundPublicResults"
+
 
 def command_line(argv: list[str]) -> str:
     """One frozen PowerShell invocation; never interpret incoming shell text."""
@@ -24,7 +30,7 @@ def _require(condition: bool, code: str) -> None:
         raise bounded.Refused(code)
 
 
-def _summary(output: object, expected: dict) -> dict:
+def _summary_document(output: object) -> dict:
     _require(type(output) is str and len(output.encode()) <= 16384, "ToolOutputMissingOrLarge")
     text = output.rstrip("\r\n")
     _require(
@@ -32,6 +38,12 @@ def _summary(output: object, expected: dict) -> dict:
         "SummaryMissingOrAmbiguous",
     )
     value = bounded._json(text[len(wrapper.PREFIX) :].encode())
+    _require(type(value) is dict, "SummaryShapeMismatch")
+    return value
+
+
+def _summary(output: object, expected: dict) -> dict:
+    value = _summary_document(output)
     _require(
         task_run.contract.deep_equal_strict(
             value.get("case_outcomes"), wrapper.expected_outcomes(expected["phase"])
@@ -51,7 +63,25 @@ def _summary(output: object, expected: dict) -> dict:
     return value
 
 
-def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
+def _outer_literal(command: str, frozen: str) -> dict:
+    if command == frozen:
+        classification, match = "exact", True
+    elif frozen.startswith(command):
+        classification, match = "prefix", False
+    elif command.endswith("…") and len(command) < len(frozen) and frozen.startswith(command[:-1]):
+        classification, match = "prefix_ellipsis", False
+    else:
+        classification, match = "different", False
+    return {"match": match, "classification": classification}
+
+
+def analyze(
+    plaintext: bytes,
+    *,
+    commands: dict,
+    summaries: dict,
+    provenance: str = PROVENANCE_OUTER_COMMAND,
+) -> dict:
     """Only fixed completed tool calls count; any gap yields Unknown, never Pass."""
     result = {
         "status": "Unknown",
@@ -65,6 +95,7 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
             type(plaintext) is bytes and len(plaintext) <= bounded.MAX_BYTES, "StreamByteLimit"
         )
         _require(set(commands) == set(summaries) == {"reproduce", "regression"}, "ExpectationShape")
+        _require(provenance in PROVENANCES, "ProvenanceInvalid")
         lines = plaintext.splitlines()
         _require(
             0 < len(lines) <= bounded.MAX_LINES and plaintext.endswith(b"\n"),
@@ -77,6 +108,7 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
         selected = []
         selected_steps = []
         facts = {}
+        outer_literals = {}
         for line in lines:
             event = bounded._json(line)
             kind = event.get("event")
@@ -135,18 +167,31 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
             _require(type(command) is str, "CommandMissing")
             if state != "DONE":
                 continue
-            matches = [phase for phase, frozen in commands.items() if command == frozen]
-            if not matches:
-                _require("shadow_worker_tests.py" not in command, "UnboundWrapperCommand")
-                continue
-            phase = matches[0]
-            _require(
-                len(matches) == 1 and phase not in facts and "error" not in info,
-                "DuplicateOrFailedTool",
-            )
-            facts[phase] = _summary(info.get("output"), summaries[phase])
-            selected.append(phase)
-            selected_steps.append(index)
+            if provenance == PROVENANCE_FINAL_TOOL_SUMMARY:
+                _require("error" not in info, "DuplicateOrFailedTool")
+                document = _summary_document(info.get("output"))
+                phase = document.get("phase")
+                _require(
+                    type(phase) is str and phase in summaries and phase not in facts,
+                    "DuplicateOrFailedTool",
+                )
+                facts[phase] = _summary(info.get("output"), summaries[phase])
+                outer_literals[phase] = _outer_literal(command, commands[phase])
+                selected.append(phase)
+                selected_steps.append(index)
+            else:
+                matches = [phase for phase, frozen in commands.items() if command == frozen]
+                if not matches:
+                    _require("shadow_worker_tests.py" not in command, "UnboundWrapperCommand")
+                    continue
+                phase = matches[0]
+                _require(
+                    len(matches) == 1 and phase not in facts and "error" not in info,
+                    "DuplicateOrFailedTool",
+                )
+                facts[phase] = _summary(info.get("output"), summaries[phase])
+                selected.append(phase)
+                selected_steps.append(index)
         _require(
             terminal and selected == ["reproduce", "regression"], "PhaseEvidenceMissingOrOrder"
         )
@@ -158,7 +203,9 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
             "PhaseTimeOrder",
         )
         result.update(
-            status="CliPublicTestsMatch",
+            status=ARTIFACT_STATUS
+            if provenance == PROVENANCE_FINAL_TOOL_SUMMARY
+            else STRICT_STATUS,
             conversation_id=conversation,
             phases={
                 phase: {
@@ -172,6 +219,11 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
                 for phase, fact in facts.items()
             },
         )
+        if provenance == PROVENANCE_FINAL_TOOL_SUMMARY:
+            result.update(
+                basis=PROVENANCE_FINAL_TOOL_SUMMARY,
+                outer_literal_match=outer_literals,
+            )
     except Exception as error:
         result["error_code"] = (
             str(error) if isinstance(error, bounded.Refused) else type(error).__name__
@@ -180,7 +232,14 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
 
 
 def read_capture_once(
-    *, bundle: Path, uid: str, output: Path, commands: dict, summaries: dict, key_loader
+    *,
+    bundle: Path,
+    uid: str,
+    output: Path,
+    commands: dict,
+    summaries: dict,
+    key_loader,
+    provenance: str = PROVENANCE_OUTER_COMMAND,
 ) -> dict:
     """One key load and one stdout authentication; no plaintext export or retry.
 
@@ -225,7 +284,7 @@ def read_capture_once(
         }
         key = key_loader()
         plaintext = bounded._authenticate(raw, key, config)
-        result = analyze(plaintext, commands=commands, summaries=summaries)
+        result = analyze(plaintext, commands=commands, summaries=summaries, provenance=provenance)
         result.update(
             capture_uid=uid,
             seal_sha256=hashlib.sha256(seal_raw).hexdigest(),

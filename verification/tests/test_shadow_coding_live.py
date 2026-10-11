@@ -206,6 +206,23 @@ def saved(case):
     )
 
 
+def enable_worker_provenance_a(case, *, value=None):
+    case.contract["worker_provenance"] = live.WORKER_PROVENANCE_A if value is None else value
+    fixture.write_json(case.contract_path, case.contract)
+    case.sheet["budget_ref"]["sha256"] = fixture.identity(case.contract_path)["sha256"]
+    freeze(case)
+
+
+def truncated_native_stream(case):
+    stream, _, _ = events(case)
+    for event in stream[1:3]:
+        parameters = event["step_update"]["tool_info"]["parameters"]
+        parameters["CommandLine"] = (
+            parameters["CommandLine"].encode("utf-8")[:512].decode("utf-8") + "…"
+        )
+    return stream
+
+
 def events(case):
     future = case.base / "future"
     shutil.copytree(case.root / "work", future / "candidate")
@@ -270,10 +287,11 @@ def events(case):
     return stream, commands, summaries
 
 
-def fake_host(case, monkeypatch, stream=None, **kwargs):
-    prepared, _, _ = events(case)
-    if stream is None:
-        stream = prepared
+def fake_host(case, monkeypatch, stream=None, *, prepare=True, **kwargs):
+    if stream is None or prepare:
+        prepared, _, _ = events(case)
+        if stream is None:
+            stream = prepared
 
     def candidate():
         shutil.copyfile(SELECT / "acceptance/reference/tool.py", case.root / "work/tool.py")
@@ -358,6 +376,80 @@ def test_initial_saved_one_use_real_collector_and_source_binding(case, monkeypat
     with pytest.raises(live.lifecycle.ValidationError):
         invoke(case)
     assert len(case.calls) == 1
+
+
+def test_worker_provenance_a_initial_saved_and_collected_binding(case, monkeypatch):
+    enable_worker_provenance_a(case)
+    fake_host(case, monkeypatch, truncated_native_stream(case), prepare=False)
+    manager(case, monkeypatch)
+    result = invoke(case)
+    worker = result["worker_evidence"]["value"]
+    assert result["status"] == "EvidenceReadyForManagement" and result["accepted"] is False
+    assert worker["status"] == "CliBoundPublicResults"
+    assert worker["basis"] == live.native.PROVENANCE_FINAL_TOOL_SUMMARY
+    assert all(
+        value == {"match": False, "classification": "prefix_ellipsis"}
+        for value in worker["outer_literal_match"].values()
+    )
+    assert case.key_reads == ["reader"] and case.manager_calls == list(live.retests.PHASES)
+    assert saved(case) == result and case.key_reads == ["reader"]
+
+
+def test_worker_provenance_a_saved_summary_still_required(case, monkeypatch):
+    enable_worker_provenance_a(case)
+    fake_host(case, monkeypatch, truncated_native_stream(case), prepare=False)
+    manager(case, monkeypatch)
+    result = invoke(case)
+    observation = Path(case.sheet["run_root"]) / "shadow-validation.json"
+    original = observation.read_bytes()
+    path = Path(case.sheet["result_root"]) / "out/worker-tests/reproduce/summary.json"
+    value = json.loads(path.read_bytes())
+    value["source_tree_sha256"] = "f" * 64
+    fixture.write_json(path, value)
+    monkeypatch.setattr(live.lifecycle, "_saved_collection", lambda *_: result["collection_sha256"])
+    with pytest.raises((live.lifecycle.ValidationError, live.native.bounded.Refused)):
+        saved(case)
+    assert observation.read_bytes() == original and case.key_reads == ["reader"]
+
+
+def test_worker_provenance_a_saved_result_cannot_fall_back_to_strict(case, monkeypatch):
+    enable_worker_provenance_a(case)
+    fake_host(case, monkeypatch, truncated_native_stream(case), prepare=False)
+    manager(case, monkeypatch)
+    result = invoke(case)
+    result_path = Path(case.sheet["run_root"]) / "shadow-reader/result.json"
+    value = json.loads(result_path.read_bytes())
+    value.update(status=live.native.STRICT_STATUS)
+    value.pop("basis")
+    value.pop("outer_literal_match")
+    fixture.write_json(result_path, value)
+    changed = copy.deepcopy(result)
+    changed["worker_evidence"]["value"] = value
+    changed["worker_evidence"]["identity"]["sha256"] = fixture.identity(result_path)["sha256"]
+    observation = Path(case.sheet["run_root"]) / "shadow-validation.json"
+    fixture.write_json(observation, changed)
+    with pytest.raises(live.lifecycle.ValidationError, match="ProvenanceChanged"):
+        saved(case)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"basis": "OuterCommandExact", "version": 1},
+        {"basis": "FinalToolSummaryAndArtifacts", "version": 2},
+        {"basis": "FinalToolSummaryAndArtifacts"},
+    ],
+)
+def test_worker_provenance_a_contract_is_explicit_and_closed(case, value):
+    enable_worker_provenance_a(case, value=value)
+    with (
+        pytest.raises(live.lifecycle.ValidationError, match=r"ProvenanceUnverified|InvalidContract")
+        if "version" in value
+        else pytest.raises(live.task_run.TaskRunError)
+    ):
+        invoke(case)
+    assert not case.calls and not case.key_reads
+    assert not Path(case.sheet["run_root"]).exists()
 
 
 @pytest.mark.parametrize(

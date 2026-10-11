@@ -110,6 +110,17 @@ command, phase and summary binding are enforced only on DONE. A truncated ACTIVE
 preview does not authorize a run, and a truncated or reconstructed DONE command
 remains Unknown.
 
+A task may explicitly select worker_provenance version 1 with basis
+FinalToolSummaryAndArtifacts. This separate predicate uses the two completed
+run_command wrapper summaries in one conversation—each strictly bound to phase,
+inner argv/cwd, source tree, protected recipe and Python, full case outcomes,
+exit and report hash—together with the existing collected summaries, candidate
+tree and management retests. It returns CliBoundPublicResults and records each
+outer CommandLine literal as exact/prefix/prefix_ellipsis/different; that literal
+diagnostic is not sufficient and does not claim OS argv observation. The default
+absence of worker_provenance keeps the older OuterCommandExact/
+CliPublicTestsMatch contract unchanged, with no silent fallback between modes.
+
 Bounds reuse the existing reader: 256 KiB stream/file, 64 KiB line, 1024 lines,
 256 steps and strict JSON depth/node/container limits. Sealed-stdout authentication
 uses this invocation's isolated appdata and checked lifecycle UID; stdout is

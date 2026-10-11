@@ -14,6 +14,10 @@ def raw(stream):
     return b"".join(json.dumps(event).encode() + b"\n" for event in stream)
 
 
+def truncated_preview(value):
+    return value.encode("utf-8")[:512].decode("utf-8") + "…"
+
+
 @pytest.fixture
 def native_fixture(request):
     return events(request.getfixturevalue("shadow_case"))
@@ -58,6 +62,98 @@ def test_consecutive_active_run_command_parameters_may_update(native_fixture, se
     assert result["status"] == "CliPublicTestsMatch" and result["accepted"] is False
 
 
+@pytest.mark.parametrize("literal", ["exact", "prefix_ellipsis", "different"])
+def test_provenance_a_uses_final_summaries_not_outer_literal(native_fixture, literal):
+    stream, commands, summaries = native_fixture
+    expected = {
+        "exact": {"match": True, "classification": "exact"},
+        "prefix_ellipsis": {"match": False, "classification": "prefix_ellipsis"},
+        "different": {"match": False, "classification": "different"},
+    }[literal]
+    for event in stream[1:3]:
+        parameters = event["step_update"]["tool_info"]["parameters"]
+        if literal in {"prefix_ellipsis", "different"}:
+            parameters["CommandLine"] = truncated_preview(parameters["CommandLine"])
+        if literal == "different":
+            parameters["CommandLine"] = "synthetic non-literal command"
+    result = live.native.analyze(
+        raw(stream),
+        commands=commands,
+        summaries=summaries,
+        provenance=live.native.PROVENANCE_FINAL_TOOL_SUMMARY,
+    )
+    assert result["status"] == "CliBoundPublicResults"
+    assert result["basis"] == "FinalToolSummaryAndArtifacts"
+    assert result["accepted"] is False and result["worker_execution"] == "Unknown"
+    assert set(result["outer_literal_match"]) == {"reproduce", "regression"}
+    assert all(value == expected for value in result["outer_literal_match"].values())
+
+
+def test_provenance_a_rejects_model_self_report_and_missing_summary(native_fixture):
+    stream, commands, summaries = native_fixture
+    output = stream[2]["step_update"]["tool_info"].pop("output")
+    stream[-1]["result"]["response"] = output
+    result = live.native.analyze(
+        raw(stream),
+        commands=commands,
+        summaries=summaries,
+        provenance=live.native.PROVENANCE_FINAL_TOOL_SUMMARY,
+    )
+    assert result["status"] == "Unknown" and result["error_code"] == "ToolOutputMissingOrLarge"
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "wrong_case",
+        "wrong_phase",
+        "wrong_source",
+        "missing_regression",
+        "duplicate_phase",
+        "tool_error",
+        "failed_result",
+    ],
+)
+def test_provenance_a_keeps_summary_event_and_artifact_gates(native_fixture, problem):
+    stream, commands, summaries = native_fixture
+    tool = stream[1]["step_update"]
+    if problem == "wrong_case":
+        summary = json.loads(tool["tool_info"]["output"][len(live.wrapper.PREFIX) :])
+        outcomes = summary["case_outcomes"]
+        outcomes[sorted(live.wrapper.BASELINE_ERRORS)[0]] = "pass"
+        tool["tool_info"]["output"] = live.wrapper.PREFIX + json.dumps(summary)
+    elif problem in {"wrong_phase", "wrong_source"}:
+        summary = json.loads(tool["tool_info"]["output"][len(live.wrapper.PREFIX) :])
+        summary["phase" if problem == "wrong_phase" else "source_tree_sha256"] = (
+            "regression" if problem == "wrong_phase" else "f" * 64
+        )
+        tool["tool_info"]["output"] = live.wrapper.PREFIX + json.dumps(summary)
+    elif problem == "missing_regression":
+        stream.pop(2)
+    elif problem == "duplicate_phase":
+        stream[2]["step_update"]["tool_info"]["output"] = tool["tool_info"]["output"]
+    elif problem == "tool_error":
+        tool["tool_info"]["error"] = {"type": "failure", "message": "synthetic"}
+    else:
+        stream[-1]["result"]["status"] = "ERROR"
+    result = live.native.analyze(
+        raw(stream),
+        commands=commands,
+        summaries=summaries,
+        provenance=live.native.PROVENANCE_FINAL_TOOL_SUMMARY,
+    )
+    assert result["status"] == "Unknown" and result["accepted"] is False
+    assert result["worker_execution"] == "Unknown" and result.get("error_code")
+
+
+def test_invalid_provenance_is_rejected_before_stream_parsing(native_fixture):
+    stream, commands, summaries = native_fixture
+    result = live.native.analyze(
+        raw(stream), commands=commands, summaries=summaries, provenance="invalid"
+    )
+    assert result["status"] == "Unknown" and result["error_code"] == "ProvenanceInvalid"
+
+
 @pytest.mark.parametrize("problem", ["missing", "wrong_status", "wrong_name", "polluted_expected"])
 def test_per_case_status_and_exact_error_distribution(native_fixture, problem):
     stream, commands, summaries = native_fixture
@@ -99,6 +195,7 @@ def test_per_case_status_and_exact_error_distribution(native_fixture, problem):
         "identity_conflict_info_name",
         "identity_conflict_step_type",
         "unbound_command",
+        "unbound_command_with_error",
         "done_truncated",
         "unknown_tool",
         "bool_step",
@@ -167,6 +264,9 @@ def test_gaps_conflicts_and_bounds_never_pass(native_fixture, problem):
         stream.insert(1, event)
     elif problem == "unbound_command":
         tool["tool_info"]["parameters"]["CommandLine"] += "; echo fake"
+    elif problem == "unbound_command_with_error":
+        tool["tool_info"]["parameters"]["CommandLine"] += "; echo fake"
+        tool["tool_info"]["error"] = {"type": "failure", "message": "synthetic"}
     elif problem == "done_truncated":
         complete = tool["tool_info"]["parameters"]["CommandLine"]
         tool["tool_info"]["parameters"]["CommandLine"] = (
@@ -240,6 +340,8 @@ def test_gaps_conflicts_and_bounds_never_pass(native_fixture, problem):
     result = live.native.analyze(data, commands=commands, summaries=summaries)
     assert result["status"] == "Unknown" and result["accepted"] is False
     assert result["worker_execution"] == "Unknown" and result.get("error_code")
+    if problem == "unbound_command_with_error":
+        assert result["error_code"] == "UnboundWrapperCommand"
 
 
 @pytest.mark.parametrize(
