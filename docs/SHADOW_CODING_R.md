@@ -104,6 +104,12 @@ Collected summary files must also match. Model final response never supplies
 missing tool results. Missing, duplicate, conflicting, incomplete, truncated or
 oversized evidence yields Unknown.
 
+An ACTIVE run_command is not final command evidence. Its parameters may be updated
+by a later event while conversation step/tool identity remains stable; exact
+command, phase and summary binding are enforced only on DONE. A truncated ACTIVE
+preview does not authorize a run, and a truncated or reconstructed DONE command
+remains Unknown.
+
 Bounds reuse the existing reader: 256 KiB stream/file, 64 KiB line, 1024 lines,
 256 steps and strict JSON depth/node/container limits. Sealed-stdout authentication
 uses this invocation's isolated appdata and checked lifecycle UID; stdout is

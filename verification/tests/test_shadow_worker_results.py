@@ -24,11 +24,38 @@ def test_documented_done_output_with_active_transition(native_fixture):
     active = copy.deepcopy(stream[1])
     active["step_update"]["state"] = "ACTIVE"
     active["step_update"]["tool_info"].pop("output")
+    complete = active["step_update"]["tool_info"]["parameters"]["CommandLine"]
+    active["step_update"]["tool_info"]["parameters"]["CommandLine"] = (
+        complete.encode("utf-8")[:512].decode("utf-8") + "…"
+    )
     stream.insert(1, active)
     result = live.native.analyze(raw(stream), commands=commands, summaries=summaries)
     assert result["status"] == "CliPublicTestsMatch" and result["origin"] == "CliToolResult"
     assert result["accepted"] is False and result["worker_execution"] == "Unknown"
     assert "argv" not in json.dumps(result) and "CommandLine" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("second_active", ["shorter-prefix", "different-preview"])
+def test_consecutive_active_run_command_parameters_may_update(native_fixture, second_active):
+    stream, commands, summaries = native_fixture
+    complete = stream[1]["step_update"]["tool_info"]["parameters"]["CommandLine"]
+    first = copy.deepcopy(stream[1])
+    second = copy.deepcopy(stream[1])
+    for event in (first, second):
+        event["step_update"]["state"] = "ACTIVE"
+        event["step_update"]["tool_info"].pop("output")
+    first["step_update"]["tool_info"]["parameters"]["CommandLine"] = (
+        complete.encode("utf-8")[:512].decode("utf-8") + "…"
+    )
+    if second_active == "shorter-prefix":
+        second["step_update"]["tool_info"]["parameters"]["CommandLine"] = (
+            complete.encode("utf-8")[:313].decode("utf-8") + "…"
+        )
+    else:
+        second["step_update"]["tool_info"]["parameters"]["CommandLine"] += " preview"
+    stream[1:1] = [first, second]
+    result = live.native.analyze(raw(stream), commands=commands, summaries=summaries)
+    assert result["status"] == "CliPublicTestsMatch" and result["accepted"] is False
 
 
 @pytest.mark.parametrize("problem", ["missing", "wrong_status", "wrong_name", "polluted_expected"])
@@ -68,8 +95,11 @@ def test_per_case_status_and_exact_error_distribution(native_fixture, problem):
         "duplicate_phase",
         "reversed",
         "step_index_regression",
-        "conflicting_active",
+        "identity_conflict_tool",
+        "identity_conflict_info_name",
+        "identity_conflict_step_type",
         "unbound_command",
+        "done_truncated",
         "unknown_tool",
         "bool_step",
         "missing_case",
@@ -121,13 +151,27 @@ def test_gaps_conflicts_and_bounds_never_pass(native_fixture, problem):
         stream[1], stream[2] = stream[2], stream[1]
     elif problem == "step_index_regression":
         stream[1]["step_update"]["step_index"] = 5
-    elif problem == "conflicting_active":
+    elif problem in {
+        "identity_conflict_tool",
+        "identity_conflict_info_name",
+        "identity_conflict_step_type",
+    }:
         event = copy.deepcopy(stream[1])
         event["step_update"]["state"] = "ACTIVE"
-        event["step_update"]["tool_info"]["parameters"]["CommandLine"] += " extra"
+        if problem == "identity_conflict_tool":
+            event["step_update"]["tool_name"] = "read_command"
+        elif problem == "identity_conflict_info_name":
+            event["step_update"]["tool_info"]["name"] = "read_command"
+        else:
+            event["step_update"]["step_type"] = "agent_response"
         stream.insert(1, event)
     elif problem == "unbound_command":
         tool["tool_info"]["parameters"]["CommandLine"] += "; echo fake"
+    elif problem == "done_truncated":
+        complete = tool["tool_info"]["parameters"]["CommandLine"]
+        tool["tool_info"]["parameters"]["CommandLine"] = (
+            complete.encode("utf-8")[:512].decode("utf-8") + "…"
+        )
     elif problem == "unknown_tool":
         tool["tool_name"] = "other"
     elif problem == "bool_step":

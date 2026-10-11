@@ -110,11 +110,18 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
             _require(previous is None or previous["state"] != "DONE", "DuplicateOrRegressedStep")
             info = payload.get("tool_info", {})
             _require(type(info) is dict, "ToolInfoShape")
+            is_run_command = (
+                payload.get("step_type") == "tool"
+                and payload.get("tool_name") == "run_command"
+                and info.get("name") == "run_command"
+            )
             declared = (
                 payload.get("step_type"),
                 payload.get("tool_name"),
                 info.get("name"),
-                info.get("parameters"),
+                # ACTIVE run_command parameters are a preview and may be updated
+                # by the completed event. Other tools retain exact declarations.
+                None if is_run_command else info.get("parameters"),
             )
             _require(previous is None or previous["declared"] == declared, "ConflictingStep")
             seen[index] = {"state": state, "declared": declared}
@@ -126,11 +133,11 @@ def analyze(plaintext: bytes, *, commands: dict, summaries: dict) -> dict:
             _require(type(parameters) is dict, "ParametersMissing")
             command = parameters.get("CommandLine")
             _require(type(command) is str, "CommandMissing")
+            if state != "DONE":
+                continue
             matches = [phase for phase, frozen in commands.items() if command == frozen]
             if not matches:
                 _require("shadow_worker_tests.py" not in command, "UnboundWrapperCommand")
-                continue
-            if state != "DONE":
                 continue
             phase = matches[0]
             _require(
