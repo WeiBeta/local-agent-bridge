@@ -343,3 +343,19 @@ v2 精确 schema 见合同“首次观测合同 v2”；以下离线合成自检
 | NP-LEGACY | 原 agy settings 租约/恢复、Cursor、Task CLI、首观/分层和 launch 生命周期适用回归 |
 
 以上为实现自检范围，不是独立 Review、真实 agy/model/key/捕获解密、权限反向 deny、A/B 业务验收或生产刷新。现有 A/B 根复用合同尚未实施；首次真实执行材料也须按新无 settings 绑定核适用性，不能直接套旧 first_task_r 许可或旧双调用预算。
+
+## 四工位薄调度候选验收
+
+| ID | 必需离线断言 |
+| --- | --- |
+| ST-REGISTRY | 配置驱动 1..4 位，四位目标用四条；重复物理根/native、容量超限、根重叠拒绝；无 A/B 或角色专属工位 |
+| ST-OWNER | 真 Windows 合成 OS 子进程争同一根仅一 owner；四根可同时由四 PID 持有；v4 低层 run 无当前 lease 在根/密钥/启动前拒绝 |
+| ST-ADMISSION | 第五单满位等待，无第五 job/root/launch；取消/等待上限保留零启动；第一单释放唤醒第五并使用 fresh UUID，不扰其他三单 |
+| ST-FAILURE | 普通红测试/非零宿主/Review findings 保留其业务结果且可释放；失联/遗弃/持久 Running/无效恢复材料仅使本根不可用，其他根仍完成 |
+| ST-ISOLATION | 四位分别覆盖 Coding、Review、Testing、Mixed 范围；Review/Testing source 不变；连续复用 root/request/native CID/capture/result 独立，旧单字节不变 |
+| ST-COLLECT | 实际 import/prepare/plan/run/collect 链且每单独立收尾；自己的 result 先完成和释放，兄弟单可以仍 Running；final 才标 Released |
+| ST-LEGACY | 原 agy/Cursor、Task CLI、A/B、R、first execution、capture 和 launch 生命周期适用回归；v4 不借旧 Accepted，不改旧门禁 |
+
+native conversation 的 Unknown/Mismatch 必须保留，不能把 capture UID 当作 native CID。普通元数据变化与权限/资源政策变化分别判断；不把全历史树或所有异常组合设为普通前置。测试使用合成宿主和公开测试密钥，真实 agy/model/config/Credential Manager 调用为 NotRun。
+
+完整后续真实波至少五个新模型任务：四位同时覆盖 Coding green、Review findings、Testing expected red、Mixed green，第五个在四位全忙时等候并复用首个释放工位。须证明四初始区间重叠、第五开始晚于释放、实际 native CID/task/result/capture 独立、旧单不变和独立终态顺序；一次单站 PassScoped 与三位波不能自动覆盖四位目标。本表是候选验收矩阵，不是实测许可或管理接受，次数/预算和安装身份另冻，无自动重试。

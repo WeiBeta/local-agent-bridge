@@ -38,6 +38,8 @@ EXPECTED_PACKAGE_FILES = {
     "bridge/cursor_run.py",
     "bridge/task_input.py",
     "bridge/task_run.py",
+    "bridge/station_pool.py",
+    "bridge/station_task.py",
     "bridge/layered_acceptance.py",
     "bridge/task_workspace.py",
     "capture/__init__.py",
@@ -78,6 +80,8 @@ EXPECTED_TEST_MODULES = {
     "tests/test_task_cli.py",
     "tests/test_task_launch_lifecycle.py",
     "tests/test_task_run.py",
+    "tests/test_station_pool.py",
+    "tests/test_station_task.py",
     "tests/test_layered_acceptance.py",
     "tests/test_task_workspace.py",
 }

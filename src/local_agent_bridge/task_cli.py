@@ -1,4 +1,4 @@
-"""Five fixed Task commands over the existing A/B/C public APIs."""
+"""Fixed Task APIs plus one per-job station dispatch command."""
 
 from __future__ import annotations
 
@@ -6,7 +6,14 @@ import argparse
 import json
 import sys
 
-from local_agent_bridge.bridge import contract, task_input, task_run, task_workspace
+from local_agent_bridge.bridge import (
+    contract,
+    station_pool,
+    station_task,
+    task_input,
+    task_run,
+    task_workspace,
+)
 
 _FIELDS = {
     "import": {"source", "policy", "snapshot_root"},
@@ -14,6 +21,7 @@ _FIELDS = {
     "plan": {"task_root", "host"},
     "run": {"task_root", "run_root"},
     "collect": {"task_root", "run_root", "result_root"},
+    "dispatch": station_task._SPEC_FIELDS - {"cli_contract_version"},
 }
 _TRUSTED_COMMANDS = {"prepare", "plan", "run"}
 
@@ -40,10 +48,13 @@ def _parser() -> argparse.ArgumentParser:
         if command in _TRUSTED_COMMANDS:
             child.add_argument("--trusted-control-root", required=True)
             child.add_argument("--trusted-inputs-sha256", required=True)
-        if command == "run":
+        if command in {"run", "dispatch"}:
             child.add_argument(
                 "--execute", action="store_true", help="launch once after all C gates"
             )
+        if command == "dispatch":
+            child.add_argument("--pool-registry", required=True)
+            child.add_argument("--pool-sha256", required=True)
     return parser
 
 
@@ -79,6 +90,8 @@ def _spec(command: str, path: str) -> dict:
         or value["cli_contract_version"] != 1
     ):
         raise TaskCliError("CliSpecInvalid")
+    if command == "dispatch":
+        return value
     for field in _FIELDS[command]:
         item = value[field]
         if field in {"source", "policy"}:
@@ -94,6 +107,13 @@ def _spec(command: str, path: str) -> dict:
 
 def _dispatch(options: argparse.Namespace, spec: dict) -> dict:
     command = options.command
+    if command == "dispatch":
+        return station_task.dispatch_task(
+            spec=spec,
+            registry_path=task_run.checked_host_path(path=options.pool_registry),
+            registry_sha256=options.pool_sha256,
+            execute=options.execute,
+        )
     if command == "import":
         return task_input.import_snapshot(
             source=spec["source"], policy=spec["policy"], snapshot_root=spec["snapshot_root"]
@@ -143,6 +163,8 @@ def _dispatch(options: argparse.Namespace, spec: dict) -> dict:
 
 
 def _exit_code(command: str, result: dict, *, execute: bool) -> int:
+    if command == "dispatch":
+        return 0 if result["status"] in {"PreparedOnly", "Collected"} else 2
     if command == "plan":
         return 0 if result["preflight_status"] == "Ready" else 2
     if command == "collect":
@@ -188,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         task_input.TaskInputError,
         task_workspace.TaskWorkspaceError,
         task_run.TaskRunError,
+        station_pool.StationError,
     ) as error:
         code, status = error.code, 2
     except contract.BridgeContractError:

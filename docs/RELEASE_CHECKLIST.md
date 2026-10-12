@@ -119,3 +119,12 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 - [ ] 请求脚本/输出绝对路径，固定 argv 仅增项目 ID；启动后绑定检查材料经原 collector 留存，主中断、原失败和 0/1/null 不降级。
 - [ ] 优先复用现有 A/B 根的窄合同另完成：保留旧证据，明确新输出空间和 exact inventory；不得通过清根、嵌套 cwd、手写项目 JSON 绕过当前 RootNotFresh/ControlChanged。
 - [ ] 新冻结部署材料、接受/首次执行材料适配、真实双调用许可、业务 artifact-first 验收和生产部署各自核收；当前只为离线候选，原预算不续借。
+
+## 四工位薄 dispatch 候选复核项
+
+- [ ] fresh 独立 Review 核注册表/policy/receipt v4 与旧 v1/v2/v3 分支；v4 Ready 不等于 Accepted，不迁移旧运行接受。
+- [ ] 真 Windows 合成多进程四 owner、第五等待/取消/释放复用、遗弃与持久 Running、单根故障/其他根继续；不使用进程内锁冒充跨进程锁。
+- [ ] 每站 Coding/Review/Testing/Mixed 范围均可运行；新 UUID 根/请求/CID/capture/result 独立，旧任务字节保留；每单 collect/release 不等全池结束。
+- [ ] 业务红/Review findings 与控制失联区分；0/1/null、transport 失败和 Unknown 保留；终态落盘失败不返回成功；不自动清理、重跑或修复暂停根。
+- [ ] 新 wheel 带 station_pool/station_task；sdist 带两份新测试及四份同步文档；实际导入源码身份包含两模块。pyproject 仅扩充 sdist 测试清单，uv.lock 不变。
+- [ ] 离线 pytest/JUnit、ruff/format 和失败证据完整；自检后冻结精确 commit 交独立 Review，再集中授权四路真实重叠加第五单复用。真实运行、包安装、生产接受和部署分别核收。

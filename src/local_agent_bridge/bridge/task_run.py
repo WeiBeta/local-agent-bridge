@@ -529,8 +529,30 @@ def _validate_receipt(receipt: dict) -> None:
         raise TaskRunError("InvalidContract")
     first_observation = receipt["contract_version"] == 2
     layered = receipt["contract_version"] == 3
+    station = receipt["contract_version"] == 4
     native_keys = {"native_project"} if "native_project" in receipt else set()
-    if first_observation:
+    if station:
+        _object(receipt, _RECEIPT_KEYS | {"native_project", "station_binding"})
+        binding = _object(
+            receipt["station_binding"],
+            {
+                "station_id",
+                "root_identity",
+                "policy_sha256",
+                "grant_ref",
+            },
+        )
+        _text(binding["station_id"])
+        _text(binding["grant_ref"])
+        _hash(binding["policy_sha256"])
+        identity = _object(binding["root_identity"], {"st_dev", "st_ino"})
+        if (
+            receipt["host"] != "agy"
+            or receipt["runtime_acceptances"] != []
+            or any(type(number) is not int or number < 0 for number in identity.values())
+        ):
+            raise TaskRunError("InvalidContract")
+    elif first_observation:
         _object(receipt, _RECEIPT_KEYS | {"host_composition"} | native_keys)
         composition = _object(receipt["host_composition"], {"status", "scope"})
         if (
@@ -571,7 +593,9 @@ def _validate_receipt(receipt: dict) -> None:
     _identities(bridge["product_files"], nonempty=True)
     _identity(receipt["host_entry"])
     _text(receipt["host_version"])
-    _identities(receipt["host_identity_files"], nonempty=not (first_observation or layered))
+    _identities(
+        receipt["host_identity_files"], nonempty=not (first_observation or layered or station)
+    )
     config = _object(receipt["configuration"], {"agy_settings", "cursor_global", "cursor_project"})
     if native_keys:
         if host != "agy" or any(value is not None for value in config.values()):
@@ -714,11 +738,20 @@ def _load_trusted_inputs(
     if task_root.parent != _directory(Path(receipt["workspace_parent"])):
         raise TaskRunError("InvalidScope")
     project = receipt.get("native_project")
-    if project is not None and (
-        _absolute(project["root"]) != task_root
-        or paths._is_within(_absolute(project["record"]["path"]), task_root)
-    ):
-        raise TaskRunError("NativeProjectBindingMismatch")
+    if project is not None:
+        native_root = _absolute(project["root"])
+        if receipt["contract_version"] == 4:
+            import uuid
+
+            try:
+                valid_leaf = str(uuid.UUID(task_root.name)) == task_root.name
+            except ValueError:
+                valid_leaf = False
+            scope_matches = task_root.parent == native_root / "jobs" and valid_leaf
+        else:
+            scope_matches = native_root == task_root
+        if not scope_matches or paths._is_within(_absolute(project["record"]["path"]), task_root):
+            raise TaskRunError("NativeProjectBindingMismatch")
     digest = _digest(_canonical(receipt))
     projection = {key: value for key, value in profile.items() if key != "receipt_sha256"}
     if (
@@ -853,6 +886,14 @@ def _make_plan(context: dict, host: str) -> dict:
                 for name, layer in record["evaluation"]["layers"].items()
                 if name in layered_acceptance.REQUIRED_LAYERS
             )
+    elif receipt["contract_version"] == 4:
+        # Explicit configured-station authorization, not inherited runtime acceptance.
+        evidence_sources = [receipt["provenance_refs"]]
+        if (
+            task["execution_boundary"] != "declared_scope"
+            or receipt["station_binding"]["grant_ref"] != auth["grant_ref"]
+        ):
+            blockers.append("StationAuthorizationUnverified")
     else:
         binding = _digest(
             _canonical(
@@ -977,6 +1018,7 @@ def plan_task(
 def _runtime_files() -> set[Path]:
     """The actual imported implementation, not a version label or caller list."""
     from local_agent_bridge import cli, task_cli
+    from local_agent_bridge.bridge import station_pool, station_task
 
     modules = (
         cli,
@@ -987,6 +1029,8 @@ def _runtime_files() -> set[Path]:
         slice_run,
         task_input,
         task_workspace,
+        station_pool,
+        station_task,
         winjob,
         keys,
         retention,
@@ -1286,6 +1330,9 @@ def _request(context: dict) -> str:
         root = context["task_root"]
         controls["native_project_id"] = receipt["native_project"]["id"]
         controls["task_root"] = root.as_posix()
+        if receipt["contract_version"] == 4:
+            controls["station_root"] = receipt["native_project"]["root"]
+            controls["tool_working_directory"] = (root / "work").as_posix()
         for field in ("read_roots", "write_roots", "protected_paths", "required_outputs"):
             controls[field] = [(root / path).as_posix() for path in task[field]]
         controls["progress_contract"]["path"] = (root / "out" / "progress.json").as_posix()
@@ -1296,6 +1343,16 @@ def _request(context: dict) -> str:
             "artifact output. Resolve relative path labels in the frozen note against task_root. "
             "Write progress to the absolute progress_contract.path.\n"
         )
+        if receipt["contract_version"] == 4:
+            native_instructions = (
+                "The native project resource root is station_root; OS cwd is the fresh task_root. "
+                "Only this new task's input is supplied. Use absolute file/script/output paths "
+                "and explicitly set command working directory to tool_working_directory. "
+                "Review write-producing tests use an authorized scratch copy with its explicit "
+                "working directory. Resolve note-relative paths against task_root, "
+                "never station_root. Do not inspect other jobs or conversations. "
+                "Write progress to progress_contract.path.\n"
+            )
     return (
         "Engineering task v1. Follow the frozen role and enabled capabilities. "
         "Coding may inspect authorized files, verify hashes, and create/edit/delete/rename "
@@ -1458,6 +1515,58 @@ def _verify_first_execution(
     return value
 
 
+def _station_conversation(writer: session.SessionWriter, root: Path) -> dict:
+    """Read only this producer's authenticated stream with its existing RAM key."""
+    initial, terminal, tool_ids = [], [], []
+    try:
+        for line in slice_run._event_lines(writer.iter_stream("stdout")):
+            if line is None or len(line) > 65536:
+                raise TaskRunError("NativeConversationUnverified")
+            event = contract.decode_strict_json_bytes(line, label="native event")
+            if type(event) is not dict:
+                raise TaskRunError("NativeConversationUnverified")
+            if event.get("event") == "init":
+                initial.append((event.get("conversation_id"), event.get("init")))
+            elif event.get("event") == "result":
+                terminal.append(event.get("result"))
+            elif event.get("event") == "step_update":
+                step = event.get("step_update", {})
+                if type(step) is dict and step.get("step_type") == "tool":
+                    tool_ids.append(step.get("conversation_id"))
+        if len(initial) != 1 or len(terminal) != 1:
+            raise TaskRunError("NativeConversationUnverified")
+        cid, init = initial[0]
+        if (
+            type(cid) is not str
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", cid) is None
+            or type(init) is not dict
+            or type(terminal[0]) is not dict
+        ):
+            raise TaskRunError("NativeConversationUnverified")
+        cwd, model, mode = (init.get(key) for key in ("cwd", "model", "permission_mode"))
+        if any(type(value) is not str or len(value) > 1024 for value in (cwd, model, mode)):
+            raise TaskRunError("NativeConversationUnverified")
+        matched = (
+            _absolute(cwd) == root
+            and model == _ROUTES["agy"]["model"]
+            and terminal[0].get("conversation_id") == cid
+            and all(value == cid for value in tool_ids)
+        )
+        status = terminal[0].get("status")
+        if type(status) is not str or len(status) > 128:
+            raise TaskRunError("NativeConversationUnverified")
+        return {
+            "status": "Observed" if matched else "Mismatch",
+            "conversation_id": cid,
+            "cwd": cwd,
+            "model": model,
+            "permission_mode": mode,
+            "result_status": status,
+        }
+    except (OSError, TaskRunError, contract.BridgeContractError, session.SessionError):
+        return {"status": "Unknown", "conversation_id": None}
+
+
 def _execute_once(
     context: dict,
     plan: dict,
@@ -1587,6 +1696,13 @@ def _execute_once(
             if launch.get("capture_state") != "complete" or writer.incomplete_reason:
                 result["blockers"].append("CaptureIncomplete")
             else:
+                # Producer reads authenticate the .partial stream with the
+                # already loaded key. Seal renames it, so project before seal.
+                observation = (
+                    _station_conversation(writer, context["task_root"])
+                    if receipt["contract_version"] == 4
+                    else None
+                )
                 sealed = writer.seal(
                     {
                         "kind": "engineering_task_v1",
@@ -1609,6 +1725,15 @@ def _execute_once(
                         "origin": "HostObserved",
                     }
                 )
+                if receipt["contract_version"] == 4:
+                    _persist(run_root / "native-conversation.json", observation)
+                    result["evidence_refs"].append(
+                        {
+                            "ref": "native-conversation.json",
+                            "sha256": _digest(_canonical(observation)),
+                            "origin": "HostObserved",
+                        }
+                    )
         except BaseException as error:
             result["launch_count"] = lifecycle.launch_count
             if not isinstance(error, Exception):
@@ -1720,6 +1845,7 @@ def run_task(
     trusted_control_root: Path,
     trusted_inputs_sha256: str,
     execute: bool = False,
+    station_lease=None,
 ) -> dict[str, object]:
     """Re-read trusted inputs; dry run or one fixed, bounded launch without retry."""
     try:
@@ -1762,6 +1888,27 @@ def run_task(
                 != context["bundle"]["deployment_receipt"]
             ):
                 raise TaskRunError("ControlChanged")
+            if execute and context["bundle"]["deployment_receipt"]["contract_version"] == 4:
+                from .station_pool import Lease, StationError
+
+                if not isinstance(station_lease, Lease):
+                    raise TaskRunError("StationLeaseRequired")
+                try:
+                    station_lease.verify(task_root)
+                except StationError as error:
+                    raise TaskRunError(error.code) from error
+                binding = context["bundle"]["deployment_receipt"]["station_binding"]
+                project = context["bundle"]["deployment_receipt"]["native_project"]
+                policy = station_lease.pool.registry["document"]["policy"]
+                if (
+                    binding["station_id"] != station_lease.station.id
+                    or binding["root_identity"] != station_lease.station.root_identity
+                    or binding["policy_sha256"] != _digest(_canonical(policy))
+                    or binding["grant_ref"] != policy["grant_ref"]
+                    or project["id"] != station_lease.station.native_id
+                    or _absolute(project["root"]) != station_lease.station.root
+                ):
+                    raise TaskRunError("StationLeaseRequired")
             return context
 
         context = recheck()

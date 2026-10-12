@@ -136,3 +136,19 @@ v3 入口用明确首次记录身份回收，绑定原 Plan 与实际新 UID；�
 成功只产生 ObservationRecorded 与可供管理裁决的材料。runtime/layered acceptance、strict R 仍 Unverified，Worker 命令证据仍 Unverified，不写 Accepted、扩大能力、自动重跑或启用第二次生产调用。实际新程序/包/许可必须在独立 Review 与集中授权后重新冻结；历史 wheel、成功报告、UID 和已消费许可不迁移为新任务接受。
 
 本轮是离线合同候选，未授权或执行新的真实 host/model/key/配置调用；历史 LIVE01 的安装、组件和 version/help 不重跑。产品源码已变，后续必须冻结新 wheel/sdist、验证程序和部署身份，不沿用旧包 SHA；独立Review与新的适用实测授权由管理安排，生产部署/Skill更新及历史自动修复上限不随本合同改变。
+
+### 四工位薄调度候选（LAB-AGY-STATION-IMPL-01）
+
+新增固定入口 `local-agent-bridge task dispatch --spec <绝对路径> --pool-registry <绝对路径> --pool-sha256 <管理冻结原字节SHA>`。默认只验证注册表、工单与说明，输出 PreparedOnly/0，不取锁、不导入、不建任务目录。另有适用真实许可时才追加 `--execute`。调用方不能覆盖 model、argv、入口或权限规则；此命令本身不授予执行权限。
+
+每个已批准请求由自己的调用进程完成等待、import、prepare、plan、run、collect、release。注册表配置 1..4 个工位，本目标为四位；所有工位支持 Coding 与 Review。Testing 使用 Coding/execute、只读 work 和 out/scratch 输出；Mixed 使用 Coding 与允许的 work 写入。每单由控制器选取稳定原生根中的 `jobs/<fresh UUID>`，原生根无需清空，旧单保持保留。不得把旧根当 cwd 或直接复用上一单目录。
+
+满位时阻塞于 Windows 内核 mutex WaitAny；第五个请求在获得工位前不创建 task_root、不导入源码、不生成该单授权或加载会话密钥。它只读取冻结注册表和说明。没有常驻队列服务、轮询或全局完成屏障；管理可同时启动有界的独立 dispatch 调用。timeout 为 null 时持续等候，整数 0..86400 表示入场等待上限；Python 调用方可用 Cancellation 原生 event 取消等待，CLI 中断仍退出 130。
+
+工单 JSON 恰含 `cli_contract_version=1, source, policy, instructions_path, instructions_sha256, task, admission_timeout_seconds`。source/policy 使用原 import 合同；task 恰含 role、capabilities、read_roots、write_roots、protected_paths、required_outputs、acceptance_ids、deadline_seconds、source_output_bytes_limit。路径数组按 UTF-8 排序且无重复，相对任务根；required_outputs 至少包括 out/progress.json，Review 还需 coverage.json、findings.json、report.md。任务必须落在工位政策上限内。本最小模式只支持本地 execute，web_reference 和 prepare_dependencies 均为 false；已登记工具链可用于测试。
+
+注册表、v4 receipt 与收尾语义详见 [合同 §18](TASK_WORKSPACE_CONTRACT.md#18-稳定工位与逐单-dispatchlab-agy-station-impl-01)。请求声明绝对输入/输出路径，明确命令 workdir；Review 写入型测试用 scratch 副本。声明不是 OS 沙箱，也不证明 Worker 实际遵守。
+
+每单的控制材料位于 `control_root/requests/<request UUID>`，包含独立 snapshot、trusted、run、result。dispatch.json 是释放前回执，release_state=Pending；dispatch-final.json 才是调用完成后的回执。Collected/退出 0 表示收集完成且控制生命周期闭合，business 仍为 Candidate 或 Incomplete、management_decision=null。预期红测试、Review findings 或已确认退出的普通宿主失败可以正常释放；不能把这些情况统一封位。采集/进程清理或原生绑定未确认时只暂停该工位，不重跑；其他工位可继续。
+
+本实现只有离线自检。独立 Review、四路真实重叠加第五单连续复用、业务接受、新冻结安装与部署尚需各自门禁，旧单次 PassScoped 不覆盖它们。

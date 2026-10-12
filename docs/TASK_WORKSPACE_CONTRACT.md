@@ -698,3 +698,43 @@ agy argv 只在固定入口之后增加 `--project <id>`，固定 model/tail、�
 本模式不读取/合并/写回全局 settings，不创建 settings 备份/恢复材料，不取得旧全局配置租约；不写项目记录/项目 settings，也不增加 skip-permissions。启动后（含异常/中断）只读复核项目 id 与资源根，成功在 run 根保存 `native-project-check.json`，含 project_id/root/record_sha256/binding_status=Matched，由原 evidence_refs 和 collector 留存。CLI 名称等元数据变化可改变 raw SHA，不单凭此判失败；绑定漂移或无法读取则 restore_state=Failed、NativeProjectBindingUnverified 和 RestoreFailed，保留失败并使 transport 失败。这里的 restore_state 沿用已有回执字段，本模式不会执行恢复。原启动中断优先于后续检查异常。该检查不核权限语义或共享设置；原生继承权限、always-proceed、资源绑定均不能证明反向 deny 或隔离。
 
 **现有根复用限制（未实施）**：B prepare 的 `_root(fresh=True)` 要求 task_root 不存在，否则 RootNotFresh；C `_verify_prepared_tree` 拒绝根中 task 布局之外的历史文件，否则 ControlChanged，且仍要求 work 与冻结 snapshot 相符。原生模式不绕过这些条件。A/B 的旧根不能直接经过本候选 prepare，不能通过删旧证据、改到嵌套 cwd 或手写项目 JSON 规避。若继续复用同一 A/B 根，最小后续设计是显式冻结现有树及本任务输出命名空间，定义在原根排他添加控制布局、保护旧文件、核原清单与收集本任务增量的合同；当前没有此接口。需先完成该窄合同修补及独立 Review，再冻结适用真实许可；本节不授权实施或真实调用。
+
+## 18. 稳定工位与逐单 dispatch（LAB-AGY-STATION-IMPL-01）
+
+本节是作者已授权的稳定原生工位加 fresh 子目录方案，与 §17 的 v1/v2/v3 同根模式分支区分。保留旧单根，不在旧根补布局或清除证据。新增 DeploymentReceipt v4；旧 v1/v2/v3 的 schema、接受门禁及摘要域保持原合同。实现自检、独立 Review、真实多路验证和生产接受分别核收。
+
+### 注册表与入场
+
+注册表为管理准备并以原字节 SHA 固定的 UTF-8 JSON，最大 1 MiB，拒绝重复键。恰含以下字段：
+
+| 字段 | 合同 |
+| --- | --- |
+| contract_version, id | 严格 int=1；非空池 ID |
+| control_root | 已存在的普通窄绝对目录，与所有原生资源根互不包含；所有调用共享同一控制根及 station ID |
+| deployment_receipt | 已冻结安装、入口、源码运行身份和工具链的既有完整 receipt 模板；不等于已接受 |
+| policy | 恰含 grant_ref、roles、capabilities、max_deadline_seconds、source_output_bytes_limit |
+| stations | 1..4 条配置；本四位目标需四条。每条恰含 id、native_id、root、record、root_identity |
+
+policy.roles 固定 `["Coding","Review"]`；capabilities 为既有三布尔能力。本最小本地模式的任务 web_reference/prepare_dependencies 必须 false；execute 可按批准政策启用。deadline 上限 1..3600 秒，字节上限 1..1GiB。grant_ref 指向适用管理授权；填写字符串、知道 SHA 或运行 CLI 不自动产生授权。工位 id 为规范 UUID，native_id 为现有原生项目 ID，record 为外部普通 `<native_id>.json`，root 为稳定普通资源根，root_identity 恰含当前物理目录 st_dev/st_ino 非负整数。拒绝重复工位/native/物理根身份及根包含关系，不硬编码 A/B 名称。
+
+每根的 mutex 名称按物理身份派生 `Global\\LocalAgentBridgeStation-<SHA>`；不同管理进程对同一物理根争用同一 Windows 内核 mutex。采用默认 token DACL、不可继承句柄、无提权或文件锁降级。[CreateMutexW](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw) 与 [WaitForMultipleObjects](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjects) 为接口依据；WaitAny 不承诺 FIFO。持有线程贯穿该单链路；低层 v4 run 必须验证当前 Lease、task_root、station ID、物理身份和 policy SHA，否则在 run 根/密钥/启动之前拒绝。
+
+四根忙时第五单先等待，取得 mutex 后才校验选中根的物理身份、读取其恢复状态及原生记录、建立新任务根与单任务授权。拒绝同线程递归取得同一工位。状态文件不是所有权锁；Idle/Reserved/Running/Suspended 仅记录恢复事实。遗弃 mutex 或无持有者却仍 Reserved/Running 时，保留 previous 并暂停该根；无效状态原字节保留并使该根不可用；本次尝试移除它并继续其他根。没有自动重跑、全池停机或后台修复。恢复需要管理核清原进程、绑定和材料后显式处理该根状态；不得靠删除证据恢复。
+
+### 每单材料与启动
+
+任务 spec 的闭合字段见 [使用说明](BRIDGE_USAGE.md#四工位薄调度候选lab-agy-station-impl-01)。read/write/protected/output 路径排序去重，按新任务根解析，继承原 A/B 规则。Testing 为 Coding/execute 且 work 只读；Mixed 为 Coding 工程操作；Review work 只读，产物在 out，写入型测试在 scratch。每工位都可承载这些范围，不新增角色枚举。
+
+v4 receipt 恰为原 `_RECEIPT_KEYS` 加 native_project 与 station_binding；后者恰含 station_id、root_identity、policy_sha256、grant_ref。仅 agy/agy_task_v1，configuration 三项 null、launch_shell=null、runtime_acceptances=[]；host_identity_files 允许空数组但不虚构内部组成。native_project.root 为稳定 station.root；workspace_parent 为该根/jobs；task_root 是其直接 fresh 规范 UUID 子目录。部署/授权/计划摘要仍绑定完整实际材料。Plan Ready 仅说明政策、范围和身份检查可执行该候选任务，不借旧 Coding Accepted，也不产生新的业务/runtime Accepted。
+
+控制器先取得工位，再 import 新 snapshot、生成 trusted receipt/profile/auth、prepare 新根、plan、run 一次、collect 自己的 result 并释放。每单 request/task/root/result/capture 独立，run 使用固定新会话调用，不加 resume。OS cwd 为 task_root，请求给出绝对文件/脚本/输出目标和明确工具命令 workdir；原生资源根仍 station.root。Worker 只获本单输入，禁止访问其他 jobs/会话。此声明及普通文件复核不构成 OS 沙箱。
+
+本次 producer 在管道关闭后、seal 前以已在内存的密钥认证读取自己的 stdout，投影有界 init/result/tool conversation ID；不再读取密钥或历史 capture。seal 后保存 native-conversation.json 为原 evidence_refs/collector 副本。唯一 init/result、合法 ID、cwd、固定 model 和可见 tool IDs 匹配为 Observed；可见不匹配为 Mismatch，缺失/格式未知为 Unknown、conversation_id=null。capture UID 不代替 native conversation ID；投影不证明全部工具行为或业务成功。
+
+### 完成、失败和保留
+
+单次 launch_count 保留 0/1/null，宿主 transport、business 与管理决定分别记录。控制闭合要求零启动且无不完整 capture/失败配置状态，或一次启动、capture Sealed、原生绑定 Unchanged 和 launch 记录中的 child_exit_observed/pipes_closed/job_closed 全 true。宿主非零退出、预期红测试、Review findings 或收集层业务错误不会单独变成失去控制。控制未闭合、绑定/权限政策漂移或 release 不可确认仅暂停自身根；原生普通显示元数据漂移可接受，不核全工位历史 hash。
+
+每单在 control_root/requests/request-ID 中独立保存 snapshot/trusted/run/result、释放前 dispatch.json（Pending）和释放后 dispatch-final.json。调用返回/CLI 成功依据 final；Collected 表示自己的 collect 与控制闭合，Candidate/Incomplete 及 management_decision=null 保留管理裁决空间。run 的失败/TimedOut 不改成 transport 成功。collector 无效仍 Stopped，并保留启动事实；已确认控制闭合时可以释放，不能无限封位。终态写入失败不返回成功，未释放租约尝试留 Suspended，并保留部分材料。
+
+每单收尾后立即释放，不等待兄弟单全部结束。所有输出和旧单保留；本轮无清理、真实调用、配置变更、生产安装、远端发布或业务接受。后续真实四路重叠及第五单复用须冻结新运行身份和适用许可。
