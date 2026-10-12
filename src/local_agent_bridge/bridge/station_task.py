@@ -238,6 +238,20 @@ def _native_policy(path: Path) -> str:
     )
 
 
+def _run_evidence(context: dict, run_root: Path) -> dict:
+    # The collector already validates the full schema and current task/Plan
+    # binding. Its business blockers do not by themselves mean lost control.
+    run, _plan_sha = task_workspace._run_receipt(
+        context["task_root"],
+        run_root,
+        context["task"],
+        station_pool.digest(context["task"]),
+        [],
+    )
+    station_pool.require(run is not None, "StationRunEvidenceUnavailable")
+    return run
+
+
 def _control_complete(run: dict, run_root: Path) -> bool:
     if run["launch_count"] == 0:
         return run["capture_state"] != "Incomplete" and run["restore_state"] != "Failed"
@@ -248,9 +262,27 @@ def _control_complete(run: dict, run_root: Path) -> bool:
     ):
         return False
     launch = task_run._read(run_root / "launch.json")
+    cleanup = launch.get("cleanup")
+    station_pool.require(
+        type(launch.get("launch_count")) is int
+        and launch["launch_count"] == 1
+        and type(launch.get("capture_state")) is str
+        and type(cleanup) is dict
+        and {"child_exit_observed", "pipes_closed", "job_closed"} <= cleanup.keys()
+        and all(
+            type(cleanup[key]) is bool
+            for key in ("child_exit_observed", "pipes_closed", "job_closed")
+        )
+        and {
+            "ref": "launch.json",
+            "sha256": station_pool.digest(launch),
+            "origin": "HostObserved",
+        }
+        in run["evidence_refs"],
+        "StationRunEvidenceUnavailable",
+    )
     return launch.get("capture_state") == "complete" and all(
-        launch.get("cleanup", {}).get(key) is True
-        for key in ("child_exit_observed", "pipes_closed", "job_closed")
+        cleanup[key] is True for key in ("child_exit_observed", "pipes_closed", "job_closed")
     )
 
 
@@ -316,7 +348,9 @@ def dispatch_task(
             "StationRegistryChanged",
         )
         lease.running()
+        outcome["control_complete"] = False
         call_entered = True
+        outcome["launch_count"] = None
         run = task_run.run_task(
             task_root=context["task_root"],
             plan=context["plan"],
@@ -326,9 +360,10 @@ def dispatch_task(
             execute=True,
             station_lease=lease,
         )
-        outcome["launch_count"] = run["launch_count"]
+        saved_run = _run_evidence(context, request_root / "run")
+        outcome["launch_count"] = saved_run["launch_count"]
         outcome["run"] = run
-        complete = _control_complete(run, request_root / "run")
+        complete = _control_complete(saved_run, request_root / "run")
         outcome["control_complete"] = complete
         station_pool.require(
             _native_policy(lease.station.record) == context["native_policy"],
@@ -356,11 +391,18 @@ def dispatch_task(
         outcome["control_complete"] = complete
         outcome["status"] = "Collected" if complete else "ControlUnconfirmed"
     except BaseException as error:
+        if not isinstance(error, Exception):
+            interrupted = error
+        failure_code = (
+            getattr(error, "code", type(error).__name__)
+            if isinstance(error, Exception)
+            else type(error).__name__
+        )
         if lease is not None and lease.task_root is not None:
             outcome["task_root"] = str(lease.task_root)
-        outcome["blockers"].append(getattr(error, "code", type(error).__name__))
+        outcome["blockers"].append(failure_code)
         outcome["status"] = "Stopped"
-        identity_unconfirmed = getattr(error, "code", None) in {
+        identity_unconfirmed = failure_code in {
             "StationRootChanged",
             "NativeProjectBindingMismatch",
             "StationNativePolicyChanged",
@@ -370,20 +412,20 @@ def dispatch_task(
         elif not call_entered:
             outcome["control_complete"] = True
         if call_entered:
-            saved = request_root / "run/run.json"
+            outcome["control_complete"] = False
             outcome["launch_count"] = None
             try:
-                if saved.is_file():
-                    saved_run = task_run._read(saved)
-                    outcome["launch_count"] = saved_run["launch_count"]
-                    if not identity_unconfirmed:
-                        outcome["control_complete"] = _control_complete(
-                            saved_run, request_root / "run"
-                        )
-            except (OSError, task_run.TaskRunError):
+                saved_run = _run_evidence(context, request_root / "run")
+                complete = not identity_unconfirmed and _control_complete(
+                    saved_run, request_root / "run"
+                )
+                outcome["launch_count"] = saved_run["launch_count"]
+                outcome["control_complete"] = complete
+            except BaseException as secondary:
+                pool._cleanup_error(outcome["station_id"], "run-evidence", secondary)
                 outcome["blockers"].append("DispatchRunEvidenceUnavailable")
-        if not isinstance(error, Exception):
-            interrupted = error
+                if interrupted is None and not isinstance(secondary, Exception):
+                    interrupted = secondary
     finally:
         outcome["elapsed_seconds"] = round(time.monotonic() - started, 3)
         terminal = request_root / "dispatch.json"

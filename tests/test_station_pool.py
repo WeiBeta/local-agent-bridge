@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from local_agent_bridge.bridge import station_pool as pool
-from local_agent_bridge.bridge import task_input
+from local_agent_bridge.bridge import task_input, task_run
 
 
 def registry(tmp_path, count=4, receipt=None):
@@ -584,3 +584,34 @@ def test_pool_creation_interrupt_survives_close_failure(tmp_path):
     with pytest.raises(SystemExit) as caught:
         pool.Pool(pool.load_registry(path, pin), kernel=kernel)
     assert caught.value is primary and kernel.closes == [1]
+
+
+@pytest.mark.parametrize("code", ["IoFailed", "InputChanged"])
+def test_selected_native_reader_rejection_is_local_and_retains_record(tmp_path, monkeypatch, code):
+    path, pin, document = registry(tmp_path, 2)
+    manager = pool.Pool(pool.load_registry(path, pin))
+    broken, healthy = document["stations"]
+    record = Path(broken["record"])
+    raw = record.read_bytes()
+    original = task_run.read_host_input_bytes
+    observed = []
+
+    def reject_selected_record(*, path):
+        observed.append(Path(path))
+        if Path(path) == record:
+            assert not (Path(broken["root"]) / "jobs").exists()
+            raise task_run.TaskRunError(code)
+        return original(path=path)
+
+    monkeypatch.setattr(task_run, "read_host_input_bytes", reject_selected_record)
+    lease = None
+    try:
+        lease = manager.acquire(str(uuid.uuid4()), timeout_seconds=1)
+        assert lease.station.id == healthy["id"]
+        assert observed == [record, Path(healthy["record"])]
+        assert record.read_bytes() == raw
+        assert manager._read_state(manager.registry["stations"][0])["state"] == "Suspended"
+    finally:
+        if lease is not None and not lease.closed:
+            lease.finish(control_complete=True, terminal=terminal(lease))
+        manager.close()

@@ -17,7 +17,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import contract, paths, task_input
+from . import contract, paths, task_input, task_run
 
 
 class StationError(RuntimeError):
@@ -391,8 +391,12 @@ class Pool:
                 require(
                     physical_identity(station.root) == station.root_identity, "StationRootChanged"
                 )
-                ordinary_path(station.record)
-                require(station.record.is_file(), "StationNativeUnavailable")
+                try:
+                    # Reuse the same single-link, bounded descriptor/path
+                    # identity check used when materializing the receipt.
+                    task_run.read_host_input_bytes(path=str(station.record))
+                except task_run.TaskRunError as error:
+                    raise StationError("StationNativeUnavailable") from error
                 lease = Lease(self, station, handle, request_id)
                 lease._write("Reserved")
                 self.leases.add(lease.id)

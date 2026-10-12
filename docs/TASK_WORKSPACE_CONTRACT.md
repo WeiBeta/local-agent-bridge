@@ -723,6 +723,8 @@ policy.roles 固定 `["Coding","Review"]`；capabilities 为既有三布尔能�
 
 注册表的 schema、policy、路径拼写、重复身份与重叠是全局拒绝条件。选中工位的 root/record 是否存在、是否普通文件链及物理身份是否仍一致，在持锁后检查；单工位不可用不阻止健康位入场，也不在坏位建立 job。state 的路径拒绝或无效原字节保留；写 Suspended 失败时保留原材料并记录有界类型诊断。本次尝试只移除坏位，不替它修复配置或执行任务。
 
+选中 record 在创建 Lease/job 前复用 `read_host_input_bytes` 的实际单链接、读取上限与 descriptor/path 身份门禁；硬链接、读取失败或读取期间身份变化使本位不可用，原记录字节保留，继续选择健康位。物化 receipt 时仍用同一读取器做当步核验，不预读所有 native record。普通 source/import 输入错误保持启动前失败语义，不据此暂停正常工位。
+
 ### 每单材料与启动
 
 任务 spec 的闭合字段见 [使用说明](BRIDGE_USAGE.md#四工位薄调度候选lab-agy-station-impl-01)。read/write/protected/output 路径排序去重，按新任务根解析，继承原 A/B 规则。Testing 为 Coding/execute 且 work 只读；Mixed 为 Coding 工程操作；Review work 只读，产物在 out，写入型测试在 scratch。每工位都可承载这些范围，不新增角色枚举。
@@ -738,6 +740,8 @@ request 及 trusted 目录首次 mkdir 前复用普通路径链检查，拒绝�
 ### 完成、失败和保留
 
 单次 launch_count 保留 0/1/null，宿主 transport、business 与管理决定分别记录。控制闭合要求零启动且无不完整 capture/失败配置状态，或一次启动、capture Sealed、原生绑定 Unchanged 和 launch 记录中的 child_exit_observed/pipes_closed/job_closed 全 true。宿主非零退出、预期红测试、Review findings 或收集层业务错误不会单独变成失去控制。控制未闭合、绑定/权限政策漂移或 release 不可确认仅暂停自身根；原生普通显示元数据漂移可接受，不核全工位历史 hash。
+
+进入 run 立即撤销启动前的 control_complete=true，并将无有效回执时的 launch_count 保留为 null。正常返回和异常恢复均复用 collector 的完整 run schema/本单 Task/Plan 绑定验证，再核必要 launch 清理字段及本次 run 内的 HostObserved SHA 引用；只有这些有效证据可以恢复控制闭合。run 缺失、读取拒绝、结构不足或错绑定，以及必要 launch 证据缺失/不足，均保留原失败与 null、暂停本位，不自动重跑。恢复读取的次生失败使用有界类型诊断，不能覆盖原 KeyboardInterrupt/SystemExit。有效控制已闭合的业务红或宿主非零退出仍可释放。
 
 每单在 control_root/requests/request-ID 中独立保存 snapshot/trusted/run/result、释放前 dispatch.json（Pending）和释放后 dispatch-final.json。调用返回/CLI 成功依据 final；Collected 表示自己的 collect 与控制闭合，Candidate/Incomplete 及 management_decision=null 保留管理裁决空间。run 的失败/TimedOut 不改成 transport 成功。collector 无效仍 Stopped，并保留启动事实；已确认控制闭合时可以释放，不能无限封位。终态写入失败不返回成功，未释放租约尝试留 Suspended，并保留部分材料。
 

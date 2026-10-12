@@ -744,3 +744,166 @@ def test_dispatch_primary_interrupt_survives_late_handle_close_failure(tmp_path,
         item["stage"] == "close" and item["error_type"] == "OSError"
         for item in diagnostic["cleanup_diagnostics"]
     )
+
+
+def test_review_f04_hardlinked_native_record_admits_healthy_for_two_requests(tmp_path, monkeypatch):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=2)
+    broken, healthy = document["stations"]
+    record = Path(broken["record"])
+    original = record.read_bytes()
+    alias = tmp_path / "retained-record-hardlink"
+    assert record.resolve().is_relative_to(tmp_path.resolve())
+    os.link(record, alias)
+    assert record.stat().st_nlink == 2
+    calls = install_host(case, monkeypatch)
+    outcomes = [dispatch(path, pin, spec, execute=True) for _ in range(2)]
+    assert outcomes[0]["request_id"] != outcomes[1]["request_id"]
+    assert all(
+        outcome["station_id"] == healthy["id"] and outcome["status"] == "Collected"
+        for outcome in outcomes
+    ), outcomes
+    assert len(calls) == 2
+    assert not (Path(broken["root"]) / "jobs").exists()
+    assert record.read_bytes() == alias.read_bytes() == original
+    state = read(Path(document["control_root"]) / "states" / (broken["id"] + ".json"))
+    assert state["state"] == "Suspended"
+
+
+def test_review_f05_entered_run_without_receipt_suspends_only_its_station(tmp_path, monkeypatch):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=2)
+    broken, healthy = document["stations"]
+    calls = install_host(case, monkeypatch, closed=False)
+    original = runner._persist
+
+    def reject_run_receipt(target, value, **kwargs):
+        if target.name == "run.json":
+            raise OSError("synthetic terminal run receipt write failure")
+        return original(target, value, **kwargs)
+
+    monkeypatch.setattr(runner, "_persist", reject_run_receipt)
+    outcome = dispatch(path, pin, spec, execute=True)
+    request = Path(outcome["terminal_path"]).parent
+    launch = read(request / "run/launch.json")
+    assert len(calls) == 1 and launch["cleanup"]["job_closed"] is False
+    assert launch["capture_state"] == "incomplete"
+    assert not (request / "run/run.json").exists()
+    assert outcome["launch_count"] is None and "IoFailed" in outcome["blockers"]
+    assert outcome["control_complete"] is False and outcome["release_state"] == "Suspended"
+    state = read(Path(document["control_root"]) / "states" / (broken["id"] + ".json"))
+    assert state["state"] == "Suspended"
+    monkeypatch.setattr(runner, "_persist", original)
+    next_calls = install_host(case, monkeypatch)
+    next_outcome = dispatch(path, pin, spec, execute=True)
+    assert next_outcome["station_id"] == healthy["id"] and next_outcome["status"] == "Collected"
+    assert len(next_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_run",
+        "unreadable_run",
+        "missing_field",
+        "foreign_task",
+        "missing_launch",
+        "partial_launch",
+    ],
+)
+def test_entered_run_invalid_evidence_keeps_unknown_launch_and_suspends(
+    tmp_path, monkeypatch, damage
+):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    calls = install_host(case, monkeypatch)
+    original = runner.run_task
+    original_open = Path.open
+    refused = []
+
+    def fail_after_host(**kwargs):
+        result = original(**kwargs)
+        run_root = kwargs["run_root"]
+        receipt = run_root / "run.json"
+        if damage == "missing_run":
+            receipt.rename(run_root / "run.json.retained")
+        elif damage == "unreadable_run":
+
+            def refuse_receipt(target, *args, **options):
+                if target == receipt:
+                    refused.append(target)
+                    raise PermissionError("synthetic receipt read rejection")
+                return original_open(target, *args, **options)
+
+            monkeypatch.setattr(Path, "open", refuse_receipt)
+        elif damage == "missing_field":
+            result.pop("capture_state")
+            fixtures.write_json(receipt, result)
+        elif damage == "foreign_task":
+            result["task_id"] = str(uuid.uuid4())
+            fixtures.write_json(receipt, result)
+        elif damage == "missing_launch":
+            (run_root / "launch.json").rename(run_root / "launch.json.retained")
+        else:
+            launch = run_root / "launch.json"
+            launch.rename(run_root / "launch.json.retained")
+            partial = {"launch_count": 1, "capture_state": "complete", "cleanup": {}}
+            fixtures.write_json(launch, partial)
+            for evidence in result["evidence_refs"]:
+                if evidence["ref"] == "launch.json":
+                    evidence["sha256"] = runner._digest(fixtures.canonical(partial))
+            fixtures.write_json(receipt, result)
+        raise runner.TaskRunError("SyntheticOriginalRunFailure")
+
+    monkeypatch.setattr(runner, "run_task", fail_after_host)
+    outcome = dispatch(path, pin, spec, execute=True)
+    monkeypatch.setattr(Path, "open", original_open)
+    assert len(calls) == 1
+    assert outcome["status"] == "Stopped"
+    assert outcome["launch_count"] is None and outcome["control_complete"] is False
+    assert outcome["release_state"] == "Suspended"
+    assert outcome["blockers"] == ["SyntheticOriginalRunFailure", "DispatchRunEvidenceUnavailable"]
+    state = read(
+        Path(document["control_root"]) / "states" / (document["stations"][0]["id"] + ".json")
+    )
+    assert state["state"] == "Suspended"
+    if damage == "unreadable_run":
+        assert len(refused) == 1
+
+
+@pytest.mark.parametrize("primary_type", [KeyboardInterrupt, SystemExit])
+def test_entered_run_primary_interrupt_survives_secondary_evidence_interrupt(
+    tmp_path, monkeypatch, primary_type
+):
+    _case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    primary = primary_type("synthetic primary entered-run interrupt")
+
+    def interrupted_run(**kwargs):
+        raise primary
+
+    def interrupted_evidence(*args, **kwargs):
+        raise KeyboardInterrupt("synthetic secondary recovery interrupt")
+
+    monkeypatch.setattr(runner, "run_task", interrupted_run)
+    monkeypatch.setattr(station_task, "_run_evidence", interrupted_evidence)
+    with pytest.raises(primary_type) as caught:
+        dispatch(path, pin, spec, execute=True)
+    assert caught.value is primary
+    request = next((Path(document["control_root"]) / "requests").iterdir())
+    diagnostic = read(request / "dispatch-cleanup.json")
+    assert not (request / "dispatch-final.json").exists()
+    assert diagnostic["launch_count"] is None and diagnostic["control_complete"] is False
+    assert diagnostic["release_state"] == "Suspended"
+    assert diagnostic["blockers"][0] == primary_type.__name__
+    assert any(item["stage"] == "run-evidence" for item in diagnostic["cleanup_diagnostics"])
+
+
+def test_closed_host_business_red_releases_and_next_request_reuses_station(tmp_path, monkeypatch):
+    case, path, pin, _document, spec = configured(tmp_path, monkeypatch, shape="Testing", count=1)
+    calls = install_host(case, monkeypatch, shape="Testing", closed=True, exit_code=7)
+    red = dispatch(path, pin, spec, execute=True)
+    assert len(calls) == 1 and red["run"]["transport_state"] == "Failed"
+    assert red["control_complete"] is True and red["release_state"] == "Released"
+    assert "TransportFailed" in red["business"]["blockers"]
+    next_calls = install_host(case, monkeypatch, shape="Testing")
+    next_outcome = dispatch(path, pin, spec, execute=True)
+    assert next_outcome["station_id"] == red["station_id"]
+    assert next_outcome["request_id"] != red["request_id"]
+    assert next_outcome["status"] == "Collected" and len(next_calls) == 1
