@@ -6,6 +6,7 @@ State is recovery evidence; the mutex, held by the acquiring thread, is ownershi
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import hashlib
 import os
@@ -212,7 +213,10 @@ def load_registry(path: Path, expected: str) -> dict:
         require(
             type(item["native_id"]) is str and bool(item["native_id"]), "StationRegistryInvalid"
         )
-        root, record = ordinary_path(item["root"]), ordinary_path(item["record"])
+        # Registry grammar/overlap is global; physical availability belongs to
+        # the selected station and must be checked while holding its mutex.
+        root = task_input._validate_absolute_path(item["root"], label="station root")
+        record = task_input._validate_absolute_path(item["record"], label="station record")
         identity = item["root_identity"]
         require(
             type(identity) is dict
@@ -257,27 +261,48 @@ class Pool:
         self.kernel = WindowsHandles() if kernel is None else kernel
         self.handles = {}
         self.leases = set()
+        self.cleanup_diagnostics = []
+        self.release_unconfirmed = set()
         try:
             for station in registry["stations"]:
                 self.handles[station.id] = self.kernel.mutex(station.lock_name)
         except BaseException:
-            self.close()
+            # close records its bounded diagnosis; preserve creation's exception.
+            with contextlib.suppress(BaseException):
+                self.close()
             raise
+
+    def _cleanup_error(self, station_id: str | None, stage: str, error: BaseException) -> None:
+        if len(self.cleanup_diagnostics) < 16:
+            self.cleanup_diagnostics.append(
+                {"station_id": station_id, "stage": stage, "error_type": type(error).__name__[:64]}
+            )
+
+    def _release_mutex(self, station: Station, handle: int, primary=None) -> bool:
+        try:
+            self.kernel.release(handle)
+        except BaseException as error:
+            self.release_unconfirmed.add(station.id)
+            self._cleanup_error(station.id, "release", error)
+            if primary is None:
+                raise
+            return False
+        return True
 
     def _state_path(self, station: Station) -> Path:
         return self.registry["control_root"] / "states" / (station.id + ".json")
 
     def _read_state(self, station: Station) -> dict:
         path = self._state_path(station)
-        task_input._assert_plain_target(path, label="station state")
-        if not path.exists():
-            return {"state": "Idle", "station_id": station.id}
         try:
+            task_input._assert_plain_target(path, label="station state")
+            if not path.exists():
+                return {"state": "Idle", "station_id": station.id}
             with path.open("rb") as stream:
                 raw = stream.read(65537)
             require(len(raw) <= 65536, "StationStateInvalid")
             value = contract.decode_strict_json_bytes(raw, label="station state")
-        except (OSError, contract.BridgeContractError) as error:
+        except (OSError, task_input.TaskInputError, contract.BridgeContractError) as error:
             raise StationError("StationStateInvalid") from error
         require(
             type(value) is dict
@@ -306,6 +331,7 @@ class Pool:
         timeout_seconds: float | None = None,
         cancellation: Cancellation | None = None,
     ) -> Lease:
+        require(not self.release_unconfirmed, "StationReleaseUnconfirmed")
         require(type(request_id) is str and bool(request_id), "StationRequestInvalid")
         require(
             timeout_seconds is None
@@ -339,6 +365,8 @@ class Pool:
                 index -= 1
             station = candidates[index]
             handle = self.handles[station.id]
+            primary = None
+            lease = None
             try:
                 state = self._read_state(station)
                 if state["state"] in {"Reserved", "Running"} and state.get("owner") == {
@@ -357,45 +385,67 @@ class Pool:
                                 "previous": state,
                             },
                         )
-                    self.kernel.release(handle)
                     candidates.pop(index)
                     continue
+                ordinary_path(station.root)
                 require(
                     physical_identity(station.root) == station.root_identity, "StationRootChanged"
                 )
+                ordinary_path(station.record)
+                require(station.record.is_file(), "StationNativeUnavailable")
                 lease = Lease(self, station, handle, request_id)
                 lease._write("Reserved")
                 self.leases.add(lease.id)
                 return lease
-            except StationError as error:
-                if error.code not in {
+            except (StationError, OSError, task_input.TaskInputError) as error:
+                primary = error
+                if isinstance(error, StationError) and error.code not in {
                     "StationRootChanged",
                     "StationRootUnavailable",
                     "StationStateInvalid",
+                    "StationNativeUnavailable",
                 }:
-                    self.kernel.release(handle)
                     raise
+                reason = error.code if isinstance(error, StationError) else "StationPathUnavailable"
                 try:
                     # Malformed recovery evidence is retained byte-for-byte. It
                     # stays ineligible on later admission until deliberate repair.
-                    if error.code != "StationStateInvalid":
+                    if reason != "StationStateInvalid":
                         self._write_state(
                             station,
-                            {"state": "Suspended", "station_id": station.id, "reason": error.code},
+                            {"state": "Suspended", "station_id": station.id, "reason": reason},
                         )
-                finally:
-                    self.kernel.release(handle)
+                except BaseException as secondary:
+                    self._cleanup_error(station.id, "suspend", secondary)
+                    if not isinstance(secondary, Exception):
+                        primary = secondary
+                        raise
                 candidates.pop(index)
-            except BaseException:
-                self.kernel.release(handle)
+            except BaseException as error:
+                primary = error
                 raise
+            finally:
+                # One release attempt for every acquired mutex not returned as
+                # a live Lease, including skip and exceptional branches.
+                if (lease is None or lease.id not in self.leases) and not self._release_mutex(
+                    station, handle, primary
+                ):
+                    raise primary
         raise StationError("StationNoAvailableSlot")
 
     def close(self) -> None:
         require(not self.leases, "StationLeaseOutstanding")
-        for handle in self.handles.values():
-            self.kernel.close(handle)
-        self.handles.clear()
+        primary = None
+        for station_id in list(self.handles):
+            handle = self.handles.pop(station_id)
+            try:
+                self.kernel.close(handle)
+            except BaseException as error:
+                self._cleanup_error(station_id, "close", error)
+                if primary is None:
+                    primary = error
+        if primary is not None:
+            raise primary
 
 
 class Lease:
@@ -405,6 +455,25 @@ class Lease:
         self.owner = {"pid": os.getpid(), "thread": threading.get_ident()}
         self.task_root = None
         self.closed = False
+        self.released = None
+
+    def _release_once(self, primary=None) -> None:
+        if self.closed:
+            return
+        # closed means no more release attempts; released is the distinct fact.
+        self.closed = True
+        self.pool.leases.discard(self.id)
+        try:
+            self.pool._release_mutex(self.station, self.handle)
+            self.released = True
+        except BaseException:
+            self.released = False
+            try:
+                self._write("Suspended", reason="ReleaseUnconfirmed")
+            except BaseException as secondary:
+                self.pool._cleanup_error(self.station.id, "suspend", secondary)
+            if primary is None:
+                raise
 
     def _write(self, state: str, **extra) -> None:
         self.pool._write_state(
@@ -467,22 +536,26 @@ class Lease:
             ),
             "StationTerminalUnavailable",
         )
+        primary = None
         try:
             self._write(
                 "Idle" if control_complete else "Suspended",
                 terminal=str(terminal),
                 reason=None if control_complete else "ControlUnconfirmed",
             )
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            self.pool.kernel.release(self.handle)
-            self.closed = True
-            self.pool.leases.discard(self.id)
+            self._release_once(primary)
 
     def abandon(self) -> None:
         if not self.closed:
+            primary = None
             try:
                 self._write("Suspended", reason="TerminalUnavailable")
+            except BaseException as error:
+                primary = error
+                raise
             finally:
-                self.pool.kernel.release(self.handle)
-                self.closed = True
-                self.pool.leases.discard(self.id)
+                self._release_once(primary)

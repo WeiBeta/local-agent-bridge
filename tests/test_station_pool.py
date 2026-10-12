@@ -313,3 +313,274 @@ def test_lock_identity_not_pool_name_or_station_spelling(tmp_path):
     other = copy.copy(station)
     object.__setattr__(other, "id", str(uuid.uuid4()))
     assert other.lock_name == station.lock_name
+
+
+def test_review_f02_state_path_rejection_preserves_bytes_and_admits_healthy(tmp_path, monkeypatch):
+    path, pin, document = registry(tmp_path, 2)
+    manager = pool.Pool(pool.load_registry(path, pin))
+    bad = manager._state_path(manager.registry["stations"][0])
+    bad.parent.mkdir()
+    raw = b"  original rejected state evidence\r\n"
+    bad.write_bytes(raw)
+    original = task_input._assert_plain_target
+
+    def reject_bad_state(target, *, label):
+        if target == bad:
+            raise task_input.TaskInputError("PathRejected", "synthetic selected state rejection")
+        return original(target, label=label)
+
+    monkeypatch.setattr(task_input, "_assert_plain_target", reject_bad_state)
+    lease = None
+    try:
+        lease = manager.acquire(str(uuid.uuid4()), timeout_seconds=1)
+        assert lease.station.id == document["stations"][1]["id"]
+        assert bad.read_bytes() == raw
+    finally:
+        if lease is not None and not lease.closed:
+            lease.finish(control_complete=True, terminal=terminal(lease))
+        manager.close()
+
+
+def test_review_f03_acquire_preserves_primary_interrupt_and_releases_once(tmp_path, monkeypatch):
+    path, pin, _document = registry(tmp_path, 1)
+    primary = KeyboardInterrupt("synthetic original interrupt")
+
+    class Kernel:
+        releases = 0
+
+        def mutex(self, name):
+            return 1
+
+        def wait(self, handles, milliseconds):
+            return 0
+
+        def release(self, handle):
+            self.releases += 1
+            raise pool.StationError("SyntheticSecondaryReleaseFailed")
+
+        def close(self, handle):
+            pass
+
+    kernel = Kernel()
+    manager = pool.Pool(pool.load_registry(path, pin), kernel=kernel)
+
+    def interrupted(station):
+        raise primary
+
+    monkeypatch.setattr(manager, "_read_state", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            manager.acquire(str(uuid.uuid4()))
+        assert caught.value is primary
+        assert kernel.releases == 1
+        assert manager.release_unconfirmed
+        assert manager.cleanup_diagnostics == [
+            {
+                "station_id": manager.registry["stations"][0].id,
+                "stage": "release",
+                "error_type": "StationError",
+            }
+        ]
+    finally:
+        manager.close()
+    assert kernel.releases == 1
+
+
+@pytest.mark.parametrize("damage", ["missing_root", "record_directory"])
+def test_station_unavailable_before_registry_load_is_local(tmp_path, damage):
+    path, pin, document = registry(tmp_path, 2)
+    broken, healthy = document["stations"]
+    if damage == "missing_root":
+        Path(broken["root"]).rename(tmp_path / "retained-root")
+    else:
+        record = Path(broken["record"])
+        record.rename(record.with_suffix(".json.retained"))
+        record.mkdir()
+    manager = pool.Pool(pool.load_registry(path, pin))
+    lease = None
+    try:
+        lease = manager.acquire(str(uuid.uuid4()), timeout_seconds=1)
+        assert lease.station.id == healthy["id"]
+        assert not (Path(broken["root"]) / "jobs").exists()
+    finally:
+        if lease is not None and not lease.closed:
+            lease.finish(control_complete=True, terminal=terminal(lease))
+        manager.close()
+
+
+def test_rejected_reservation_write_preserves_state_and_skips_only_its_station(
+    tmp_path, monkeypatch
+):
+    path, pin, document = registry(tmp_path, 2)
+    manager = pool.Pool(pool.load_registry(path, pin))
+    broken = manager.registry["stations"][0]
+    state_path = manager._state_path(broken)
+    state_path.parent.mkdir()
+    raw = b'{ "station_id": "' + broken.id.encode() + b'", "state": "Idle" }\r\n'
+    state_path.write_bytes(raw)
+    original = manager._write_state
+
+    def reject_selected_write(station, value):
+        if station.id == broken.id:
+            raise task_input.TaskInputError("PathRejected", "synthetic write rejection")
+        return original(station, value)
+
+    monkeypatch.setattr(manager, "_write_state", reject_selected_write)
+    lease = None
+    try:
+        lease = manager.acquire(str(uuid.uuid4()), timeout_seconds=1)
+        assert lease.station.id == document["stations"][1]["id"]
+        assert state_path.read_bytes() == raw
+        assert manager.cleanup_diagnostics == [
+            {"station_id": broken.id, "stage": "suspend", "error_type": "TaskInputError"}
+        ]
+    finally:
+        if lease is not None and not lease.closed:
+            lease.finish(control_complete=True, terminal=terminal(lease))
+        manager.close()
+
+
+def test_bad_global_policy_still_rejects_when_one_station_is_unavailable(tmp_path):
+    path, _pin, document = registry(tmp_path, 2)
+    Path(document["stations"][0]["root"]).rename(tmp_path / "retained-root")
+    document["policy"]["capabilities"]["execute"] = "true"
+    pin = save_registry(path, document)
+    with pytest.raises(pool.StationError, match="StationPolicyInvalid"):
+        pool.load_registry(path, pin)
+    assert not (Path(document["control_root"]) / "states").exists()
+
+
+class ReleaseFailureKernel:
+    """Synthetic handles only; no deliberately failed native ReleaseMutex."""
+
+    def __init__(self):
+        self.created = []
+        self.releases = []
+        self.closes = []
+        self.waits = 0
+        self.fail_release = False
+
+    def mutex(self, name):
+        self.created.append(name)
+        return len(self.created)
+
+    def wait(self, handles, milliseconds):
+        self.waits += 1
+        return 0
+
+    def release(self, handle):
+        self.releases.append(handle)
+        if self.fail_release:
+            raise pool.StationError("SyntheticReleaseFailed")
+
+    def close(self, handle):
+        self.closes.append(handle)
+
+
+@pytest.mark.parametrize("ending", ["finish", "abandon"])
+@pytest.mark.parametrize("primary_type", [None, KeyboardInterrupt, SystemExit])
+def test_lease_release_failure_is_attempted_once_and_preserves_primary(
+    tmp_path, monkeypatch, ending, primary_type
+):
+    path, pin, _document = registry(tmp_path, 1)
+    kernel = ReleaseFailureKernel()
+    manager = pool.Pool(pool.load_registry(path, pin), kernel=kernel)
+    lease = manager.acquire(str(uuid.uuid4()))
+    owned_terminal = terminal(lease)
+    original = manager._write_state
+    primary = primary_type("synthetic primary") if primary_type is not None else None
+
+    def interrupted_write(station, value):
+        if primary is not None and value.get("reason") != "ReleaseUnconfirmed":
+            raise primary
+        return original(station, value)
+
+    monkeypatch.setattr(manager, "_write_state", interrupted_write)
+    kernel.fail_release = True
+    try:
+        expected = primary_type if primary is not None else pool.StationError
+        with pytest.raises(expected) as caught:
+            if ending == "finish":
+                lease.finish(control_complete=True, terminal=owned_terminal)
+            else:
+                lease.abandon()
+        if primary is not None:
+            assert caught.value is primary
+        else:
+            assert caught.value.code == "SyntheticReleaseFailed"
+        assert lease.closed and lease.released is False
+        assert kernel.releases == [lease.handle]
+        assert manager._read_state(lease.station)["reason"] == "ReleaseUnconfirmed"
+        assert manager.cleanup_diagnostics == [
+            {"station_id": lease.station.id, "stage": "release", "error_type": "StationError"}
+        ]
+        with pytest.raises(pool.StationError, match="StationReleaseUnconfirmed"):
+            manager.acquire(str(uuid.uuid4()))
+        assert kernel.waits == 1
+        lease.abandon()
+    finally:
+        manager.close()
+    assert kernel.releases == [lease.handle]
+
+
+def test_suspended_candidate_release_failure_stops_without_trying_healthy_slot(tmp_path):
+    path, pin, _document = registry(tmp_path, 2)
+    kernel = ReleaseFailureKernel()
+    manager = pool.Pool(pool.load_registry(path, pin), kernel=kernel)
+    broken = manager.registry["stations"][0]
+    manager._write_state(broken, {"station_id": broken.id, "state": "Suspended"})
+    kernel.fail_release = True
+    try:
+        with pytest.raises(pool.StationError, match="SyntheticReleaseFailed"):
+            manager.acquire(str(uuid.uuid4()))
+        assert kernel.waits == 1 and kernel.releases == [manager.handles[broken.id]]
+        assert manager.release_unconfirmed == {broken.id}
+    finally:
+        manager.close()
+
+
+def test_pool_close_preserves_first_interrupt_and_does_not_repeat_handles(tmp_path):
+    path, pin, _document = registry(tmp_path, 2)
+    kernel = ReleaseFailureKernel()
+    primary = KeyboardInterrupt("synthetic first close")
+
+    def broken_close(handle):
+        kernel.closes.append(handle)
+        if len(kernel.closes) == 1:
+            raise primary
+        raise OSError("synthetic secondary close")
+
+    kernel.close = broken_close
+    manager = pool.Pool(pool.load_registry(path, pin), kernel=kernel)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        manager.close()
+    assert caught.value is primary
+    assert kernel.closes == [1, 2]
+    assert [item["error_type"] for item in manager.cleanup_diagnostics] == [
+        "KeyboardInterrupt",
+        "OSError",
+    ]
+    manager.close()
+    assert kernel.closes == [1, 2]
+
+
+def test_pool_creation_interrupt_survives_close_failure(tmp_path):
+    path, pin, _document = registry(tmp_path, 2)
+    kernel = ReleaseFailureKernel()
+    primary = SystemExit("synthetic second mutex")
+    original = kernel.mutex
+
+    def interrupted_mutex(name):
+        if kernel.created:
+            raise primary
+        return original(name)
+
+    def broken_close(handle):
+        kernel.closes.append(handle)
+        raise OSError("synthetic secondary close")
+
+    kernel.mutex = interrupted_mutex
+    kernel.close = broken_close
+    with pytest.raises(SystemExit) as caught:
+        pool.Pool(pool.load_registry(path, pin), kernel=kernel)
+    assert caught.value is primary and kernel.closes == [1]

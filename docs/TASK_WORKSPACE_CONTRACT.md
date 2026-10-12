@@ -721,6 +721,8 @@ policy.roles 固定 `["Coding","Review"]`；capabilities 为既有三布尔能�
 
 四根忙时第五单先等待，取得 mutex 后才校验选中根的物理身份、读取其恢复状态及原生记录、建立新任务根与单任务授权。拒绝同线程递归取得同一工位。状态文件不是所有权锁；Idle/Reserved/Running/Suspended 仅记录恢复事实。遗弃 mutex 或无持有者却仍 Reserved/Running 时，保留 previous 并暂停该根；无效状态原字节保留并使该根不可用；本次尝试移除它并继续其他根。没有自动重跑、全池停机或后台修复。恢复需要管理核清原进程、绑定和材料后显式处理该根状态；不得靠删除证据恢复。
 
+注册表的 schema、policy、路径拼写、重复身份与重叠是全局拒绝条件。选中工位的 root/record 是否存在、是否普通文件链及物理身份是否仍一致，在持锁后检查；单工位不可用不阻止健康位入场，也不在坏位建立 job。state 的路径拒绝或无效原字节保留；写 Suspended 失败时保留原材料并记录有界类型诊断。本次尝试只移除坏位，不替它修复配置或执行任务。
+
 ### 每单材料与启动
 
 任务 spec 的闭合字段见 [使用说明](BRIDGE_USAGE.md#四工位薄调度候选lab-agy-station-impl-01)。read/write/protected/output 路径排序去重，按新任务根解析，继承原 A/B 规则。Testing 为 Coding/execute 且 work 只读；Mixed 为 Coding 工程操作；Review work 只读，产物在 out，写入型测试在 scratch。每工位都可承载这些范围，不新增角色枚举。
@@ -729,6 +731,8 @@ v4 receipt 恰为原 `_RECEIPT_KEYS` 加 native_project 与 station_binding；�
 
 控制器先取得工位，再 import 新 snapshot、生成 trusted receipt/profile/auth、prepare 新根、plan、run 一次、collect 自己的 result 并释放。每单 request/task/root/result/capture 独立，run 使用固定新会话调用，不加 resume。OS cwd 为 task_root，请求给出绝对文件/脚本/输出目标和明确工具命令 workdir；原生资源根仍 station.root。Worker 只获本单输入，禁止访问其他 jobs/会话。此声明及普通文件复核不构成 OS 沙箱。
 
+request 及 trusted 目录首次 mkdir 前复用普通路径链检查，拒绝目标或父链中的 junction/reparse；收尾写入再次检查。检查是该步骤的时间点核验，不宣称消除链路被随后替换的竞态。
+
 本次 producer 在管道关闭后、seal 前以已在内存的密钥认证读取自己的 stdout，投影有界 init/result/tool conversation ID；不再读取密钥或历史 capture。seal 后保存 native-conversation.json 为原 evidence_refs/collector 副本。唯一 init/result、合法 ID、cwd、固定 model 和可见 tool IDs 匹配为 Observed；可见不匹配为 Mismatch，缺失/格式未知为 Unknown、conversation_id=null。capture UID 不代替 native conversation ID；投影不证明全部工具行为或业务成功。
 
 ### 完成、失败和保留
@@ -736,5 +740,7 @@ v4 receipt 恰为原 `_RECEIPT_KEYS` 加 native_project 与 station_binding；�
 单次 launch_count 保留 0/1/null，宿主 transport、business 与管理决定分别记录。控制闭合要求零启动且无不完整 capture/失败配置状态，或一次启动、capture Sealed、原生绑定 Unchanged 和 launch 记录中的 child_exit_observed/pipes_closed/job_closed 全 true。宿主非零退出、预期红测试、Review findings 或收集层业务错误不会单独变成失去控制。控制未闭合、绑定/权限政策漂移或 release 不可确认仅暂停自身根；原生普通显示元数据漂移可接受，不核全工位历史 hash。
 
 每单在 control_root/requests/request-ID 中独立保存 snapshot/trusted/run/result、释放前 dispatch.json（Pending）和释放后 dispatch-final.json。调用返回/CLI 成功依据 final；Collected 表示自己的 collect 与控制闭合，Candidate/Incomplete 及 management_decision=null 保留管理裁决空间。run 的失败/TimedOut 不改成 transport 成功。collector 无效仍 Stopped，并保留启动事实；已确认控制闭合时可以释放，不能无限封位。终态写入失败不返回成功，未释放租约尝试留 Suspended，并保留部分材料。
+
+每次取得的 mutex 只尝试释放一次，包括跳过坏位、finish 与 abandon 分支；关闭租约表示不再尝试释放，不能代替释放已确认。释放失败时当前 Pool 停止进一步入场，保留 Unconfirmed 和有界 `{station_id,stage,error_type}` 诊断，不记录敏感异常文本、不重试宿主。原始 KeyboardInterrupt/SystemExit 等 BaseException 不被后续 release/close/记录失败覆盖。清理异常时，路径仍合法且目录存在才尽力写 dispatch-cleanup.json；它不是成功 final。释放未确认时该诊断为 release_state=Unconfirmed、control_complete=false、status=Stopped，不能写 Released；诊断写入失败也不升级为成功。
 
 每单收尾后立即释放，不等待兄弟单全部结束。所有输出和旧单保留；本轮无清理、真实调用、配置变更、生产安装、远端发布或业务接受。后续真实四路重叠及第五单复用须冻结新运行身份和适用许可。

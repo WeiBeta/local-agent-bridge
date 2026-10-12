@@ -349,9 +349,12 @@ v2 精确 schema 见合同“首次观测合同 v2”；以下离线合成自检
 | ID | 必需离线断言 |
 | --- | --- |
 | ST-REGISTRY | 配置驱动 1..4 位，四位目标用四条；重复物理根/native、容量超限、根重叠拒绝；无 A/B 或角色专属工位 |
+| ST-PATH | requests 父链与 trusted 目标的真 junction 仅在本任务合成 Scratch 中构造；首次 mkdir/import 前拒绝，外部合成目录不产生写入 |
 | ST-OWNER | 真 Windows 合成 OS 子进程争同一根仅一 owner；四根可同时由四 PID 持有；v4 低层 run 无当前 lease 在根/密钥/启动前拒绝 |
 | ST-ADMISSION | 第五单满位等待，无第五 job/root/launch；取消/等待上限保留零启动；第一单释放唤醒第五并使用 fresh UUID，不扰其他三单 |
 | ST-FAILURE | 普通红测试/非零宿主/Review findings 保留其业务结果且可释放；失联/遗弃/持久 Running/无效恢复材料仅使本根不可用，其他根仍完成 |
+| ST-LOCAL | 缺 native record、注册前 root 不可用、record 非普通文件、state 路径/写入拒绝只隔离选中位；保留原字节、不建坏位 job，健康位完成；全局 schema/policy 错误仍拒绝 |
+| ST-RELEASE | 合成 release/close 故障保留主 KeyboardInterrupt/SystemExit 对象；每个取得的 mutex 只释放一次，finish 后不借 abandon 重试；Unconfirmed 不报 Released、不生成成功 final、不继续该 Pool 入场 |
 | ST-ISOLATION | 四位分别覆盖 Coding、Review、Testing、Mixed 范围；Review/Testing source 不变；连续复用 root/request/native CID/capture/result 独立，旧单字节不变 |
 | ST-COLLECT | 实际 import/prepare/plan/run/collect 链且每单独立收尾；自己的 result 先完成和释放，兄弟单可以仍 Running；final 才标 Released |
 | ST-LEGACY | 原 agy/Cursor、Task CLI、A/B、R、first execution、capture 和 launch 生命周期适用回归；v4 不借旧 Accepted，不改旧门禁 |

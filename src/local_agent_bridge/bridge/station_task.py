@@ -98,6 +98,7 @@ def _materialize(lease: station_pool.Lease, frozen: dict, request_root: Path) ->
     task_input._assert_plain_target(task_root.parent, label="station jobs")
     task_root.parent.mkdir(exist_ok=True)
     trust = request_root / "trusted"
+    task_input._assert_plain_target(trust, label="station trusted")
     trust.mkdir()
     imported = task_input.import_snapshot(
         source=frozen["spec"]["source"],
@@ -302,6 +303,7 @@ def dispatch_task(
         )
         outcome["admission_seconds"] = round(time.monotonic() - started, 3)
         outcome["station_id"] = lease.station.id
+        task_input._assert_plain_target(request_root, label="station request")
         request_root.mkdir(parents=True)
         context = _materialize(lease, frozen, request_root)
         outcome["task_root"] = str(context["task_root"])
@@ -396,14 +398,15 @@ def dispatch_task(
                 outcome["release_state"] = (
                     "Released" if outcome["control_complete"] else "Suspended"
                 )
-            task_run._persist(request_root / "dispatch-final.json", outcome)
         except BaseException as error:
             finalization_error = error
+            pool._cleanup_error(outcome["station_id"], "finalize", error)
         finally:
             try:
                 if lease is not None and not lease.closed:
                     lease.abandon()
             except BaseException as error:
+                pool._cleanup_error(outcome["station_id"], "abandon", error)
                 if finalization_error is None:
                     finalization_error = error
             finally:
@@ -412,6 +415,23 @@ def dispatch_task(
                 except BaseException as error:
                     if finalization_error is None:
                         finalization_error = error
+        outcome["cleanup_diagnostics"] = pool.cleanup_diagnostics.copy()
+        if pool.release_unconfirmed:
+            outcome["release_state"] = "Unconfirmed"
+            outcome["release_unconfirmed"] = sorted(pool.release_unconfirmed)
+            outcome["control_complete"] = False
+            outcome["status"] = "Stopped"
+        if interrupted is not None or finalization_error is not None:
+            # A diagnostic is not a successful final receipt. Never follow a
+            # rejected request chain to record it, or retry a release to get it.
+            try:
+                task_input._assert_plain_target(request_root, label="station request")
+                if request_root.is_dir():
+                    task_run._persist(request_root / "dispatch-cleanup.json", outcome)
+            except BaseException as error:
+                pool._cleanup_error(outcome["station_id"], "diagnostic", error)
+        else:
+            task_run._persist(request_root / "dispatch-final.json", outcome)
     if interrupted is not None:
         raise interrupted
     if finalization_error is not None:

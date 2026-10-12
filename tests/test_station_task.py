@@ -6,6 +6,8 @@ import copy
 import io
 import json
 import multiprocessing
+import os
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -592,3 +594,153 @@ def test_cli_execute_outputs_one_collected_candidate_not_management_acceptance(
     outcome = json.loads(captured.out)
     assert outcome["status"] == "Collected" and len(calls) == 1
     assert outcome["business"]["management_decision"] is None and not captured.err
+
+
+def create_synthetic_junction(tmp_path, link, target):
+    # Both physical directories belong to this pytest case, under the task's
+    # explicit --basetemp. Arguments travel through environment, not shell text.
+    assert link.parent.resolve().is_relative_to(tmp_path.resolve())
+    assert target.resolve().is_relative_to(tmp_path.resolve())
+    assert not os.path.lexists(link)
+    result = subprocess.run(
+        [
+            "C:/Program Files/PowerShell/7/pwsh.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction -Path $env:LAB_SYNTHETIC_STATION_LINK "
+            "-Target $env:LAB_SYNTHETIC_STATION_TARGET | Out-Null",
+        ],
+        env={
+            **os.environ,
+            "LAB_SYNTHETIC_STATION_LINK": str(link),
+            "LAB_SYNTHETIC_STATION_TARGET": str(target),
+        },
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, "synthetic junction creation failed; no permission change"
+    assert link.is_junction()
+
+
+def test_review_f01_requests_junction_rejected_before_any_escaped_mkdir(tmp_path, monkeypatch):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    calls = install_host(case, monkeypatch)
+    outside = tmp_path / "outside-control"
+    outside.mkdir()
+    requests = Path(document["control_root"]) / "requests"
+    create_synthetic_junction(tmp_path, requests, outside)
+    with pytest.raises(station_task.task_input.TaskInputError, match="reparse"):
+        dispatch(path, pin, spec, execute=True)
+    assert not list(outside.iterdir())
+    assert calls == []
+
+
+def test_review_f02_missing_native_skips_only_bad_station_before_job_creation(
+    tmp_path, monkeypatch
+):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=2)
+    broken, healthy = document["stations"]
+    record = Path(broken["record"])
+    raw = record.read_bytes()
+    retained = record.with_suffix(".json.retained")
+    record.rename(retained)
+    calls = install_host(case, monkeypatch)
+    for _ in range(2):
+        outcome = dispatch(path, pin, spec, execute=True)
+        assert outcome["status"] == "Collected", outcome
+        assert outcome["station_id"] == healthy["id"]
+        assert outcome["release_state"] == "Released"
+    assert len(calls) == 2
+    assert not (Path(broken["root"]) / "jobs").exists()
+    assert retained.read_bytes() == raw
+    state = read(Path(document["control_root"]) / "states" / (broken["id"] + ".json"))
+    assert state["state"] == "Suspended"
+
+
+def test_trusted_junction_rejected_before_import_or_external_write(tmp_path, monkeypatch):
+    _case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    manager = station_pool.Pool(station_pool.load_registry(path, pin))
+    lease = manager.acquire(str(uuid.uuid4()))
+    request = Path(document["control_root"]) / "requests" / lease.request_id
+    request.mkdir(parents=True)
+    outside = tmp_path / "outside-trusted"
+    outside.mkdir()
+    create_synthetic_junction(tmp_path, request / "trusted", outside)
+    monkeypatch.setattr(
+        station_task.task_input, "import_snapshot", lambda **k: pytest.fail("import before check")
+    )
+    try:
+        with pytest.raises(station_task.task_input.TaskInputError, match="reparse"):
+            station_task._materialize(
+                lease, station_task.validate_spec(spec, document["policy"]), request
+            )
+        assert not list(outside.iterdir())
+        assert not lease.task_root.exists()
+    finally:
+        lease.abandon()
+        manager.close()
+
+
+@pytest.mark.parametrize("primary_type", [None, KeyboardInterrupt, SystemExit])
+def test_dispatch_release_failure_preserves_interrupt_without_released_receipt(
+    tmp_path, monkeypatch, primary_type
+):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    calls = install_host(case, monkeypatch)
+    kernel = pool_fixtures.ReleaseFailureKernel()
+    kernel.fail_release = True
+    monkeypatch.setattr(station_pool, "WindowsHandles", lambda: kernel)
+    primary = primary_type("synthetic materialization interrupt") if primary_type else None
+    if primary is not None:
+
+        def interrupted(*args, **kwargs):
+            raise primary
+
+        monkeypatch.setattr(station_task, "_materialize", interrupted)
+    expected = primary_type if primary is not None else station_pool.StationError
+    with pytest.raises(expected) as caught:
+        dispatch(path, pin, spec, execute=True)
+    if primary is not None:
+        assert caught.value is primary
+    else:
+        assert caught.value.code == "SyntheticReleaseFailed"
+    assert kernel.releases == [1]
+    assert len(calls) == (0 if primary is not None else 1)
+    request = next((Path(document["control_root"]) / "requests").iterdir())
+    assert not (request / "dispatch-final.json").exists()
+    diagnostic = read(request / "dispatch-cleanup.json")
+    assert diagnostic["release_state"] == "Unconfirmed"
+    assert diagnostic["release_unconfirmed"] == [document["stations"][0]["id"]]
+    assert diagnostic["control_complete"] is False
+    assert diagnostic["status"] == "Stopped"
+    assert any(item["stage"] == "release" for item in diagnostic["cleanup_diagnostics"])
+
+
+def test_dispatch_primary_interrupt_survives_late_handle_close_failure(tmp_path, monkeypatch):
+    _case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    primary = KeyboardInterrupt("synthetic original materialization interrupt")
+    kernel = pool_fixtures.ReleaseFailureKernel()
+    monkeypatch.setattr(station_pool, "WindowsHandles", lambda: kernel)
+
+    def interrupted(*args, **kwargs):
+        raise primary
+
+    def broken_close(handle):
+        kernel.closes.append(handle)
+        raise OSError("synthetic close failure")
+
+    kernel.close = broken_close
+    monkeypatch.setattr(station_task, "_materialize", interrupted)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        dispatch(path, pin, spec, execute=True)
+    assert caught.value is primary
+    assert kernel.releases == [1] and kernel.closes == [1]
+    request = next((Path(document["control_root"]) / "requests").iterdir())
+    assert not (request / "dispatch-final.json").exists()
+    diagnostic = read(request / "dispatch-cleanup.json")
+    assert any(
+        item["stage"] == "close" and item["error_type"] == "OSError"
+        for item in diagnostic["cleanup_diagnostics"]
+    )
