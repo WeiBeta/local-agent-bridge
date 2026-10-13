@@ -104,6 +104,32 @@ class _RamStream:
         return hashlib.sha256(self.raw).hexdigest()
 
 
+def _declared_choice_tokens(description: str) -> list[str] | None:
+    """Read the first explicit enum without treating its trailing prose as values."""
+    marker = re.search(r"\b(?:choices|options|values)[ \t]*:[ \t]*", description, re.I)
+    if marker is None:
+        return None
+    # Only a complete enclosing pair permits continuation lines. Searching for
+    # a closing parenthesis alone would consume a later explanatory note.
+    enclosing = next(
+        (
+            pair
+            for pair in re.finditer(r"\([^()]*\)", description)
+            if pair.start() < marker.start() < pair.end()
+        ),
+        None,
+    )
+    if enclosing is not None:
+        values = description[marker.end() : enclosing.end() - 1]
+    else:
+        values = re.split(r"[\r\n]", description[marker.end() :], maxsplit=1)[0]
+    # Values form a comma/pipe-separated list, optionally quoted. Stop before
+    # prose, parentheses or other metadata instead of scanning all their words.
+    value = r"(?:\"[A-Za-z][A-Za-z0-9_-]*\"|'[A-Za-z][A-Za-z0-9_-]*'|[A-Za-z][A-Za-z0-9_-]*)"
+    enum = re.match(rf"\s*{value}(?:\s*[,|]\s*{value})*", values)
+    return re.findall(r"[A-Za-z][A-Za-z0-9_-]*", enum.group()) if enum else []
+
+
 def missing_flags(raw: bytes) -> list[str]:
     """Project option declarations, allowing aliases, wrapping and extra options."""
     text = raw.decode("utf-8", "replace")
@@ -129,14 +155,10 @@ def missing_flags(raw: bytes) -> list[str]:
             missing.append(flag)
             continue
         required_value = {"--effort": "high", "--output-format": "stream-json"}.get(flag)
-        # Choice lists are read inside the declaration's enclosing parenthesis,
-        # which may wrap onto continuation lines before it closes.
-        choices = re.search(r"(?:choices|options|values)\s*:\s*([^)]+?)\)", declaration, re.I)
-        if choices is None:
-            choices = re.search(r"(?:choices|options|values)\s*:\s*([^\r\n)]+)", declaration, re.I)
+        choices = _declared_choice_tokens(body[argument.end() :])
         enum = argument.group(1)[1:-1]
-        if choices or "|" in enum:
-            tokens = re.findall(r"[A-Za-z][A-Za-z0-9_-]*", choices.group(1) if choices else enum)
+        if choices is not None or "|" in enum:
+            tokens = choices if choices is not None else re.findall(r"[A-Za-z][A-Za-z0-9_-]*", enum)
             if required_value is not None and required_value not in tokens:
                 missing.append(flag)
     return missing

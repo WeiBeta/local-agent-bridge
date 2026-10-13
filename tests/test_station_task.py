@@ -1060,6 +1060,40 @@ def test_r05_supported_help_formatting_reaches_the_unique_business_call(
     assert len(diags) == 2 and outcome["launch_count"] == 1 and len(business) == 1, outcome
 
 
+@pytest.mark.parametrize(
+    "flag,argument,choices,required",
+    [
+        ("--effort", "<level>", "low, medium", "high"),
+        ("--output-format", "<format>", "json, text", "stream-json"),
+    ],
+    ids=["effort", "format"],
+)
+def test_r05_unsupported_enum_description_stops_before_business_and_key(
+    tmp_path, monkeypatch, flag, argument, choices, required
+):
+    import test_agy_host as probes
+
+    from local_agent_bridge.bridge import agy_host
+
+    declaration = f"{flag} {argument} choices: {choices}\n       ({required} planned later)"
+    text = probes.HELP.replace(f"{flag} {argument}".encode(), declaration.encode())
+    case, path, pin, _document, spec = configured_stable(tmp_path, monkeypatch)
+    diags, business = install_stable_host(case, monkeypatch, help_text=text)
+    monkeypatch.setattr(
+        fixtures.slice_run, "_session_store", lambda: pytest.fail("unsupported enum read key")
+    )
+    outcome = dispatch(path, pin, spec, execute=True)
+    observation = read(Path(outcome["terminal_path"]).parent / "run" / agy_host.OBSERVATION_REF)
+    assert observation["compatibility"] == {
+        "state": "Unsupported",
+        "missing_required_flags": [flag],
+        "reason": "RequiredParametersMissing",
+    }
+    assert len(diags) == 2 and outcome["launch_count"] == 0 and not business, outcome
+    assert "RequiredParametersMissing" in outcome["business"]["blockers"]
+    assert outcome["release_state"] == "Released" and outcome["control_complete"], outcome
+
+
 @pytest.mark.parametrize("fault,count", [("resume_unknown", None), ("cleanup_unknown", 1)])
 def test_r07_unknown_diagnostic_control_suspends_without_business(
     tmp_path, monkeypatch, fault, count

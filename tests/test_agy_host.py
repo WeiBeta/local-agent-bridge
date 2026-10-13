@@ -186,6 +186,69 @@ def test_r05_explicit_incompatible_values_or_no_parameter(text, flag):
 
 
 @pytest.mark.parametrize(
+    "flag,argument,choices,required",
+    [
+        ("--effort", "<level>", "low, medium", "high"),
+        ("--output-format", "<format>", "json, text", "stream-json"),
+    ],
+    ids=["effort", "format"],
+)
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        " ({required} planned later)",
+        "\n       ({required} planned later)",
+        " Future release may include {required} (planned later)",
+        "\n       Future release may include {required} (planned later)",
+        "\n       (future choices: {required})",
+        ", default: {required}",
+    ],
+    ids=["inline-note", "wrapped-note", "inline-prose", "wrapped-prose", "second-enum", "default"],
+)
+def test_r05_unparenthesized_enum_stops_before_description(
+    flag, argument, choices, required, suffix
+):
+    original = f"{flag} {argument}".encode()
+    declaration = f"{flag} {argument} choices: {choices}" + suffix.format(required=required)
+    text = HELP.replace(original, declaration.encode())
+    assert host.missing_flags(text) == [flag]
+
+
+@pytest.mark.parametrize("label", ["choices", "OPTIONS", "values"])
+@pytest.mark.parametrize("parenthesized", [False, True], ids=["plain", "enclosed"])
+def test_r05_enum_metadata_does_not_supply_a_required_value(label, parenthesized):
+    enum = f"{label}: low, medium, default: high"
+    if parenthesized:
+        enum = f"({enum})"
+    assert host.missing_flags(HELP.replace(b"<level>", f"<level> {enum}".encode())) == ["--effort"]
+
+
+@pytest.mark.parametrize(
+    "flag,argument,choices,required",
+    [
+        ("--effort", "<level>", "low, medium", "high"),
+        ("--output-format", "<format>", "json, text", "stream-json"),
+    ],
+    ids=["effort", "format"],
+)
+@pytest.mark.parametrize("layout", ["plain", "quoted", "pipe", "wrapped", "wrapped-colon"])
+def test_r05_valid_enum_forms_preserve_declared_values(flag, argument, choices, required, layout):
+    enum = f"choices: {choices}, {required}"
+    if layout == "quoted":
+        enum = "values: " + ", ".join(f'"{value}"' for value in [*choices.split(", "), required])
+    elif layout == "pipe":
+        enum = f"options: {choices.replace(', ', '|')}|{required}"
+    elif layout == "wrapped":
+        enum = f"(choices: {choices},\r\n       {required})"
+    elif layout == "wrapped-colon":
+        enum = f"(choices:\n       {choices}, {required})"
+    declaration = f"{flag} {argument} {enum} (additional explanation)"
+    assert (
+        host.missing_flags(HELP.replace(f"{flag} {argument}".encode(), declaration.encode())) == []
+    )
+
+
+@pytest.mark.parametrize(
     "fault,count,closed",
     [
         ("resume_unknown", None, False),
