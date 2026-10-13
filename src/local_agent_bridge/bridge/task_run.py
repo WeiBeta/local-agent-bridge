@@ -1162,16 +1162,23 @@ def _validate_cursor_project_bytes(raw: bytes) -> None:
             _text(rule)
 
 
-def _cursor_global_control_digest(receipt: dict, *, pinned: bool) -> str | None:
-    """v5 read-only finalization: retain every field except documented UI preferences.
+def _cursor_global_control_digest(
+    receipt: dict, *, pinned: bool, groups: dict | None = None
+) -> str | None:
+    """v5 finalization: bind controls, allowing UI and proven refresh timestamps.
 
-    The startup snapshot still matches the frozen raw identity. Only its digest
-    lives in this process; no global configuration text or projection is persisted.
+    The startup snapshot still matches the frozen raw identity. Only digests
+    live in this process; no global configuration text or projection is persisted.
     Unknown fields, permissions and all execution-related preferences stay bound.
     """
     identity = receipt["configuration"]["cursor_global"]
     if identity["sha256"] is None:
-        _verify_file_identity(identity)
+        try:
+            _verify_file_identity(identity)
+        except TaskRunError as error:
+            if groups is not None and error.code == "ConfigurationChanged":
+                groups["failure"] = "NecessaryControlChanged"
+            raise
         return None
     raw = read_host_input_bytes(path=identity["path"])
     if pinned and _digest(raw) != identity["sha256"]:
@@ -1208,6 +1215,88 @@ def _cursor_global_control_digest(receipt: dict, *, pinned: bool) -> str | None:
                 raise TaskRunError("ConfigurationUnverified")
         if not section:
             del value[field]
+
+    # These three leaves are written with Date.now() by the pinned backend.
+    # Keep the object and leaf present in the projection, even if otherwise empty.
+    cache_controls = {
+        "privacyCache": {"ghostMode", "privacyMode"},
+        "serverConfigCache": {
+            "backendUrl",
+            "authCacheKey",
+            "teamId",
+            "agentUrlConfig",
+            "cliSandboxDefaultEnabled",
+            "serverHttp2Config",
+        },
+        "autoReviewAvailabilityCache": {"backendUrl", "authCacheKey", "teamId", "available"},
+    }
+    metadata = {}
+    for field in cache_controls:
+        if field not in value:
+            continue
+        section = value[field]
+        if type(section) is not dict:
+            if groups is not None:
+                groups["failure"] = "MetadataInvalid"
+            raise TaskRunError("ConfigurationUnverified")
+        if "updatedAt" in section:
+            timestamp = section["updatedAt"]
+            if type(timestamp) not in {int, float} or (
+                type(timestamp) is float and not math.isfinite(timestamp)
+            ):
+                if groups is not None:
+                    groups["failure"] = "MetadataInvalid"
+                raise TaskRunError("ConfigurationUnverified")
+            metadata[field] = timestamp
+            section["updatedAt"] = None
+
+    if groups is not None:
+        # Diagnostic grouping only: the complete projection below decides drift.
+        # Unlisted fields are never ignored or emitted, including cache siblings.
+        controls = {
+            field: value[field]
+            for field in (
+                "version",
+                "approvalMode",
+                "permissions",
+                "sandbox",
+                "model",
+                "selectedModel",
+                "modelParameters",
+                "modelSelectionHistory",
+                "maxMode",
+                "hasChangedDefaultModel",
+                "channel",
+                "network",
+                "rewind",
+                "attribution",
+                "authInfo",
+            )
+            if field in value
+        }
+        unknown = {field: item for field, item in value.items() if field not in controls}
+        for field, leaves in cache_controls.items():
+            if field not in value:
+                continue
+            controls[field] = {
+                leaf: item
+                for leaf, item in value[field].items()
+                if leaf in leaves or leaf == "updatedAt"
+            }
+            siblings = {
+                leaf: item
+                for leaf, item in value[field].items()
+                if leaf not in leaves and leaf != "updatedAt"
+            }
+            if siblings:
+                unknown[field] = siblings
+            else:
+                del unknown[field]
+        groups.update(
+            controls=_digest(_canonical(controls)),
+            unknown=_digest(_canonical(unknown)),
+            metadata=_digest(_canonical(metadata)),
+        )
     return _digest(_canonical(value))
 
 
@@ -1647,6 +1736,7 @@ def _execute_once(
     writer = launch = None
     lifecycle = winjob.LaunchLifecycle()
     interrupted: BaseException | None = None
+    cursor_configuration_status = None
     with lease:
         try:
             if first_execution is not None:
@@ -1684,11 +1774,20 @@ def _execute_once(
             recheck()
             _verify_runtime_identity(receipt)
             _read_configuration(context)
-            cursor_global_before = (
-                _cursor_global_control_digest(receipt, pinned=True)
-                if receipt["contract_version"] == 5
-                else None
-            )
+            cursor_groups_before = {}
+            cursor_global_before = None
+            if receipt["contract_version"] == 5:
+                cursor_configuration_status = "ParseReadFailure"
+                try:
+                    cursor_global_before = _cursor_global_control_digest(
+                        receipt, pinned=True, groups=cursor_groups_before
+                    )
+                except BaseException:
+                    cursor_configuration_status = cursor_groups_before.get(
+                        "failure", "ParseReadFailure"
+                    )
+                    raise
+                cursor_configuration_status = None
             if settings_path:
                 # Restoration is required even if a partial write raises.
                 result["restore_state"] = "Failed"
@@ -1731,11 +1830,31 @@ def _execute_once(
                     # Cleanup cannot replace an exception already in flight.
                     try:
                         if receipt["contract_version"] == 5:
-                            if (
-                                _cursor_global_control_digest(receipt, pinned=False)
-                                != cursor_global_before
-                            ):
+                            cursor_groups_after = {}
+                            cursor_configuration_status = "ParseReadFailure"
+                            try:
+                                cursor_global_after = _cursor_global_control_digest(
+                                    receipt, pinned=False, groups=cursor_groups_after
+                                )
+                            except BaseException:
+                                cursor_configuration_status = cursor_groups_after.get(
+                                    "failure", "ParseReadFailure"
+                                )
+                                raise
+                            if cursor_global_after != cursor_global_before:
+                                cursor_configuration_status = (
+                                    "NecessaryControlChanged"
+                                    if cursor_groups_after.get("controls")
+                                    != cursor_groups_before.get("controls")
+                                    else "UnknownFieldChanged"
+                                )
                                 raise TaskRunError("ConfigurationChanged")
+                            cursor_configuration_status = (
+                                "ProvenMetadataOnly"
+                                if cursor_groups_after.get("metadata")
+                                != cursor_groups_before.get("metadata")
+                                else "BoundControlsUnchanged"
+                            )
                         else:
                             for identity in receipt["configuration"].values():
                                 if identity is not None:
@@ -1751,7 +1870,12 @@ def _execute_once(
                                 }
                             )
                         else:
-                            _verify_cursor_project(receipt)
+                            try:
+                                _verify_cursor_project(receipt)
+                            except BaseException:
+                                if receipt["contract_version"] == 5:
+                                    cursor_configuration_status = "ProjectIdentityFailure"
+                                raise
                     except BaseException as error:
                         result["restore_state"] = "Failed"
                         result["blockers"].append(
@@ -1822,6 +1946,8 @@ def _execute_once(
                 "exception_type": type(error).__name__,
                 "launch_count": result["launch_count"],
             }
+            if cursor_configuration_status is not None:
+                failure["cursor_configuration_status"] = cursor_configuration_status
             try:
                 _persist(run_root / "lifecycle-failure.json", failure)
             except BaseException:
@@ -1841,6 +1967,8 @@ def _execute_once(
             result["launch_count"] = lifecycle.launch_count
             if launch is not None or lifecycle.stage != "not_attempted":
                 launch = {**(launch or {}), **lifecycle.record()}
+                if cursor_configuration_status is not None:
+                    launch["cursor_configuration_status"] = cursor_configuration_status
                 try:
                     _persist(run_root / "launch.json", launch)
                 except BaseException:

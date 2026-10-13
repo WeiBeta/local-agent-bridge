@@ -170,8 +170,11 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 
 ## Cursor v5 配置收尾候选复核项
 
-- [ ] fresh 独立 Review 核仅 v5 收尾改变：启动前仍 raw hash；项目精确控制、必要 global 字段/未知字段/类型与数组顺序保持，白名单仅为官方列明的 bool 显示/提示叶子。
+- [ ] fresh 独立 Review 核仅 v5 收尾改变：启动前仍 raw hash；项目精确控制、必要 global 字段/未知字段/类型与数组顺序保持；仅容忍既有 bool 显示/提示叶子与固定后端已证的三处 cache.updatedAt 数字值。
+- [ ] cache 严格对象，时间戳严格 int/有限 float；对象/叶子存在性和未知兄弟保留，实际 privacy/身份/路由/sandbox/model/permissions 控制不放宽，不忽略整个 cache 或默认值物化。
+- [ ] launch/lifecycle-failure 的 cursor_configuration_status 仅固定非敏感分类；无值/正文/任意未知键名/摘要，新分组不替代完整控制门禁；collector 兼容保留，原失败码与主异常/诊断写入优先级不变。
 - [ ] 正常/异常/中断的无害维护、必要语义漂移、损坏/消失/新增、紧前漂移、project/IO 失败及主异常优先均有离线 JUnit；旧 Cursor v1 与 agy v1–v4 适用回归不放宽。
-- [ ] 无新 schema/锁/全局回写/正文落盘，v5 Unchanged 为必要语义未变；B collect 继续不自动业务接受。
+- [ ] RunReceipt/Plan/CLI schema 不变，无新证据文件/锁/全局回写/正文落盘，v5 Unchanged 为必要语义未变；B collect 继续不自动业务接受。
 - [ ] 历史 CursorConfigurationUnverified/RestoreFailed 原失败保留，具体 2 字节变更与 actor/语义仍 Unknown；新代码不能追认旧 Passed。
 - [ ] 启动前共享 global raw 漂移及非持续快照限制明确；真实 CLI/并发/部署需新冻结身份和适用授权，离线通过不升级为生产接受。
+- [ ] 第二轮 metadata 修订的源码依据不证明 LIVE-02 确切 diff 或根因；LIVE-01/LIVE-02 原失败保留，fresh 独立 Review 为下一门禁，第三次实测未授权。

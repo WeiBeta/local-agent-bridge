@@ -63,6 +63,13 @@ LAB-CURSOR-AUTHORIZED-WORKSPACE-01 使用既有公开 `task prepare → task pla
 `notifications`、`hints`、`suggestNextPrompt`、`editor.vimMode` 和 `display` 下
 `showLineNumbers/showThinkingBlocks/showStatusIndicators/showStatusLineRunningTime`。
 仅含这些叶子的 editor/display 对象可新增或消失；未知兄弟字段不丢弃。
+第二轮离线修订 LAB-CURSOR-CONFIG-METADATA-REPAIR-02 另容忍固定后端
+`2026.10.01-e373342` 源码以 `Date.now()` 写入的 `privacyCache.updatedAt`、
+`serverConfigCache.updatedAt`、`autoReviewAvailabilityCache.updatedAt` 值变化。
+cache 若存在必须为对象，updatedAt 若存在必须为严格 int/有限 float，bool、字符串和 null 拒绝。
+只替换时间戳值；cache 对象和 updatedAt 字段的存在性仍绑定，不合并缺省与空对象，未知兄弟保持。
+privacy 的 ghostMode/privacyMode、server 的身份/URL/sandbox/HTTP2、auto-review 的身份/可用性仍绑定；
+不忽略整个缓存，不容忍默认值物化、计数或其他推测元数据。
 权限数组的内容与顺序、approvalMode、整个 sandbox、version、模型偏好、channel、network、rewind、attribution
 及所有未知字段仍绑定；缺省补齐不意味着这些字段可无条件变化。类型错误、损坏/消失配置或无法读取仍失败。
 投影摘要只留当前进程，不落盘全局正文或投影、不回写或恢复 global。
@@ -72,8 +79,20 @@ LAB-CURSOR-AUTHORIZED-WORKSPACE-01 使用既有公开 `task prepare → task pla
 v5 的 restore_state=Unchanged 指必要配置语义与项目控制未变，不保证 global 原字节相同，也不表示执行过恢复。
 RunReceipt/Plan/CLI schema 不变；旧 Cursor v1 和 agy v1–v4 保持原收尾。
 
+v5 在现有 `launch.json`（及发生主异常时的 `lifecycle-failure.json`）附加固定字符串
+`cursor_configuration_status`：BoundControlsUnchanged、ProvenMetadataOnly、NecessaryControlChanged、
+UnknownFieldChanged、MetadataInvalid、ParseReadFailure 或 ProjectIdentityFailure。
+ProvenMetadataOnly 表示控制投影未变且三处时间戳组变化，既有显示 bool 也可能同时变化；
+NecessaryControlChanged 包含冻结 global 不存在时新建文件、绑定的对象/时间戳字段存在性变化。
+已列控制根及 cache 已证控制叶子的差异归为 NecessaryControlChanged；其他未知字段（含 cache/UI
+未知兄弟）归为 UnknownFieldChanged。混合变化先报已列控制组，global 失败先于 project 检查。
+分组仅帮助诊断；完整控制投影仍决定失败。不保存值、正文、任意未知键名或投影摘要，不新增证据文件。
+收尾尚未到达时不伪造分类；读取/解析失败不声称具体字段已变。
+
 该规则来自本轮有界[官方配置](https://cursor.com/docs/cli/reference/configuration)与
 [permissions](https://cursor.com/docs/cli/reference/permissions)核验：CLI 管理部分字段并可补缺字段；
 文档不是本机行为证明，也不能证明历史全局 1931→1929 字节变化无害。原失败回执不重判。
+第二轮的本机源码证据也不证明 LIVE-02 的确切 diff；headless 绕过 server-cache 启动写回，
+privacy 请求仍有刷新路径，具体 LIVE-02 根因保持 Unknown，LIVE-01/LIVE-02 原失败保留。
 共享 global 在启动前因兄弟 CLI 正常维护而漂移仍会阻断；紧前快照不是持续文件锁，也不保证没有短暂漂移再恢复。
 真实 CLI、并发、部署及本修订的独立 Review 未运行/未完成，不能以离线正例代替。

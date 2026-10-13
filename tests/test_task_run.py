@@ -1622,6 +1622,15 @@ def test_cursor_configuration_finalized_on_all_launch_paths(
     if outcome == "error":
         failure = json.loads((target / "lifecycle-failure.json").read_bytes())
         assert failure["exception_type"] == "ValueError"  # Cleanup does not replace the error.
+    if version == 5:
+        launch = json.loads((target / "launch.json").read_bytes())
+        assert launch["cursor_configuration_status"] == (
+            "BoundControlsUnchanged"
+            if drift == "none"
+            else "NecessaryControlChanged"
+            if drift == "global"
+            else "ProjectIdentityFailure"
+        )
 
 
 def bind_cursor_global(case, *, version=5):
@@ -1649,6 +1658,273 @@ def bind_cursor_global(case, *, version=5):
         authorized_cursor_receipt(case)
     sync(case, refresh_r=version == 1)
     return path, value
+
+
+def bind_cursor_cache_global(case, *, version=5):
+    path, value = bind_cursor_global(case, version=version)
+    value.update(
+        privacyCache={"ghostMode": True, "privacyMode": 1, "updatedAt": 1000},
+        serverConfigCache={
+            "backendUrl": "https://synthetic.invalid",
+            "authCacheKey": "synthetic-identity",
+            "teamId": "synthetic-team",
+            "agentUrlConfig": {"agentUrl": "https://synthetic.invalid"},
+            "cliSandboxDefaultEnabled": True,
+            "serverHttp2Config": {"enabled": False},
+            "updatedAt": 1000,
+        },
+        autoReviewAvailabilityCache={
+            "backendUrl": "https://synthetic.invalid",
+            "authCacheKey": "synthetic-identity",
+            "teamId": "synthetic-team",
+            "available": True,
+            "updatedAt": 1000,
+        },
+    )
+    write_json(path, value)
+    case.receipt["configuration"]["cursor_global"] = identity(path)
+    sync(case, refresh_r=version == 1)
+    return path, value
+
+
+CACHE_FIELDS = ("privacyCache", "serverConfigCache", "autoReviewAvailabilityCache")
+
+
+@pytest.mark.parametrize("cache", CACHE_FIELDS)
+@pytest.mark.parametrize("version", [1, 5])
+@pytest.mark.parametrize("outcome", ["normal", "error", "interrupt"])
+def test_cursor_cache_timestamp_maintenance_all_launch_paths(
+    tmp_path, monkeypatch, cache, version, outcome
+):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_cache_global(case, version=version)
+    frozen = plan(case)
+    value[cache]["updatedAt"] = 2000.5
+    changed = canonical(value)
+    original_error = KeyboardInterrupt() if outcome == "interrupt" else ValueError("SECRET-error")
+    process = fake_spawn(
+        case,
+        monkeypatch,
+        behavior=lambda: path.write_bytes(changed),
+        wait_error=original_error if outcome == "interrupt" else None,
+    )
+    shared_launcher = slice_run._launch_and_capture
+
+    def launch_then_fail(*args, **kwargs):
+        result = shared_launcher(*args, **kwargs)
+        if outcome == "error":
+            raise original_error
+        return result
+
+    monkeypatch.setattr(slice_run, "_launch_and_capture", launch_then_fail)
+    target = tmp_path / "cache-finalized"
+    if outcome == "interrupt":
+        with pytest.raises(KeyboardInterrupt) as error:
+            run(case, frozen, target, execute=True)
+        assert error.value is original_error
+        result = json.loads((target / "run.json").read_bytes())
+    else:
+        result = run(case, frozen, target, execute=True)
+    assert result["launch_count"] == len(case.calls) == 1 and process.closed
+    assert result["restore_state"] == ("Unchanged" if version == 5 else "Failed")
+    assert result["transport_state"] == (
+        "Completed" if version == 5 and outcome == "normal" else "Failed"
+    )
+    assert ("RestoreFailed" in result["blockers"]) == (version != 5)
+    assert path.read_bytes() == changed
+    assert not (target / "private").exists() and not (target / "config-restore.json").exists()
+    launch = json.loads((target / "launch.json").read_bytes())
+    if version == 5:
+        assert launch["cursor_configuration_status"] == "ProvenMetadataOnly"
+    else:
+        assert "cursor_configuration_status" not in launch
+    if outcome != "normal":
+        failure = json.loads((target / "lifecycle-failure.json").read_bytes())
+        assert failure["exception_type"] == type(original_error).__name__
+        assert b"SECRET" not in (target / "lifecycle-failure.json").read_bytes()
+
+
+@pytest.mark.parametrize("cache", CACHE_FIELDS)
+@pytest.mark.parametrize("replacement", [True, False, "2000", None, [], {}])
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_cursor_cache_timestamp_invalid_type_refused(
+    tmp_path, monkeypatch, cache, replacement, when
+):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_cache_global(case)
+    value[cache]["updatedAt"] = replacement
+    changed = canonical(value)
+    target = tmp_path / "invalid-timestamp"
+    if when == "before":
+        path.write_bytes(changed)
+        case.receipt["configuration"]["cursor_global"] = identity(path)
+        sync(case)
+        frozen = plan(case)
+        result = run(case, frozen, target, execute=True)
+        assert result["launch_count"] == 0 and not case.calls
+        failure = json.loads((target / "lifecycle-failure.json").read_bytes())
+        assert failure["cursor_configuration_status"] == "MetadataInvalid"
+        assert "ConfigurationUnverified" in result["blockers"]
+    else:
+        frozen = plan(case)
+        fake_spawn(case, monkeypatch, behavior=lambda: path.write_bytes(changed))
+        result = run(case, frozen, target, execute=True)
+        assert result["launch_count"] == 1
+        assert result["restore_state"] == "Failed"
+        assert {"CursorConfigurationUnverified", "RestoreFailed"} <= set(result["blockers"])
+        launch = json.loads((target / "launch.json").read_bytes())
+        assert launch["cursor_configuration_status"] == "MetadataInvalid"
+    assert result["transport_state"] == "Failed" and path.read_bytes() == changed
+
+
+@pytest.mark.parametrize("cache", CACHE_FIELDS)
+@pytest.mark.parametrize(
+    "change", ["remove_cache", "add_cache", "remove_timestamp", "add_timestamp"]
+)
+def test_cursor_cache_and_timestamp_presence_stays_bound(tmp_path, monkeypatch, cache, change):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_cache_global(case)
+    cache_value = value[cache]
+    if change == "add_cache":
+        del value[cache]
+    elif change == "add_timestamp":
+        del cache_value["updatedAt"]
+    write_json(path, value)
+    case.receipt["configuration"]["cursor_global"] = identity(path)
+    sync(case)
+    frozen = plan(case)
+    if change == "remove_cache":
+        del value[cache]
+    elif change == "add_cache":
+        value[cache] = cache_value
+    elif change == "remove_timestamp":
+        del cache_value["updatedAt"]
+    else:
+        cache_value["updatedAt"] = 2000
+    changed = canonical(value)
+    fake_spawn(case, monkeypatch, behavior=lambda: path.write_bytes(changed))
+    target = tmp_path / "cache-presence"
+    result = run(case, frozen, target, execute=True)
+    assert result["launch_count"] == 1 and result["restore_state"] == "Failed"
+    assert {"CursorConfigurationUnverified", "RestoreFailed"} <= set(result["blockers"])
+    assert json.loads((target / "launch.json").read_bytes())["cursor_configuration_status"] == (
+        "NecessaryControlChanged"
+    )
+    assert path.read_bytes() == changed
+
+
+@pytest.mark.parametrize("cache", CACHE_FIELDS)
+@pytest.mark.parametrize("replacement", [None, [], True, "SECRET-cache"])
+def test_cursor_cache_object_type_refused(tmp_path, monkeypatch, cache, replacement):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_cache_global(case)
+    frozen = plan(case)
+    value[cache] = replacement
+    changed = canonical(value)
+    fake_spawn(case, monkeypatch, behavior=lambda: path.write_bytes(changed))
+    target = tmp_path / "cache-object"
+    result = run(case, frozen, target, execute=True)
+    assert result["restore_state"] == "Failed"
+    diagnostic = (target / "launch.json").read_bytes()
+    assert json.loads(diagnostic)["cursor_configuration_status"] == "MetadataInvalid"
+    assert b"SECRET" not in diagnostic and path.read_bytes() == changed
+
+
+@pytest.mark.parametrize(
+    ("cache", "leaf", "replacement", "status"),
+    [
+        ("privacyCache", "ghostMode", False, "NecessaryControlChanged"),
+        ("privacyCache", "privacyMode", 2, "NecessaryControlChanged"),
+        ("serverConfigCache", "backendUrl", "SECRET-url", "NecessaryControlChanged"),
+        ("serverConfigCache", "authCacheKey", "SECRET-auth", "NecessaryControlChanged"),
+        ("serverConfigCache", "teamId", "SECRET-team", "NecessaryControlChanged"),
+        ("serverConfigCache", "agentUrlConfig", {}, "NecessaryControlChanged"),
+        ("serverConfigCache", "cliSandboxDefaultEnabled", False, "NecessaryControlChanged"),
+        ("serverConfigCache", "serverHttp2Config", {}, "NecessaryControlChanged"),
+        ("autoReviewAvailabilityCache", "available", False, "NecessaryControlChanged"),
+        ("autoReviewAvailabilityCache", "backendUrl", "SECRET-url", "NecessaryControlChanged"),
+        ("autoReviewAvailabilityCache", "authCacheKey", "SECRET-auth", "NecessaryControlChanged"),
+        ("autoReviewAvailabilityCache", "teamId", "SECRET-team", "NecessaryControlChanged"),
+        ("privacyCache", "SECRET-unknown-key", "SECRET-value", "UnknownFieldChanged"),
+        ("serverConfigCache", "SECRET-unknown-key", "SECRET-value", "UnknownFieldChanged"),
+        (
+            "autoReviewAvailabilityCache",
+            "SECRET-unknown-key",
+            "SECRET-value",
+            "UnknownFieldChanged",
+        ),
+    ],
+)
+def test_cursor_cache_controls_and_unknown_siblings_fail_without_values(
+    tmp_path, monkeypatch, cache, leaf, replacement, status
+):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_cache_global(case)
+    frozen = plan(case)
+    for field in CACHE_FIELDS:
+        value[field]["updatedAt"] = 2000
+    value[cache][leaf] = replacement
+    changed = canonical(value)
+    fake_spawn(case, monkeypatch, behavior=lambda: path.write_bytes(changed))
+    target = tmp_path / "cache-control"
+    result = run(case, frozen, target, execute=True)
+    assert result["restore_state"] == "Failed" and result["transport_state"] == "Failed"
+    assert {"CursorConfigurationUnverified", "RestoreFailed"} <= set(result["blockers"])
+    diagnostic = (target / "launch.json").read_bytes()
+    assert json.loads(diagnostic)["cursor_configuration_status"] == status
+    assert b"SECRET" not in diagnostic and path.read_bytes() == changed
+
+
+def test_cursor_timestamp_empty_cache_and_numeric_projection(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, _ = bind_cursor_global(case)
+    write_json(path, {field: {"updatedAt": 0} for field in CACHE_FIELDS})
+    case.receipt["configuration"]["cursor_global"] = identity(path)
+    before = runner._cursor_global_control_digest(case.receipt, pinned=True)
+    write_json(path, {field: {"updatedAt": 1.5} for field in CACHE_FIELDS})
+    assert runner._cursor_global_control_digest(case.receipt, pinned=False) == before
+    write_json(path, {})
+    assert runner._cursor_global_control_digest(case.receipt, pinned=False) != before
+    write_json(path, {field: {} for field in CACHE_FIELDS})
+    assert runner._cursor_global_control_digest(case.receipt, pinned=False) != before
+
+
+@pytest.mark.parametrize("write_point", ["lifecycle-failure.json", "launch.json", "run.json"])
+@pytest.mark.parametrize("original_error", [KeyboardInterrupt(), SystemExit(23)])
+def test_cursor_diagnostic_write_failure_preserves_primary_interrupt(
+    tmp_path, monkeypatch, write_point, original_error
+):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_cache_global(case)
+    frozen = plan(case)
+    value["privacyCache"]["ghostMode"] = False
+    fake_spawn(
+        case,
+        monkeypatch,
+        behavior=lambda: write_json(path, value),
+        wait_error=original_error,
+    )
+    persist = runner._persist
+    attempts = []
+
+    def failing(target, content, **kwargs):
+        if target.name == write_point:
+            attempts.append(target.name)
+            raise OSError("SECRET-diagnostic-write")
+        return persist(target, content, **kwargs)
+
+    monkeypatch.setattr(runner, "_persist", failing)
+    target = tmp_path / "diagnostic-write"
+    with pytest.raises(type(original_error)) as error:
+        run(case, frozen, target, execute=True)
+    assert error.value is original_error and attempts == [write_point]
+    for name in ("launch.json", "lifecycle-failure.json"):
+        if (target / name).exists():
+            diagnostic = (target / name).read_bytes()
+            assert (
+                json.loads(diagnostic)["cursor_configuration_status"] == "NecessaryControlChanged"
+            )
+            assert b"SECRET" not in diagnostic
 
 
 @pytest.mark.parametrize("version", [1, 5])
@@ -1814,8 +2090,52 @@ def test_cursor_v5_missing_or_damaged_global_is_not_restored(tmp_path, monkeypat
     assert result["restore_state"] == "Failed" and result["transport_state"] == "Failed"
     assert {"CursorConfigurationUnverified", "RestoreFailed"} <= set(result["blockers"])
     assert path.exists() == (payload is not None)
+    assert (
+        json.loads((tmp_path / "damaged/launch.json").read_bytes())["cursor_configuration_status"]
+        == "ParseReadFailure"
+    )
     if payload is not None:
         assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("cache", CACHE_FIELDS)
+@pytest.mark.parametrize("number", ["NaN", "Infinity", "1e999"])
+def test_cursor_timestamp_non_finite_json_fails(tmp_path, monkeypatch, cache, number):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, _ = bind_cursor_cache_global(case)
+    frozen = plan(case)
+    changed = ('{"' + cache + '":{"updatedAt":' + number + "}}").encode()
+    fake_spawn(case, monkeypatch, behavior=lambda: path.write_bytes(changed))
+    target = tmp_path / "nonfinite-timestamp"
+    result = run(case, frozen, target, execute=True)
+    assert result["restore_state"] == "Failed" and result["launch_count"] == 1
+    assert json.loads((target / "launch.json").read_bytes())["cursor_configuration_status"] == (
+        "ParseReadFailure"
+    )
+    assert path.read_bytes() == changed
+
+
+def test_cursor_timestamp_drift_at_startup_snapshot_refuses_launch(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_cache_global(case)
+    frozen = plan(case)
+    read = runner.read_host_input_bytes
+    value["privacyCache"]["updatedAt"] = 2000
+    changed = canonical(value)
+
+    def read_with_drift(*, path: str):
+        if path == case.receipt["configuration"]["cursor_global"]["path"]:
+            Path(path).write_bytes(changed)
+        return read(path=path)
+
+    monkeypatch.setattr(runner, "read_host_input_bytes", read_with_drift)
+    monkeypatch.setattr(
+        slice_run, "spawn_suspended_in_job", lambda *a, **k: pytest.fail("no launch")
+    )
+    result = run(case, frozen, tmp_path / "timestamp-prelaunch", execute=True)
+    assert result["launch_count"] == 0 and result["transport_state"] == "Failed"
+    assert "ConfigurationChanged" in result["blockers"]
+    assert path.read_bytes() == changed and not case.calls
 
 
 @pytest.mark.parametrize("change_at", ["capture", "snapshot"])

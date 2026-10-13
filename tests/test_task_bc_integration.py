@@ -50,10 +50,10 @@ def collect(case, tmp_path, run_root=None):
 
 
 @pytest.mark.parametrize("role", ["Coding", "Review"])
-@pytest.mark.parametrize("drift", ["benign", "permission", "project"])
+@pytest.mark.parametrize("drift", ["benign", "metadata", "unknown", "permission", "project"])
 def test_cursor_v5_config_finalization_actual_b_and_collect(tmp_path, monkeypatch, role, drift):
     case = actual_case(tmp_path, monkeypatch, host="cursor", role=role, accepted=False)
-    global_path, value = fixtures.bind_cursor_global(case)
+    global_path, value = fixtures.bind_cursor_cache_global(case)
     frozen = fixtures.plan(case)
     original_global = global_path.read_bytes()
 
@@ -61,6 +61,13 @@ def test_cursor_v5_config_finalization_actual_b_and_collect(tmp_path, monkeypatc
         if drift == "benign":
             value["hints"] = True
             global_path.write_bytes(json.dumps(value, indent=2).encode())
+        elif drift == "metadata":
+            for field in fixtures.CACHE_FIELDS:
+                value[field]["updatedAt"] = 2000
+            fixtures.write_json(global_path, value)
+        elif drift == "unknown":
+            value["privacyCache"]["SECRET-unknown-key"] = "SECRET-value"
+            fixtures.write_json(global_path, value)
         elif drift == "permission":
             value["permissions"]["deny"] = ["Write(work/**)"]
             fixtures.write_json(global_path, value)
@@ -81,7 +88,20 @@ def test_cursor_v5_config_finalization_actual_b_and_collect(tmp_path, monkeypatc
     assert (tmp_path / "collected/run/run.json").read_bytes() == (
         run_root / "run.json"
     ).read_bytes()
-    if drift == "benign":
+    launch_raw = (tmp_path / "collected/run/launch.json").read_bytes()
+    assert launch_raw == (run_root / "launch.json").read_bytes()
+    assert b"SECRET" not in launch_raw
+    assert (
+        json.loads(launch_raw)["cursor_configuration_status"]
+        == {
+            "benign": "BoundControlsUnchanged",
+            "metadata": "ProvenMetadataOnly",
+            "unknown": "UnknownFieldChanged",
+            "permission": "NecessaryControlChanged",
+            "project": "ProjectIdentityFailure",
+        }[drift]
+    )
+    if drift in {"benign", "metadata"}:
         assert receipt["transport_state"] == "Completed" and receipt["restore_state"] == "Unchanged"
         assert not result["blockers"]
         assert result["host_observations"]["scope_status"] == "Pass"

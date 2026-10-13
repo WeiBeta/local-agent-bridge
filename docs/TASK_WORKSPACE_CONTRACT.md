@@ -780,12 +780,26 @@ notifications/hints/suggestNextPrompt、editor.vimMode 及 display 的 showLineN
 showStatusIndicators/showStatusLineRunningTime。格式与对象键顺序不构成必要语义漂移；仅含可忽略叶子的
 editor/display 空对象可规范化为缺省，未知兄弟字段保留。
 
+LAB-CURSOR-CONFIG-METADATA-REPAIR-02 仅增加源码已证的三处刷新时间戳值容忍：
+privacyCache.updatedAt、serverConfigCache.updatedAt、autoReviewAvailabilityCache.updatedAt。
+存在的 cache 严格为 dict，存在的 updatedAt 严格为 int 或有限 float（不接受 bool）；
+投影保留 cache 和 updatedAt 的存在性，包括只有时间戳的 cache，不把空对象与缺省合并。
+其他 cache 子叶（privacy、身份、路由、sandbox、HTTP2、可用性及未知兄弟）全部继续精确绑定。
+该规则来自固定 Cursor 后端 2026.10.01-e373342 的 Date.now() 写入，不拓展到其他缓存、计数或默认值。
+
 其他所有字段及类型/数组顺序仍精确比较，包括 approvalMode、permissions、sandbox、version、model/maxMode/
 hasChangedDefaultModel、channel、network、rewind、attribution 和未知字段。缺省补齐涉及这些字段时仍拒绝；
 无 global 的冻结对象不允许收尾新建配置。损坏、消失、IO/路径拒绝或必要投影变化仍记 restore_state=Failed、
 CursorConfigurationUnverified/RestoreFailed，并保留原材料和原主中断。正常语义不变为 Unchanged，
-不是 global 字节未变或实际恢复操作声明。投影摘要仅在本进程保留，不产生新证据/schema 或 global 回写。
+不是 global 字节未变或实际恢复操作声明。投影/分组摘要仅在本进程保留，无 global 回写。
+RunReceipt/Plan/CLI schema 不变，无新证据文件；现有 launch.json 及主异常的 lifecycle-failure.json
+可附加 cursor_configuration_status 固定分类，具体枚举与优先级见
+[使用说明](CURSOR_USAGE.md#v5-只读配置收尾lab-cursor-config-finalize-01离线候选)。
+已列控制根内部差异保守归 NecessaryControlChanged；未列字段与 cache/UI 未知兄弟归
+UnknownFieldChanged，混合变化优先已列控制，global 失败先于 project 检查。
+分类不能代替完整投影门禁；无配置值、正文、任意未知键名或 digest 输出。
 
 v1–v4、agy settings/native/station 和旧 Cursor slice 不变。共享 global 启动前正常维护造成的 raw 漂移仍是并发限制；
 只读快照不承诺持续隔离或发现短暂改回的配置。该候选不新增整场锁、不迁移或重判历史失败，
 离线自检之后须 fresh 独立 Review；新真实调用、部署与并发须另有适用授权。
+LIVE-01/LIVE-02 原失败保留；本机源码自维护路径不是 LIVE-02 具体 diff 或真实根因证明。
