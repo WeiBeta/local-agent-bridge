@@ -988,6 +988,27 @@ def _run_receipt(
                 _fail("FirstExecutionBindingMismatch")
         elif plan["preflight_status"] == "Blocked" and launch_count != 0:
             _fail("RunReceiptInvalid")
+        receipt_path = root / "control" / "deployment-receipt.json"
+        if receipt_path.exists():
+            receipt = _json(receipt_path, canonical=True)
+            if type(receipt) is dict and receipt.get("contract_version") == 6:
+                from . import agy_host
+
+                if (
+                    inputs._sha256_bytes(inputs._canonical_json_bytes(receipt))
+                    != profile["receipt_sha256"]
+                ):
+                    _fail("PlanBindingMismatch")
+                try:
+                    observation = agy_host.read_observation(
+                        value, run_root, receipt["host_entry"]["path"]
+                    )
+                except (agy_host.AgyHostError, KeyError, TypeError) as error:
+                    raise TaskWorkspaceError(
+                        "AgyHostObservationInvalid", "host observation invalid"
+                    ) from error
+                if observation is not None and observation["compatibility"]["state"] != "Supported":
+                    blockers.append(observation["compatibility"]["reason"] or "AgyHostUnverified")
         blockers.extend(value["blockers"])
         if value["transport_state"] in {"Failed", "TimedOut"}:
             blockers.append("Transport" + value["transport_state"])

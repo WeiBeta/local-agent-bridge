@@ -1736,3 +1736,65 @@ def test_no_required_enforcement_claim_from_profile_text(tmp_path):
     assert all(
         item["result"] == "Unrun" for item in result["host_observations"]["acceptance_observations"]
     )
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing", "task", "plan", "sha", "excess", "supported", "noncanonical"]
+)
+def test_r08_v6_collector_rejects_invalid_single_observation(tmp_path, monkeypatch, fault):
+    import test_station_task as fixtures
+
+    from local_agent_bridge.bridge import agy_host
+
+    case, path, pin, _document, spec = fixtures.configured_stable(tmp_path, monkeypatch)
+    fixtures.install_stable_host(case, monkeypatch)
+    outcome = fixtures.dispatch(path, pin, spec, execute=True)
+    assert outcome["release_state"] == "Released", outcome
+    root = Path(outcome["task_root"])
+    run_root = Path(outcome["terminal_path"]).parent / "run"
+    observation_path = run_root / agy_host.OBSERVATION_REF
+    observation = json.loads(observation_path.read_bytes())
+    run = json.loads((run_root / "run.json").read_bytes())
+    if fault == "missing":
+        observation_path.unlink()
+    elif fault == "sha":
+        observation_path.write_bytes(observation_path.read_bytes() + b" ")
+    else:
+        if fault == "task":
+            observation["task_id"] = "foreign"
+        elif fault == "plan":
+            observation["plan_sha256"] = "b" * 64
+        elif fault == "excess":
+            observation["diagnostics"].append(observation["diagnostics"][0])
+        elif fault == "supported":
+            observation["diagnostics"][0]["cleanup"]["job_closed"] = None
+        raw = (
+            canonical(observation) if fault != "noncanonical" else json.dumps(observation).encode()
+        )
+        observation_path.write_bytes(raw)
+        for evidence in run["evidence_refs"]:
+            if evidence["ref"] == agy_host.OBSERVATION_REF:
+                evidence["sha256"] = sha(raw)
+        (run_root / "run.json").write_bytes(canonical(run))
+    task = json.loads((root / "task.json").read_bytes())
+    blockers = []
+    checked, _digest = entry._run_receipt(root, run_root, task, sha(canonical(task)), blockers)
+    assert checked is None and "RunReceiptInvalid" in blockers
+
+
+def test_r08_unsupported_is_valid_run_with_compatibility_blocker(tmp_path, monkeypatch):
+    import test_agy_host as probes
+    import test_station_task as fixtures
+
+    case, path, pin, _document, spec = fixtures.configured_stable(tmp_path, monkeypatch)
+    fixtures.install_stable_host(
+        case, monkeypatch, help_text=probes.HELP.replace(b"--effort", b"--unused")
+    )
+    outcome = fixtures.dispatch(path, pin, spec, execute=True)
+    root = Path(outcome["task_root"])
+    run_root = Path(outcome["terminal_path"]).parent / "run"
+    task = json.loads((root / "task.json").read_bytes())
+    blockers = []
+    checked, _digest = entry._run_receipt(root, run_root, task, sha(canonical(task)), blockers)
+    assert checked is not None and checked["launch_count"] == 0
+    assert "RequiredParametersMissing" in blockers

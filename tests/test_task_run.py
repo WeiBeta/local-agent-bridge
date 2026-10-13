@@ -2390,3 +2390,113 @@ def test_observation_cannot_use_a_counterfeit_ready_plan(tmp_path, monkeypatch):
     with pytest.raises(runner.TaskRunError, match="PlanChanged"):
         run(case, counterfeit, tmp_path / "refused", execute=True)
     assert not (tmp_path / "refused").exists() and not case.calls
+
+
+def stable_materialized(tmp_path, monkeypatch):
+    import uuid
+
+    import test_station_task as station_fixtures
+
+    from local_agent_bridge.bridge import station_pool, station_task
+
+    case, path, pin, document, spec = station_fixtures.configured_stable(tmp_path, monkeypatch)
+    pool = station_pool.Pool(station_pool.load_registry(path, pin))
+    lease = pool.acquire(str(uuid.uuid4()))
+    request = Path(document["control_root"]) / "requests" / lease.request_id
+    request.mkdir(parents=True)
+    frozen = station_task.validate_spec(spec, document["policy"])
+    context = station_task._materialize(lease, frozen, request)
+    return case, pool, lease, request, context
+
+
+@pytest.mark.parametrize(
+    "fault", ["extra", "legacy_hash", "host_version", "v4_stable", "v6_strict", "version_bool"]
+)
+def test_r02_opt_in_closed_receipt_and_no_mixed_contract(tmp_path, monkeypatch, fault):
+    case, pool, lease, request, context = stable_materialized(tmp_path, monkeypatch)
+    try:
+        receipt = copy.deepcopy(context["receipt"])
+        runner._validate_receipt(receipt)
+        if fault == "extra":
+            receipt["compatibility_cache"] = {}
+        elif fault == "legacy_hash":
+            receipt["host_entry"]["sha256"] = H
+        elif fault == "host_version":
+            receipt["host_version"] = "1.3.4"
+        elif fault == "v4_stable":
+            receipt["contract_version"] = 4
+        elif fault == "v6_strict":
+            receipt["host_entry"] = identity(case.host_entry)
+        else:
+            receipt["contract_version"] = True
+        with pytest.raises(runner.TaskRunError):
+            runner._validate_receipt(receipt)
+    finally:
+        terminal = request / "synthetic-terminal.json"
+        terminal.write_bytes(b"{}")
+        lease.finish(control_complete=True, terminal=terminal)
+        pool.close()
+
+
+@pytest.mark.parametrize("execute,blocked", [(False, False), (True, True)])
+def test_r10_v6_unexecuted_has_no_diagnostics_key_or_observation(
+    tmp_path, monkeypatch, execute, blocked
+):
+    from local_agent_bridge.bridge import agy_host
+
+    _case, pool, lease, request, context = stable_materialized(tmp_path, monkeypatch)
+    try:
+        monkeypatch.setattr(slice_run, "_session_store", lambda: pytest.fail("unexecuted key read"))
+        monkeypatch.setattr(
+            slice_run, "spawn_suspended_in_job", lambda *a, **kw: pytest.fail("unexecuted spawn")
+        )
+        frozen = context["plan"]
+        if blocked:
+            # Freeze a static blocker; the shared branch must not enter execution.
+            frozen = {
+                **frozen,
+                "preflight_status": "Blocked",
+                "blockers": ["StationAuthorizationUnverified"],
+            }
+            monkeypatch.setattr(runner, "_make_plan", lambda *_args: frozen)
+            write_json(context["task_root"] / "control/plan.json", frozen)
+        result = runner.run_task(
+            task_root=context["task_root"],
+            plan=frozen,
+            run_root=request / "run",
+            trusted_control_root=context["trusted"],
+            trusted_inputs_sha256=context["trusted_sha256"],
+            execute=execute,
+            station_lease=lease,
+        )
+        assert result["transport_state"] == "NotRun" and result["launch_count"] == 0
+        assert not (request / "run" / agy_host.OBSERVATION_REF).exists()
+    finally:
+        terminal = request / "synthetic-terminal.json"
+        terminal.write_bytes(b"{}")
+        lease.finish(control_complete=True, terminal=terminal)
+        pool.close()
+
+
+@pytest.mark.parametrize("target", ["bridge", "catalog", "toolchain"])
+def test_r01_v6_bridge_and_toolchain_hashes_stay_strict(tmp_path, monkeypatch, target):
+    _case, pool, lease, request, context = stable_materialized(tmp_path, monkeypatch)
+    try:
+        receipt = context["receipt"]
+        if target == "bridge":
+            Path(receipt["bridge"]["entry"]["path"]).write_bytes(b"drift")
+        elif target == "catalog":
+            receipt["bridge"]["product_files"] = [
+                item
+                for item in receipt["bridge"]["product_files"]
+                if not item["path"].endswith("agy_host.py")
+            ]
+        else:
+            Path(receipt["toolchains"][0]["identity_files"][0]["path"]).write_bytes(b"drift")
+        with pytest.raises(runner.TaskRunError):
+            runner._verify_runtime_identity(receipt)
+    finally:
+        terminal = request / "synthetic-terminal.json"
+        terminal.write_bytes(b"{}")
+        lease.finish(control_complete=True, terminal=terminal)
+        pool.close()

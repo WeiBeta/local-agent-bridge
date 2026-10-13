@@ -907,3 +907,215 @@ def test_closed_host_business_red_releases_and_next_request_reuses_station(tmp_p
     assert next_outcome["station_id"] == red["station_id"]
     assert next_outcome["request_id"] != red["request_id"]
     assert next_outcome["status"] == "Collected" and len(next_calls) == 1
+
+
+def configured_stable(tmp_path, monkeypatch, count=1):
+    case, path, _pin, document, spec = configured(tmp_path, monkeypatch, count=count)
+    seed = document["deployment_receipt"]
+    seed["contract_version"] = 6
+    seed["host_entry"] = {
+        "path": str(case.host_entry),
+        "install_root": str(case.host_entry.parent),
+        "identity_mode": "StableInstalledEntry",
+    }
+    del seed["host_version"], seed["host_identity_files"]
+    seed["runtime_acceptances"] = []
+    seed["configuration"] = dict.fromkeys(seed["configuration"])
+    pin = pool_fixtures.save_registry(path, document)
+    return case, path, pin, document, spec
+
+
+def install_stable_host(
+    case,
+    monkeypatch,
+    *,
+    probe_fault=None,
+    help_text=None,
+    version=b"1.3.4\n",
+    conversation="valid",
+    protocol=None,
+):
+    import test_agy_host as probes
+
+    business_calls = install_host(case, monkeypatch, conversation=conversation)
+    business_spawn = fixtures.slice_run.spawn_suspended_in_job
+    diagnostic_calls = probes.probe_host(
+        monkeypatch,
+        fault=probe_fault,
+        help_text=probes.HELP if help_text is None else help_text,
+        version=version,
+    )
+    diagnostic_spawn = fixtures.slice_run.spawn_suspended_in_job
+
+    def spawn(argv, cwd, *, lifecycle, env=None):
+        if argv[1] in {"--version", "--help"}:
+            return diagnostic_spawn(argv, cwd, lifecycle=lifecycle, env=env)
+        process = business_spawn(argv, cwd, lifecycle=lifecycle, env=env)
+        events = [json.loads(line) for line in process.stdout.getvalue().splitlines()]
+        if protocol == "extra":
+            events.insert(1, {"event": "new_host_event", "payload": {"new": True}})
+            events[0]["init"]["additional"] = 1
+        elif protocol == "model":
+            events[0]["init"]["model"] = "other-model"
+        elif protocol == "cid":
+            del events[-1]["result"]["conversation_id"]
+        elif protocol == "error":
+            events[-1]["result"]["status"] = "ERROR"
+        process.stdout = io.BytesIO(b"".join(fixtures.canonical(event) + b"\n" for event in events))
+        return process
+
+    monkeypatch.setattr(fixtures.slice_run, "spawn_suspended_in_job", spawn)
+    return diagnostic_calls, business_calls
+
+
+def test_r01_stable_update_without_registry_plan_receipt_mutation(tmp_path, monkeypatch):
+    case, path, pin, _document, spec = configured_stable(tmp_path, monkeypatch)
+    registry_bytes = path.read_bytes()
+    diags, business = install_stable_host(
+        case,
+        monkeypatch,
+        version=lambda: (
+            b"1.4.0\n"
+            if case.host_entry.read_bytes() == b"updated ordinary vendor entry"
+            else b"1.3.4\n"
+        ),
+    )
+    first = dispatch(path, pin, spec, execute=True)
+    assert first["status"] == "Collected" and first["release_state"] == "Released", first
+    first_root = Path(first["task_root"])
+    frozen = {
+        name: (first_root / ("control/" + name)).read_bytes()
+        for name in ("plan.json", "deployment-receipt.json")
+    }
+    case.host_entry.replace(case.host_entry.with_suffix(".old"))
+    case.host_entry.write_bytes(b"updated ordinary vendor entry")
+    second = dispatch(path, pin, spec, execute=True)
+    assert second["release_state"] == "Released" and second["launch_count"] == 1, second
+    assert path.read_bytes() == registry_bytes and len(diags) == 4 and len(business) == 2
+    for name, raw in frozen.items():
+        assert (first_root / ("control/" + name)).read_bytes() == raw
+    from local_agent_bridge.bridge import agy_host
+
+    old = read(Path(first["terminal_path"]).parent / "run" / agy_host.OBSERVATION_REF)
+    new = read(Path(second["terminal_path"]).parent / "run" / agy_host.OBSERVATION_REF)
+    assert old["entry"]["sha256"] != new["entry"]["sha256"]
+    assert old["reported_version"] == "1.3.4" and new["reported_version"] == "1.4.0"
+    assert len(new["diagnostics"]) == 2 and all(d["launch_count"] == 1 for d in new["diagnostics"])
+    assert second["run"]["launch_count"] == 1  # business count, not total process count
+    assert (Path(second["result_root"]) / "run" / agy_host.OBSERVATION_REF).exists()
+
+
+@pytest.mark.parametrize("fault", ["missing", "exit", "timeout", "truncated"])
+def test_r06_closed_diagnostic_failure_releases_and_next_request_reuses(
+    tmp_path, monkeypatch, fault
+):
+    import test_agy_host as probes
+
+    case, path, pin, _document, spec = configured_stable(tmp_path, monkeypatch)
+    text = (
+        probes.HELP.replace(b"--model", b"--unneeded")
+        if fault == "missing"
+        else (b"x" * 262144 if fault == "truncated" else probes.HELP)
+    )
+    diags, business = install_stable_host(
+        case,
+        monkeypatch,
+        probe_fault=fault if fault in {"exit", "timeout"} else None,
+        help_text=text,
+    )
+    monkeypatch.setattr(
+        fixtures.slice_run, "_session_store", lambda: pytest.fail("failed diagnostics read key")
+    )
+    first = dispatch(path, pin, spec, execute=True)
+    assert first["release_state"] == "Released" and first["control_complete"], first
+    assert first["launch_count"] == 0 and not business and first["business"]["blockers"]
+    assert len(diags) in {1, 2}
+    monkeypatch.setattr(fixtures.slice_run, "_session_store", lambda: case.store)
+    install_stable_host(case, monkeypatch)
+    second = dispatch(path, pin, spec, execute=True)
+    assert second["release_state"] == "Released" and second["launch_count"] == 1, second
+    assert first["station_id"] == second["station_id"]
+
+
+@pytest.mark.parametrize("fault,count", [("resume_unknown", None), ("cleanup_unknown", 1)])
+def test_r07_unknown_diagnostic_control_suspends_without_business(
+    tmp_path, monkeypatch, fault, count
+):
+    from local_agent_bridge.bridge import agy_host
+
+    case, path, pin, _document, spec = configured_stable(tmp_path, monkeypatch)
+    diags, business = install_stable_host(case, monkeypatch, probe_fault=fault)
+    monkeypatch.setattr(
+        fixtures.slice_run, "_session_store", lambda: pytest.fail("unknown probe read key")
+    )
+    outcome = dispatch(path, pin, spec, execute=True)
+    assert outcome["release_state"] == "Suspended" and not outcome["control_complete"], outcome
+    assert outcome["launch_count"] == 0 and len(diags) == 1 and not business
+    observation = read(Path(outcome["terminal_path"]).parent / "run" / agy_host.OBSERVATION_REF)
+    assert observation["diagnostics"][0]["launch_count"] == count
+
+
+@pytest.mark.parametrize(
+    "conversation,protocol,blocked",
+    [
+        ("valid", "extra", False),
+        ("missing", None, True),
+        ("foreign", None, True),
+        ("wrong_cwd", None, True),
+        ("valid", "model", True),
+        ("valid", "cid", True),
+        ("valid", "error", True),
+    ],
+)
+def test_r09_native_business_protocol_failure_keeps_control_closed(
+    tmp_path, monkeypatch, conversation, protocol, blocked
+):
+    case, path, pin, _document, spec = configured_stable(tmp_path, monkeypatch)
+    diags, business = install_stable_host(
+        case, monkeypatch, conversation=conversation, protocol=protocol
+    )
+    outcome = dispatch(path, pin, spec, execute=True)
+    assert outcome["release_state"] == "Released" and outcome["control_complete"], outcome
+    assert outcome["launch_count"] == 1 and len(diags) == 2 and len(business) == 1
+    assert ("NativeConversationUnverified" in outcome["run"]["blockers"]) is blocked
+    assert ("NativeConversationUnverified" in outcome["business"]["blockers"]) is blocked
+
+
+def test_r10_probe_interrupt_keeps_run_evidence_and_releases_closed_control(tmp_path, monkeypatch):
+    from local_agent_bridge.bridge import agy_host
+
+    case, path, pin, document, spec = configured_stable(tmp_path, monkeypatch)
+    diags, business = install_stable_host(case, monkeypatch, probe_fault="interrupt")
+    with pytest.raises(KeyboardInterrupt, match="primary"):
+        dispatch(path, pin, spec, execute=True)
+    request = next((Path(document["control_root"]) / "requests").iterdir())
+    saved = read(request / "dispatch-cleanup.json")
+    assert saved["release_state"] == "Released" and saved["launch_count"] == 0
+    observation = read(request / "run" / agy_host.OBSERVATION_REF)
+    assert observation["compatibility"]["reason"] == "ProbeInterrupted"
+    assert observation["diagnostics"][0]["launch_count"] == 1 and len(diags) == 1 and not business
+
+
+@pytest.mark.parametrize("fault", ["mixed", "cursor", "configuration", "shell", "acceptance"])
+def test_r02_v6_seed_does_not_silently_normalize_invalid_contract(tmp_path, monkeypatch, fault):
+    case, path, _pin, document, spec = configured_stable(tmp_path, monkeypatch)
+    seed = document["deployment_receipt"]
+    if fault == "mixed":
+        seed["host_version"] = "1.3.4"
+    elif fault == "cursor":
+        seed["host"] = "cursor"
+    elif fault == "configuration":
+        seed["configuration"]["agy_settings"] = fixtures.identity(case.settings)
+    elif fault == "shell":
+        seed["launch_shell"] = fixtures.identity(case.host_entry)
+    else:
+        seed["runtime_acceptances"] = [{"status": "Accepted"}]
+    pin = pool_fixtures.save_registry(path, document)
+    monkeypatch.setattr(
+        fixtures.slice_run,
+        "spawn_suspended_in_job",
+        lambda *a, **kw: pytest.fail("invalid seed spawn"),
+    )
+    outcome = dispatch(path, pin, spec, execute=True)
+    assert outcome["status"] == "Stopped" and "StationReceiptInvalid" in outcome["blockers"]
+    assert outcome["launch_count"] == 0

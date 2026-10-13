@@ -18,6 +18,7 @@ import math
 import os
 import re
 import stat
+import sys
 import time
 from collections.abc import Iterator
 from ctypes import wintypes
@@ -26,6 +27,7 @@ from typing import Literal
 from urllib.parse import unquote
 
 from local_agent_bridge.bridge import (
+    agy_host,
     contract,
     cursor_run,
     layered_acceptance,
@@ -107,6 +109,13 @@ _RECEIPT_KEYS = {
     "runtime_acceptances",
     "provenance_refs",
 }
+_STABLE_RECEIPT_KEYS = _RECEIPT_KEYS - {"host_version", "host_identity_files"}
+
+
+def _is_station_receipt(receipt: dict) -> bool:
+    return type(receipt.get("contract_version")) is int and receipt["contract_version"] in {4, 6}
+
+
 FIRST_OBSERVATION_COMPOSITION = {"status": "Unknown", "scope": "FirstObservation"}
 FIRST_OBSERVATION_BLOCKER = "HostCompositionUnverified"
 FIRST_LAYERED_BLOCKER = "LayeredAcceptanceUnverified"
@@ -530,11 +539,13 @@ def _validate_receipt(receipt: dict) -> None:
         raise TaskRunError("InvalidContract")
     first_observation = receipt["contract_version"] == 2
     layered = receipt["contract_version"] == 3
-    station = receipt["contract_version"] == 4
+    station = _is_station_receipt(receipt)
+    stable_host = receipt["contract_version"] == 6
     cursor_workspace = receipt["contract_version"] == 5
     native_keys = {"native_project"} if "native_project" in receipt else set()
     if station:
-        _object(receipt, _RECEIPT_KEYS | {"native_project", "station_binding"})
+        receipt_keys = _STABLE_RECEIPT_KEYS if stable_host else _RECEIPT_KEYS
+        _object(receipt, receipt_keys | {"native_project", "station_binding"})
         binding = _object(
             receipt["station_binding"],
             {
@@ -598,11 +609,17 @@ def _validate_receipt(receipt: dict) -> None:
     _identity(bridge["entry"])
     _hash(bridge["wheel_sha256"])
     _identities(bridge["product_files"], nonempty=True)
-    _identity(receipt["host_entry"])
-    _text(receipt["host_version"])
-    _identities(
-        receipt["host_identity_files"], nonempty=not (first_observation or layered or station)
-    )
+    if stable_host:
+        try:
+            agy_host.validate_entry(receipt["host_entry"])
+        except agy_host.AgyHostError as error:
+            raise TaskRunError("InvalidContract") from error
+    else:
+        _identity(receipt["host_entry"])
+        _text(receipt["host_version"])
+        _identities(
+            receipt["host_identity_files"], nonempty=not (first_observation or layered or station)
+        )
     config = _object(receipt["configuration"], {"agy_settings", "cursor_global", "cursor_project"})
     if native_keys:
         if host != "agy" or any(value is not None for value in config.values()):
@@ -747,7 +764,7 @@ def _load_trusted_inputs(
     project = receipt.get("native_project")
     if project is not None:
         native_root = _absolute(project["root"])
-        if receipt["contract_version"] == 4:
+        if _is_station_receipt(receipt):
             import uuid
 
             try:
@@ -893,7 +910,7 @@ def _make_plan(context: dict, host: str) -> dict:
                 for name, layer in record["evaluation"]["layers"].items()
                 if name in layered_acceptance.REQUIRED_LAYERS
             )
-    elif receipt["contract_version"] == 4:
+    elif _is_station_receipt(receipt):
         # Explicit configured-station authorization, not inherited runtime acceptance.
         evidence_sources = [receipt["provenance_refs"]]
         if (
@@ -1036,6 +1053,7 @@ def _runtime_files() -> set[Path]:
     from local_agent_bridge.bridge import station_pool, station_task
 
     modules = (
+        agy_host,
         cli,
         task_cli,
         contract,
@@ -1073,10 +1091,15 @@ def _verify_runtime_identity(receipt: dict) -> None:
         raise TaskRunError("RuntimeIdentityUnverified")
     files = [
         receipt["bridge"]["entry"],
-        receipt["host_entry"],
         *products.values(),
-        *receipt["host_identity_files"],
     ]
+    if receipt["contract_version"] == 6:
+        try:
+            agy_host.checked_entry(receipt["host_entry"])
+        except agy_host.AgyHostError as error:
+            raise TaskRunError("HostSourceUnavailable") from error
+    else:
+        files.extend([receipt["host_entry"], *receipt["host_identity_files"]])
     files.extend(item for tool in receipt["toolchains"] for item in tool["identity_files"])
     if receipt["host"] == "cursor":
         shell = receipt["launch_shell"]
@@ -1483,7 +1506,7 @@ def _request(context: dict) -> str:
         root = context["task_root"]
         controls["native_project_id"] = receipt["native_project"]["id"]
         controls["task_root"] = root.as_posix()
-        if receipt["contract_version"] == 4:
+        if _is_station_receipt(receipt):
             controls["station_root"] = receipt["native_project"]["root"]
             controls["tool_working_directory"] = (root / "work").as_posix()
         for field in ("read_roots", "write_roots", "protected_paths", "required_outputs"):
@@ -1496,7 +1519,7 @@ def _request(context: dict) -> str:
             "artifact output. Resolve relative path labels in the frozen note against task_root. "
             "Write progress to the absolute progress_contract.path.\n"
         )
-        if receipt["contract_version"] == 4:
+        if _is_station_receipt(receipt):
             native_instructions = (
                 "The native project resource root is station_root; OS cwd is the fresh task_root. "
                 "Only this new task's input is supplied. Use absolute file/script/output paths "
@@ -1737,6 +1760,26 @@ def _execute_once(
     lifecycle = winjob.LaunchLifecycle()
     interrupted: BaseException | None = None
     cursor_configuration_status = None
+    host_observation = (
+        agy_host.new_observation(plan["task_id"], result["plan_sha256"])
+        if receipt["contract_version"] == 6
+        else None
+    )
+    host_observation_saved = False
+
+    def save_host_observation() -> None:
+        nonlocal host_observation_saved
+        if host_observation is not None and not host_observation_saved:
+            _persist(run_root / agy_host.OBSERVATION_REF, host_observation)
+            result["evidence_refs"].append(
+                {
+                    "ref": agy_host.OBSERVATION_REF,
+                    "sha256": _digest(_canonical(host_observation)),
+                    "origin": "HostObserved",
+                }
+            )
+            host_observation_saved = True
+
     with lease:
         try:
             if first_execution is not None:
@@ -1757,6 +1800,27 @@ def _execute_once(
             settings_path, before, after = _read_configuration(context)
             request = _request(context)
             recheck()
+            if host_observation is not None:
+                try:
+                    agy_host.observe(
+                        receipt["host_entry"],
+                        context["task_root"],
+                        started + context["task"]["deadline_seconds"],
+                        host_observation,
+                    )
+                finally:
+                    # Preserve a primary interruption if publishing also fails.
+                    pending = sys.exception()
+                    try:
+                        save_host_observation()
+                    except BaseException:
+                        if pending is None:
+                            raise
+                compatibility = host_observation["compatibility"]
+                if compatibility["state"] != "Supported":
+                    raise TaskRunError(compatibility["reason"] or "AgyHostUnverified")
+                recheck()
+                _verify_runtime_identity(receipt)
             if settings_path:
                 private = run_root / "private"
                 _absolute(private)
@@ -1900,7 +1964,7 @@ def _execute_once(
                 # already loaded key. Seal renames it, so project before seal.
                 observation = (
                     _station_conversation(writer, context["task_root"])
-                    if receipt["contract_version"] == 4
+                    if _is_station_receipt(receipt)
                     else None
                 )
                 sealed = writer.seal(
@@ -1925,7 +1989,7 @@ def _execute_once(
                         "origin": "HostObserved",
                     }
                 )
-                if receipt["contract_version"] == 4:
+                if _is_station_receipt(receipt):
                     _persist(run_root / "native-conversation.json", observation)
                     result["evidence_refs"].append(
                         {
@@ -1934,6 +1998,11 @@ def _execute_once(
                             "origin": "HostObserved",
                         }
                     )
+                if host_observation is not None and (
+                    observation["status"] != "Observed"
+                    or observation.get("result_status") != "SUCCESS"
+                ):
+                    result["blockers"].append("NativeConversationUnverified")
         except BaseException as error:
             result["launch_count"] = lifecycle.launch_count
             if not isinstance(error, Exception):
@@ -1965,6 +2034,11 @@ def _execute_once(
                 )
         finally:
             result["launch_count"] = lifecycle.launch_count
+            try:
+                save_host_observation()
+            except BaseException:
+                if interrupted is None:
+                    raise
             if launch is not None or lifecycle.stage != "not_attempted":
                 launch = {**(launch or {}), **lifecycle.record()}
                 if cursor_configuration_status is not None:
@@ -2092,7 +2166,7 @@ def run_task(
                 != context["bundle"]["deployment_receipt"]
             ):
                 raise TaskRunError("ControlChanged")
-            if execute and context["bundle"]["deployment_receipt"]["contract_version"] == 4:
+            if execute and _is_station_receipt(context["bundle"]["deployment_receipt"]):
                 from .station_pool import Lease, StationError
 
                 if not isinstance(station_lease, Lease):

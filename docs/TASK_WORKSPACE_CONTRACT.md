@@ -803,3 +803,60 @@ v1–v4、agy settings/native/station 和旧 Cursor slice 不变。共享 global
 只读快照不承诺持续隔离或发现短暂改回的配置。该候选不新增整场锁、不迁移或重判历史失败，
 离线自检之后须 fresh 独立 Review；新真实调用、部署与并发须另有适用授权。
 LIVE-01/LIVE-02 原失败保留；本机源码自维护路径不是 LIVE-02 具体 diff 或真实根因证明。
+
+## 20. agy 稳定安装入口（receipt v6，显式 opt-in）
+
+仅新的原生 agy 工位 v6 使用本节。旧 v1–v5 的 closed 字段与 strict hash/接受语义保持，
+不会因旧合同失败自动降级。registry 仍为 v1，policy、整文件 SHA、Project、工位根及 lease
+继续绑定；不支持 Cursor v6。启用 v6 须明确核收最多两条无 prompt 诊断加一次业务的额度，
+旧 v3 `max_host_launches=1` 首次许可不能用于此模式。
+
+v6 顶层恰为 v4 字段删除 `host_version,host_identity_files` 后的集合，仍含
+`native_project,station_binding,bridge,toolchains,provenance_refs`。
+`host_entry` 恰为 `{path,install_root,identity_mode:"StableInstalledEntry"}`，绝对 path 必须是
+具体获准 install_root 下的 `agy.exe`；普通祖先/单链普通文件检查仍执行，无 PATH 搜索。
+configuration 三值全 null，launch_shell=null，runtime_acceptances=[]，adapter=agy_task_v1。
+registry seed 可提供 v6 公共字段或完整 v6 station receipt；每单复制其对应字段后绑定新任务，
+未知/混合 seed 字段拒绝，旧 seed 不会自动升级。Bridge 实际模块 catalog 包括 agy_host.py，
+Bridge 与 toolchain 字节仍 strict。供应商正常更新的 hash/inode/数值版本是当次观察，
+不写回 receipt、plan 或 registry，不要求每次更新重部署 Bridge。
+
+plan、execute=false 与静态 Blocked 均不诊断、不读会话 key。实际执行在业务 capture 前顺序
+调用唯一显式入口 `--version`、`--help`，各用独立原 LaunchLifecycle/Job 与原 child-only
+AGY_CLI_DISABLE_AUTO_UPDATE=true 环境；无 prompt、Project、模型或 key。每条执行 timeout
+为 min(10 秒,同一任务剩余预算)，不将原 cleanup/reader join 预算算作这 20 秒执行上限。
+两流合计 RAM 保留上限分别为 8 KiB、256 KiB。超限、非零、timeout、不可理解版本或必要
+声明缺失立即停止后续诊断及业务，不重试。原文仅局部 RAM，不保存 stdout/stderr/help。
+
+必要 help 声明为 `--project,--print,--model,--effort,--output-format,--disable-slash-commands,
+--print-timeout`；容忍别名、缩进、折行、顺序、附加选项。显式列出 enum 时 effort/output-format
+需包含 high/stream-json；没有 enum 的可理解参数声明允许。声明不证明实际取值/权限语义。
+
+单文件 `run/agy-host-observation.json` 为 canonical JSON（上限 16 KiB），通过既有
+`{ref:"agy-host-observation.json",sha256,origin:"HostObserved"}` 保存/核验/复制。
+对象恰含 `contract_version=1,kind="AgyHostObservation",task_id,plan_sha256,entry,
+reported_version,diagnostics,compatibility`。entry 是当次 `{path,sha256}` 或早期失败 null；
+reported_version 仅规范数值版本或 null。diagnostics 按 Version/Help 顺序恰含各条
+`name,launch_count,pid,pid_created_filetime,exit_code,timed_out,output_truncated,cleanup`；
+cleanup 恰含原 child_exit_observed/pipes_closed/job_closed bool/null。
+compatibility 恰含 state（Supported/Unsupported/Unverified/NotChecked）、七 flag 的有序子集
+missing_required_flags、固定非敏感 reason 或 null。Supported 需两项 launch=1、exit=0、
+未 timeout/截断、cleanup 全 true、来源和规范版本均存在且无缺失声明。
+
+业务 run/launch_count 仍为 0/1/null；诊断 count 由各条独立求和为 0..2/null，总数另由二者
+求和，任一未知则总数 null。cleanup 未知不把已知的 count 改 null。进入诊断 launcher 前
+先预留观察项，中断仍保存部分事实与主异常。实际执行的 v6 必需观察；NotRun 零诊断可无。
+缺失、schema/引用 SHA/task-plan 绑定错误保留 Invalid/Unknown，不能补探测重建证据。
+
+Unsupported/Unverified 是合法诊断结果，collector 保留原 run 和兼容 blocker，不将它改为
+schema 无效。业务未启动且所有已尝试诊断 count 已知、cleanup 全 true 时可正常释放，
+包括明确非零/缺 flag/超限/已回收 timeout；清理闭合只表示控制完成，不表示兼容或业务接受。
+诊断 count/cleanup 未知则按原规则暂停工位；native/lease/policy 漂移和原业务证据门禁保持。
+v6 必要唯一 init/result、cid/cwd/model/result_status 不满足时加业务 blocker；合法附加未知
+事件和 payload 字段允许。已闭合业务失败照原规则释放，不自动重派、换模型或修复宿主。
+
+限制：观察 SHA 只证明该时刻磁盘字节。观察、两次诊断、业务 spawn 间存在 TOCTOU，
+无共享 cache、文件锁、image/签名认证、后端展开或联网 latest。PID/FILETIME 和 resume 是
+已有观察事实，加载的 image、实际后端、上游模型/费用仍 Unknown。旧签名/官方 manifest
+只证明引用的发布快照，未来更新不继承认证。无 prompt/key 不保证宿主自身无网络/凭据
+副作用；真实诊断无模型语义与正常首单需另行适用真实验收，本候选离线自检不证明它们。

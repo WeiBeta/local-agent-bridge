@@ -152,3 +152,28 @@ v3 入口用明确首次记录身份回收，绑定原 Plan 与实际新 UID；�
 每单的控制材料位于 `control_root/requests/<request UUID>`，包含独立 snapshot、trusted、run、result。dispatch.json 是释放前回执，release_state=Pending；dispatch-final.json 才是调用完成后的回执。Collected/退出 0 表示收集完成且控制生命周期闭合，business 仍为 Candidate 或 Incomplete、management_decision=null。预期红测试、Review findings 或已确认退出的普通宿主失败可以正常释放；不能把这些情况统一封位。采集/进程清理或原生绑定未确认时只暂停该工位，不重跑；其他工位可继续。
 
 本实现只有离线自检。独立 Review、四路真实重叠加第五单连续复用、业务接受、新冻结安装与部署尚需各自门禁，旧单次 PassScoped 不覆盖它们。
+
+### agy 自动更新解耦候选（receipt v6）
+
+新原生工位可显式采用 [合同 §20](TASK_WORKSPACE_CONTRACT.md#20-agy-稳定安装入口receipt-v6显式-opt-in)
+的 StableInstalledEntry。登记具体安装根及其唯一 agy.exe，供应商 hash/版本只记当次观察。
+旧 v1–v5 strict、registry v1/policy、Project/任务/lease、Bridge/toolchain 字节校验保留。
+本候选不改变 CLI 参数、固定业务 argv 或 Cursor 行为。
+
+启用前由管理一次冻结新 wheel/实际模块 catalog/new receipt/profile/registry SHA 与诊断额度；
+保留旧安装、发布材料和历史失败。该迁移需适用授权，源码 worktree sync 不是生产刷新。
+迁移后同获准入口内正常 CLI 更新无需写 registry 或重新部署 Bridge。
+
+执行最多两条无 prompt version/help 诊断，再最多一次业务；各自独立 lifecycle，业务
+launch_count 仍 0/1/null，诊断 count 为各项 0/1/null 的和，总数另算。每诊断最多 10 秒
+且共用任务剩余执行预算，8 KiB/256 KiB 两流合计 RAM 上限；已有 cleanup 预算另计。
+普通结果仅保存单个脱敏 agy-host-observation.json，无 raw help/stderr 或 key。
+必要声明检查容忍排版/附加选项，不锁供应商版本/全文，也不证明实际参数值或权限效果。
+
+失败立即停止后续调用且不重试。缺参数、非零、截断或已回收 timeout 保留红结果；诊断及
+原控制 cleanup 已证闭合即可释放该位，Unsupported 不是 schema 损坏。count/cleanup 未知
+仍暂停该位；释放不等于业务 Accepted，下一独立请求不自动继承实测授权。
+
+入口 SHA 不是执行内存 image 认证，观察到 spawn 之间有 TOCTOU；后端/上游真实模型/费用
+仍 Unknown。旧来源证据仅代表快照，不认证未来更新。诊断不提供 prompt/Bridge key，但
+宿主自身副作用及正常首单需另行真实验收。当前自检只使用合成 host，未做真实诊断/模型/部署。

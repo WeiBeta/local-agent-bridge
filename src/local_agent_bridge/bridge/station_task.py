@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import contract, station_pool, task_input, task_run, task_workspace
+from . import agy_host, contract, station_pool, task_input, task_run, task_workspace
 
 _SPEC_FIELDS = {
     "cli_contract_version",
@@ -107,11 +107,27 @@ def _materialize(lease: station_pool.Lease, frozen: dict, request_root: Path) ->
     )
     receipt = copy.deepcopy(document["deployment_receipt"])
     # Only fields of the existing deployment identity surface are retained.
-    receipt = {key: receipt[key] for key in task_run._RECEIPT_KEYS}
+    stable_host = type(receipt.get("contract_version")) is int and receipt["contract_version"] == 6
+    receipt_keys = task_run._STABLE_RECEIPT_KEYS if stable_host else task_run._RECEIPT_KEYS
+    if stable_host:
+        station_pool.require(
+            set(receipt) in (receipt_keys, receipt_keys | {"native_project", "station_binding"}),
+            "StationReceiptInvalid",
+        )
+        station_pool.require(
+            receipt["host"] == "agy"
+            and receipt["adapter"] == "agy_task_v1"
+            and receipt["launch_shell"] is None
+            and receipt["configuration"]
+            == {"agy_settings": None, "cursor_global": None, "cursor_project": None}
+            and receipt["runtime_acceptances"] == [],
+            "StationReceiptInvalid",
+        )
+    receipt = {key: receipt[key] for key in receipt_keys}
     record_raw = task_run.read_host_input_bytes(path=str(station.record))
     receipt.update(
         {
-            "contract_version": 4,
+            "contract_version": 6 if stable_host else 4,
             "host": "agy",
             "adapter": "agy_task_v1",
             "workspace_parent": str(task_root.parent),
@@ -252,7 +268,11 @@ def _run_evidence(context: dict, run_root: Path) -> dict:
     return run
 
 
-def _control_complete(run: dict, run_root: Path) -> bool:
+def _control_complete(run: dict, run_root: Path, receipt: dict | None = None) -> bool:
+    if receipt is not None and receipt["contract_version"] == 6:
+        observation = agy_host.read_observation(run, run_root, receipt["host_entry"]["path"])
+        if observation is not None and not agy_host.diagnostics_complete(observation):
+            return False
     if run["launch_count"] == 0:
         return run["capture_state"] != "Incomplete" and run["restore_state"] != "Failed"
     if (
@@ -363,7 +383,7 @@ def dispatch_task(
         saved_run = _run_evidence(context, request_root / "run")
         outcome["launch_count"] = saved_run["launch_count"]
         outcome["run"] = run
-        complete = _control_complete(saved_run, request_root / "run")
+        complete = _control_complete(saved_run, request_root / "run", context["receipt"])
         outcome["control_complete"] = complete
         station_pool.require(
             _native_policy(lease.station.record) == context["native_policy"],
@@ -417,7 +437,7 @@ def dispatch_task(
             try:
                 saved_run = _run_evidence(context, request_root / "run")
                 complete = not identity_unconfirmed and _control_complete(
-                    saved_run, request_root / "run"
+                    saved_run, request_root / "run", context["receipt"]
                 )
                 outcome["launch_count"] = saved_run["launch_count"]
                 outcome["control_complete"] = complete
