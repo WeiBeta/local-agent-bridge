@@ -1,10 +1,10 @@
 # Local Agent Bridge 参数与输出参考
 
-本文件随 Skill 安装，不依赖仓库外绝对路径。命令与参数以当前安装 CLI `--help` 实测为准；本 Skill 不安装、不升级、不登录、不改配置、不初始化密钥。
+本文件随 Skill 安装，不依赖仓库外绝对路径。命令/schema 对照产品源码基线 `0e28d2bd09c88fcc2cecff9564eb6e2c8192db28`（2026-10-13）；目标安装按批准回执与获准的 help 核验。本 Skill 不安装、不升级、不登录、不改配置、不初始化密钥。
 
 ## 安装位置与版本
 
-Windows 常见位置：用户级工具目录、`%APPDATA%\uv\tools\bin`、某个 venv 的 `Scripts\`，或用户/部署回执给出的精确路径。先确认入口存在并记录路径，再运行 help。
+Windows 常见位置：用户级工具目录、`%APPDATA%\uv\tools\bin`、某个 venv 的 `Scripts\`，或用户/部署回执给出的精确路径。先按回执确认实际入口、wheel/运行身份与包元数据；版本字符串或目录名不足以识别安装。工单允许时再运行 help；禁止 CLI 查询时仅读文件资料。读取包元数据需使用该安装的解释器。
 
 CLI 没有 `--version`。需要版本时读包元数据：
 
@@ -12,9 +12,34 @@ CLI 没有 `--version`。需要版本时读包元数据：
 python -c "import importlib.metadata as m; d=m.distribution('local-agent-bridge'); print(d.version, d.metadata['Requires-Python'])"
 ```
 
-## Task v1 工作流
+## Native station dispatch
 
-新日常任务树优先使用五条固定命令：
+已配置 agy 工位的逐单完整链：
+
+```text
+task dispatch --spec <absolute-json-spec> --pool-registry <absolute-registry> --pool-sha256 <64-lowercase-hex> [--execute]
+```
+
+三个路径/摘要参数来自管理冻结材料。dispatch **没有** `--trusted-control-root` / `--trusted-inputs-sha256`；逐单 task、plan、trust 由产品生成，不用多步 run spec 代替 dispatch spec。
+
+| 材料 | 版本与字段 |
+| --- | --- |
+| CLI spec | `cli_contract_version=1`；闭合字段为 `source`、`policy`、`instructions_path`、`instructions_sha256`、`task`、`admission_timeout_seconds`，另含该版本键 |
+| registry | `contract_version=1`、`id`、统一 `control_root`、完整 `deployment_receipt` seed、`policy`、1..4 条 `stations` |
+| station | `id`、`native_id`、`root`、`record`、`root_identity`；后者为 `st_dev`/`st_ino`；相同工位的调用共用 station ID/control root |
+| 逐单 deployment receipt | `contract_version=4`，加入 `native_project` 与 `station_binding`；不能把 CLI spec 版本改成 4 |
+
+`task` 恰含 `role`、`capabilities`、`read_roots`、`write_roots`、`protected_paths`、`required_outputs`、`acceptance_ids`、`deadline_seconds`、`source_output_bytes_limit`。角色只有 Coding/Review；Testing 为 Coding/execute 且 work 只读，Mixed 为 Coding 工程操作；Review work 只读，写入型测试放 scratch。能力为 execute/web_reference/prepare_dependencies，当前 station 任务的后两项必须 false。相对任务路径数组与验收 ID 按合同排序去重；deadline/output 服从 policy 上限，deadline 最多 3600 秒。入场 timeout 为 null 或 0..86400 秒，实际值仍按本次获批预算。
+
+registry SHA 固定原字节，不能由 Worker 换算替代。默认 `PreparedOnly` 仅读 registry/任务说明、验证结构与 spec：`launch_count=0`、`task_root=null`、capacity 是注册数；未取得租约，未 materialize/import/run、未核验源包字节或实际执行能力、未读 key。已有 Project 配置不等于当前任务获执行许可。
+
+`--execute` 只用于本次明确授权的任务。产品 admission/native mutex 管理空闲位与满位等待；选中工位后在 `root/jobs/<fresh UUID>` 完成 import/prepare/plan/run/collect/release，每单独立 request/root/result/capture 和新会话。调用方不手写 Accepted，不重置 state 或另建池绕过忙位。
+
+`PreparedOnly` / `Collected` 的 CLI 退出为 0，其他 dispatch 结果为 2；中断/解析异常仍按 CLI 错误回执。control_complete、launch_count=0/1/null、宿主退出、业务 Candidate/Incomplete、管理 Accepted 分开记录。`Collected` 只表示本单收集与控制收尾，不等于业务成功。
+
+## Task v1 多步工作流
+
+管理供给分步 spec、可信控制根和 bundle SHA 时，使用五条固定命令：
 
 ```text
 task import  --spec <absolute-json-spec>
@@ -47,9 +72,9 @@ cursor  run --task-root <root> --run-root <new-root> --exe <agent.ps1> --exe-sha
 ## 运行边界与验收
 
 - Bridge argv、模型、effort 和固定参数由代码决定，调用方不能覆盖；未知可执行文件绝不启动。
-- agy 配置生命周期是原字节备份、精确受控增量、finally 恢复；恢复失败不算成功。Cursor 项目权限来自冻结模板，`--force` 不等于目录隔离。
-- Worker/CLI 自述与 OS 执行事实分开。管理验收看交付范围/完整性、受保护文件不变、独立固定测试、宿主终态、加密采集和配置恢复；Unknown 不自动判为通过或违规，可见越范围证据必须处理。
-- `collect`/`task collect` 产物仍是候选，不自动应用、不推送、不创建 PR。失败现场保留，不自动重试、不换模型、不建第二个 job。
+- agy 配置模式按 receipt 的实际绑定判断：无 `native_project` 的 settings Task 使用租约、原字节备份、受控增量和 finally 恢复；旧 slice 的 `--settings` 通路也有原字节恢复。含 `native_project` 的 Task（含 station v4）configuration 三项 null，不取 settings lease、不改全局设置；postflight 核 native id/root，`Unchanged` 表示未改，不能写成已恢复 settings。v1-v3 的同根 native 模式不等于 station 复用。Cursor 项目权限来自冻结模板，`--force` 不等于目录隔离。
+- Worker/CLI 自述与 OS 执行事实分开。管理验收看交付范围/完整性、受保护文件不变、独立固定测试、宿主终态、加密采集和适用配置收尾；Unknown 不自动判为通过或违规，可见越范围证据必须处理。
+- dispatch/`collect`/`task collect` 产物仍是候选，不自动应用、不推送、不创建 PR。失败现场保留，不自动重试、不换模型、不建第二个 job。
 - 上游实际模型身份、token/费用通常不可观测；不要从路由名或退出码补猜。
 
 ## 其他固定入口
@@ -65,6 +90,8 @@ cursor  run --task-root <root> --run-root <new-root> --exe <agent.ps1> --exe-sha
 | --- | --- |
 | Task spec 键/类型/路径不符 | 核对管理供给的严格 JSON 和绝对路径；不修改 spec 来绕过 |
 | Trusted SHA 或控制材料不符 | 停止并保留现场；不重算、覆盖或换根 |
+| Registry SHA 不符 | 停报并保留原 registry；不改 control root、station/native ID 或 state 绕过 |
+| 工位 record/root 不可用 | 按产品 admission 结果核对：坏位可被跳过，健康位可继续；控制/绑定失败仅暂停自身位，不替产品修复或重置状态；Idle 文件不能代替 mutex 所有权 |
 | Legacy 源文件被拒 | 旧 slice 合同只支持既有文本；Task v1 才支持授权树内增删改重命名 |
 | 路径越界 | 核对任务读写/保护根和解析后路径；不放宽权限 |
 | 缺 key | 需用户显式授权 `session-key-init`；普通运行不自动创建 |

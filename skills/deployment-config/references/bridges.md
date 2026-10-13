@@ -5,7 +5,7 @@
 ## 共通边界
 
 - 启动 CLI 的 Shell 与 Worker 执行命令的 Shell 可能不同，**逐项记录不混写**；不因启动器类型推定 Worker Shell。
-- 当前产品 runner 依赖 pwsh 7；未经验证不自动降级或放宽。
+- 该模式需要的 pwsh/Python 入口按部署回执核对；未经验证不自动降级或放宽。
 - 厂商自动更新允许；必要时按官方方法手动更新，不默认禁更新或永久锁版本。版本排障：优先定位已安装 `local-agent-bridge` Skill 中的 usage 参考按需段；该 Skill 不在时查厂商官方文档，**不假设源码仓库布局**。
 - 自动审批 ≠ 文件隔离；`cwd`/workspace 不是 OS 沙箱。
 
@@ -39,7 +39,9 @@
 
 ## agy（Antigravity CLI）
 
-### 已核验事实
+### 已核验接口记录（按原核验日期保留）
+
+以下是既有接口记录，不表示后续版本已重新实测。配置模式按实际绑定识别：含 `native_project` 的 Task 与无该字段的 settings Task 分开，不能把 receipt v1-v3 整体归为旧 settings。
 
 | 项 | 值 | 来源 |
 | --- | --- | --- |
@@ -50,7 +52,7 @@
 | 权限规则 | `permissions.allow` / `permissions.deny`（`command()` / `read_file()` / `write_file()` 规则；`unsandboxed` 已废弃） | [官方 permissions](https://www.antigravity.google/docs/permissions?tab=cli)，2026-10-03 |
 | 全放行标志 | `--dangerously-skip-permissions`（覆盖会话级 always-deny，不推荐） | 本机 `--help`，2026-10-03 |
 
-### 按用户选择生成配置增量
+### 有 settings 配置增量时，按用户选择预览
 
 用户明确选择自动审批时，预览相应增量，确认后才写入（保留未涉及键原值）：
 
@@ -66,11 +68,20 @@
 - 2026-10-03 作者决策选择自动审批并保留目录约束后，主控曾在本机显式写入 `toolPermission=always-proceed` 与 `allowNonWorkspaceAccess=false`；共享层 `nonWorkspaceFileAccessPolicy` 保持不动。此为本机历史操作记录，**不作为其他机器的已配置状态**。
 - 2026-10-04 SMOKE-02 使用自然保存的缺键基线，一次 agy 启动完成任务内合成读写，宿主无人输入，配置最终恢复原 93 字节。仅该流程通过；目录外访问、其他工具审批与一般目录隔离未验，键消失原因未证。归档报告 `2026-10-04-LAB-AGY-PERMISSION-SMOKE-02/REPORT.md`，SHA-256 `1648CA888DBC12CAA4E3D3C7377322F28C6D3066BBF22B0154EC86E0C0E79414`。
 
-### 产品兼容性硬约束
+### Legacy source slice settings 通路的兼容性约束
 
-- **`permissions` 持久键与现有 Bridge 不兼容**：Bridge `_read_settings` 检测到根 `permissions` 键即在启动前拒绝——**不得**向 CLI settings.json 添加持久 `permissions` 对象。因此本 Skill **不教持久 permissions 写法**。任务目录与可编辑面是声明范围；Bridge 临时插入的 permissions.allow 只是许可增量，不添加 deny/ask 规则，也不收窄共享 ALLOW。未命中 allow 的操作不等于被拒绝。
-- Bridge 会在执行期间临时插入任务级 `permissions.allow` 并在 `finally` 内原字节恢复；不覆盖 `toolPermission` 或 `allowNonWorkspaceAccess`。
-- `--settings` 是 Bridge 的文件修改目标（用户 CLI 设置文件），不是配置选择参数。
+- **旧 slice 的 `_read_settings` 拒绝根 `permissions` 键**：此通路不要添加持久 `permissions` 对象。其临时 `permissions.allow` 是许可增量，不添加 deny/ask，也不收窄共享 ALLOW；未命中 allow 不等于被拒绝。该拒绝规则不泛化到 Task v1。
+- 旧 slice 临时插入任务级 allow 并在 `finally` 内原字节恢复，不覆盖 `toolPermission` 或 `allowNonWorkspaceAccess`；`--settings` 是该入口的文件修改目标，不是配置选择参数。
+- 无 `native_project` 的 agy Task v1 也使用 settings 租约、备份/增量/恢复，但 `_read_configuration` 按其合同校验既有 allow/deny、冲突及合并；不能套用旧 slice 的根键一律拒绝规则。
+
+### 已配置 agy native station（deployment receipt v4）
+
+产品依据：`TASK_WORKSPACE_CONTRACT.md` §18、`station_task`/`station_pool`/`task_run`，源码基线 `0e28d2bd09c88fcc2cecff9564eb6e2c8192db28`（2026-10-13 文档核对）。本段说明配置复用，日常 `task dispatch` 参数见调用 Skill 的 usage。
+
+- 管理提供冻结 registry 与原字节 SHA：1..4 个已配置工位共享同一 control root 和稳定 station ID。核对批准的 native ID、resource root、record 路径和物理 root identity；不同调用不能各造 control root 或改 ID 绕过所有权。选中工位的任务在 `root/jobs/<UUID>` 中形成 fresh 输入/输出与控制绑定，旧 jobs 保留。
+- `configuration.agy_settings`、`cursor_global`、`cursor_project` 均为 null；不读写/合并全局 settings，不取旧 settings lease。复用现有 Project 只生成绑定预览，不写原生 JSON、global settings 或 AGENTS；新增/迁移 Project 须明确其实际配置增量。
+- postflight 只读核 native record 的 id/resource root；`restore_state=Unchanged` 表示该通路未执行 settings 修改/恢复。普通原生显示元数据的 raw SHA 变化不单独证明配置失败；绑定不可证或漂移则按产品失败结果记录。更早的同根 `native_project` 模式（§17，receipt v1-v3）同样不取 settings lease，但其资源根必须等于 fresh task_root，不能当作稳定工位复用。
+- Project allow、声明范围、成功通讯或 normal 4+1 历史验收不能证明 OS 隔离、工作区外/网络拒绝或全部工具权限。既有安装/Project 配置也不授予当前任务执行 grant；业务 Accepted 仍由管理裁决。
 
 ### 未验证（如实告知用户）
 
@@ -83,7 +94,8 @@
 | Bridge | 官方来源及核验日 | 启动 Shell | Worker Shell | 本机实测 | 指令文件与作用域 | 降级支持 |
 | --- | --- | --- | --- | --- | --- | --- |
 | Cursor | [configuration](https://cursor.com/docs/cli/reference/configuration) 2026-10-03 | pwsh 7（产品固定） | 未核验 | 合成 smoke 文件流程+deny 正常（2026-10-03，限该范围） | 项目 `.cursor/cli.json`（仅 permissions）+ 全局 `cli-config.json` | 无（pwsh 7 依赖） |
-| agy | [CLI reference](https://www.antigravity.google/docs/cli/reference/) 默认值 2026-10-04，其余 2026-10-03 | 直接 exe（Bridge argv） | 未核验 | 合成任务内读写、无人输入、配置恢复通过（2026-10-04）；目录外及其他权限行为未验 | CLI `antigravity-cli/settings.json` + 共享 `config/config.json` | 无（pwsh 7 辅助依赖） |
+| agy legacy settings（历史） | [CLI reference](https://www.antigravity.google/docs/cli/reference/) 默认值 2026-10-04，其余 2026-10-03 | 直接 exe（Bridge argv） | 未核验 | 合成任务内读写、无人输入、配置恢复通过（2026-10-04）；目录外及其他权限行为未验 | CLI `antigravity-cli/settings.json` + 共享 `config/config.json` | 无（pwsh 7 辅助依赖） |
+| agy native station v4 | 产品 §18 与上述源码基线，文档核对 2026-10-13 | 受控 agy exe | 未核验 | normal 4+1 历史范围已管理核收（2026-10-12）；不外推当前目标机/版本 | 已配置 Project + registry/control root；不改全局 settings | 旧无 dispatch 的安装不能作等价回退 |
 
 ## 管理区块格式
 
