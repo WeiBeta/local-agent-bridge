@@ -421,6 +421,48 @@ def test_actual_pipeline_dry_and_fake_execute(
     assert result["worker_status"] == "Completed"
 
 
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+def test_cursor_workspace_authorization_public_pipeline(tmp_path, monkeypatch, capsys, role):
+    case = cli_case(tmp_path, monkeypatch, capsys, host="cursor", role=role, accepted=False)
+    fixtures.authorized_cursor_receipt(case)
+    fixtures.sync(case, persist_task=False)
+    Path(case.prepare_fields["task_manifest_path"]).write_bytes(fixtures.canonical(case.task))
+    code, prepared_task, _ = invoke(tmp_path, capsys, "prepare", case.prepare_fields, case=case)
+    assert code == 0 and prepared_task == case.task
+    code, frozen, _ = planned(tmp_path, capsys, case)
+    assert code == 0 and frozen["preflight_status"] == "Ready"
+    assert frozen["blockers"] == [] and case.receipt["runtime_acceptances"] == []
+    assert (case.root / ".cursor/cli.json").read_bytes() == PROJECT
+    process = fixtures.fake_spawn(case, monkeypatch)
+    run_fields = {"task_root": str(case.root), "run_root": str(tmp_path / "executed")}
+    code, receipt, _ = invoke(tmp_path, capsys, "run", run_fields, case=case, execute=True)
+    assert code == 0 and receipt["launch_count"] == len(case.calls) == 1 and process.closed
+    assert receipt["transport_state"] == "Completed"
+    assert receipt["capture_state"] == "Sealed" and receipt["restore_state"] == "Unchanged"
+    if role == "Review":
+        workspace_fixtures.review_outputs(case.root, case.task, case.snapshot)
+    else:
+        (case.root / "work/source.py").write_bytes(b"n = 1\n")
+        workspace_fixtures.progress(case.root, case.task)
+    code, result, _ = invoke(
+        tmp_path,
+        capsys,
+        "collect",
+        {**run_fields, "result_root": str(tmp_path / "collected")},
+    )
+    assert code == 0 and result["blockers"] == []
+    assert result["management_decision"] is None and result["worker_status"] == "Completed"
+    assert result["continuation"]["session_id"] == receipt["capture_uid"]
+    assert all(
+        item["result"] == "Unverified"
+        for item in result["host_observations"]["acceptance_observations"]
+    )
+    assert b'"Accepted"' not in fixtures.canonical([frozen, receipt, result])
+    assert (case.root / ".cursor/cli.json").read_bytes() == PROJECT
+    code, repeated, _ = invoke(tmp_path, capsys, "run", run_fields, case=case, execute=True)
+    assert code == 2 and repeated is None and len(case.calls) == 1
+
+
 @pytest.mark.parametrize("conflict", ["bytes", "extra", "missing_template", "schema", "partial"])
 def test_cursor_preparation_conflicts_preserve_material(tmp_path, monkeypatch, capsys, conflict):
     case = prepared(tmp_path, monkeypatch, capsys, host="cursor")

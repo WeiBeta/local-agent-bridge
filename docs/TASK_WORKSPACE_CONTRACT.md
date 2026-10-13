@@ -748,3 +748,25 @@ request 及 trusted 目录首次 mkdir 前复用普通路径链检查，拒绝�
 每次取得的 mutex 只尝试释放一次，包括跳过坏位、finish 与 abandon 分支；关闭租约表示不再尝试释放，不能代替释放已确认。释放失败时当前 Pool 停止进一步入场，保留 Unconfirmed 和有界 `{station_id,stage,error_type}` 诊断，不记录敏感异常文本、不重试宿主。原始 KeyboardInterrupt/SystemExit 等 BaseException 不被后续 release/close/记录失败覆盖。清理异常时，路径仍合法且目录存在才尽力写 dispatch-cleanup.json；它不是成功 final。释放未确认时该诊断为 release_state=Unconfirmed、control_complete=false、status=Stopped，不能写 Released；诊断写入失败也不升级为成功。
 
 每单收尾后立即释放，不等待兄弟单全部结束。所有输出和旧单保留；本轮无清理、真实调用、配置变更、生产安装、远端发布或业务接受。后续真实四路重叠及第五单复用须冻结新运行身份和适用许可。
+
+## 19. Cursor 已授权 workspace 模式（LAB-CURSOR-AUTHORIZED-WORKSPACE-01）
+
+这是显式的新 DeploymentReceipt v5，不改变 v1 的 R applicability、v2 首观、v3 分层或 v4 agy 工位合同。使用既有 `task prepare → plan → run → collect`；Task、Profile、Authorization、Plan 和 RunReceipt 版本仍为 1。
+
+| 字段/条件 | v5 合同 |
+| --- | --- |
+| contract_version | 严格 int=5 |
+| 字段集合 | 恰为原 `_RECEIPT_KEYS` 加顶层 `grant_ref`；无 native_project、station_binding、waiver 或新许可文件 |
+| host / adapter | 仅 cursor / cursor_task_v1 |
+| grant_ref | 非空字符串；必须与可信 Authorization.grant_ref 完全一致，不自行读取该引用或产生授权 |
+| runtime_acceptances | 必须为空数组；不能用已接受记录、占位记录或本次结果自我证明 |
+| 任务边界 | 仅 declared_scope；required_enforced 不由 v5 放宽 |
+| 其他字段 | 原 bridge/launcher/pwsh/backend/工具链身份、workspace_parent、配置及 profile 摘要绑定全部保留；host_identity_files 仍非空 |
+
+v5 的 `_make_plan` 使用明确 workspace 授权而非既往 RuntimeAcceptance 入场；grant 错配或非 declared_scope 产生 `WorkspaceAuthorizationUnverified`。缺失/无效 grant、错 host 或非空接受记录等 schema 错误仍拒绝。原角色/能力/读写/保护范围、web/dependency scope、工具链和 runtime/project 身份门禁照常执行；不是任意 run 跳过检查。授权仍来自当前管理明确供给的可信材料，不能由 Worker 输入、同用户调用者自称可信或 hash 自行建立。
+
+Cursor 配置准备/只读核验、workspace=cwd=task_root、Grok 4.7 High 非 Fast、1–3600 秒剩余预算、fresh run 根、一次启动及 0/1/null、异常收束/封口/结果收集均复用原实现，不增加 native Project、settings lease、重试或第二调度器。计划及 run 绑定包含完整 v5 receipt；两份 grant 均改为新值也不能复用旧 Plan。
+
+Plan Ready 表示可执行，不是业务/runtime Accepted。正常执行后的 collector 继续保留原产物、启动/transport/capture/配置事实，`management_decision=null`，业务 acceptance 为 Unrun/Unverified，不生成 Accepted。正常任务内工程操作按既有授权整体开放；目录外副作用另控，declared_scope 不宣称 OS 隔离。异常恢复保证与正常流程验收分层，不新增“全部异常必须实测”的启动条件。
+
+本候选的合成授予、fake 进程和公开测试密钥仅验证软件合同；无真实 CLI/model/key、配置修改、部署或业务接受。具体使用与官方/GitHub 复用来源见 [CURSOR_USAGE.md](CURSOR_USAGE.md#task-已授权-workspace-模式receipt-v5离线候选)。

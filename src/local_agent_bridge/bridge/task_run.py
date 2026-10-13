@@ -5,6 +5,7 @@ Neither hashes nor this API authenticate an arbitrary host caller. Real task R
 and actual authority are management facts; offline fixture acceptance never
 creates either. References are not arbitrary file/URL loading instructions.
 Receipt v2 records a first observation; ordinary plans remain blocked.
+Receipt v5 binds an authorized Cursor workspace, without claiming runtime acceptance.
 """
 
 from __future__ import annotations
@@ -530,6 +531,7 @@ def _validate_receipt(receipt: dict) -> None:
     first_observation = receipt["contract_version"] == 2
     layered = receipt["contract_version"] == 3
     station = receipt["contract_version"] == 4
+    cursor_workspace = receipt["contract_version"] == 5
     native_keys = {"native_project"} if "native_project" in receipt else set()
     if station:
         _object(receipt, _RECEIPT_KEYS | {"native_project", "station_binding"})
@@ -551,6 +553,11 @@ def _validate_receipt(receipt: dict) -> None:
             or receipt["runtime_acceptances"] != []
             or any(type(number) is not int or number < 0 for number in identity.values())
         ):
+            raise TaskRunError("InvalidContract")
+    elif cursor_workspace:
+        _object(receipt, _RECEIPT_KEYS | {"grant_ref"})
+        _text(receipt["grant_ref"])
+        if receipt["host"] != "cursor" or receipt["runtime_acceptances"] != []:
             raise TaskRunError("InvalidContract")
     elif first_observation:
         _object(receipt, _RECEIPT_KEYS | {"host_composition"} | native_keys)
@@ -894,6 +901,14 @@ def _make_plan(context: dict, host: str) -> dict:
             or receipt["station_binding"]["grant_ref"] != auth["grant_ref"]
         ):
             blockers.append("StationAuthorizationUnverified")
+    elif receipt["contract_version"] == 5:
+        # Authority to run is separate from management acceptance of the result.
+        evidence_sources = [receipt["provenance_refs"]]
+        if (
+            task["execution_boundary"] != "declared_scope"
+            or receipt["grant_ref"] != auth["grant_ref"]
+        ):
+            blockers.append("WorkspaceAuthorizationUnverified")
     else:
         binding = _digest(
             _canonical(

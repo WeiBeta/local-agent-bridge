@@ -364,3 +364,16 @@ v2 精确 schema 见合同“首次观测合同 v2”；以下离线合成自检
 native conversation 的 Unknown/Mismatch 必须保留，不能把 capture UID 当作 native CID。普通元数据变化与权限/资源政策变化分别判断；不把全历史树或所有异常组合设为普通前置。测试使用合成宿主和公开测试密钥，真实 agy/model/config/Credential Manager 调用为 NotRun。
 
 完整后续真实波至少五个新模型任务：四位同时覆盖 Coding green、Review findings、Testing expected red、Mixed green，第五个在四位全忙时等候并复用首个释放工位。须证明四初始区间重叠、第五开始晚于释放、实际 native CID/task/result/capture 独立、旧单不变和独立终态顺序；一次单站 PassScoped 与三位波不能自动覆盖四位目标。本表是候选验收矩阵，不是实测许可或管理接受，次数/预算和安装身份另冻，无自动重试。
+
+## Cursor 已授权 workspace v5 离线矩阵（LAB-CURSOR-AUTHORIZED-WORKSPACE-01）
+
+| ID | 必需断言 |
+| --- | --- |
+| CW-GRANT | 仅 Cursor receipt v5，新增顶层 grant_ref 与 auth 一致；缺/空/null grant、错 host、native 字段、非空 runtime_acceptances 或空 backend 身份拒绝；不能自造 Accepted |
+| CW-SCOPE | Coding/Review、已有能力在授权范围内 Ready；错 grant 或 required_enforced 为 WorkspaceAuthorizationUnverified；能力/读写 scope 不匹配仍按原 A/B/C 门禁拒绝，未取 key/启动 |
+| CW-DRIFT | Ready 后 host/project/global 配置变化或两份 grant 同改仍不能沿旧 Plan 启动；原 Plan 不覆盖；全局配置只读检查失败如实保留零启动 Failed |
+| CW-PIPELINE | 普通公开 prepare/plan/run/collect，Coding 和 Review 各一次 fake 启动，独立 capture、配置 Unchanged、原字节留存，复用 run 根拒绝；不引入 first-execution 路径 |
+| CW-RESULT | Ready 与正常 transport/capture 不生成 Accepted；collector management_decision=null、acceptance Unverified，业务仍待管理独立核验 |
+| CW-LEGACY | 旧 Cursor v1 缺 R 仍 Blocked；agy v1–v4、native/station、Task collect、固定 argv/3600 秒与生命周期语义不变，由适用既有离线回归覆盖 |
+
+此矩阵只验证新增授权模式及其相接边界，不重测所有异常或逐命令许可。真实 Cursor/上游模型、原生权限、长时运行、并发、生产安装仍 NotRun；实现自检不是独立 Review。普通任务目录内读写/测试/必要子进程无需增加逐步审批，目录外与秘密/全局/发布边界保持。

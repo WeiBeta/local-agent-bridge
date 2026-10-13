@@ -43,3 +43,15 @@ LAB-LEGACY-LAUNCH-RECEIPT-02新生成的execute stdout摘要及`run.json`使用`
 - Shell/MCP/WebFetch 拒绝、一般文件隔离、上游模型真实身份、请求数与费用均未验证；`--force` 会放行未显式拒绝的命令（官方文档），不能把 `cwd`/Job 当文件隔离。
 - 既有合成冒烟证据见 [CURSOR_EVIDENCE.md](CURSOR_EVIDENCE.md)：一次冻结捕获经已审解析器认证重析通过，**不构成真实 coding 能力替代结论**。
 - agy `run` 默认行为与 H3 入口不变。
+
+## Task 已授权 workspace 模式（receipt v5，离线候选）
+
+LAB-CURSOR-AUTHORIZED-WORKSPACE-01 使用既有公开 `task prepare → task plan → task run → task collect`，不是本页上方的旧 `cursor run` 切片入口。可信管理部署回执使用严格 `contract_version=5`，在原 v1 字段之外只加非空 `grant_ref`，要求 `host=cursor`、`adapter=cursor_task_v1`、`runtime_acceptances=[]`。其 `grant_ref` 必须与可信 authorization 的 `grant_ref` 完全一致；任务仅支持 `declared_scope`。其他宿主、native_project、既往 Accepted 或额外字段不能混入 v5。
+
+明确授权的正常任务不再先要求 RuntimeAcceptance。Plan Ready 只表示该授权、能力、范围与身份检查允许本次执行，不表示宿主或业务已验收；`collect` 仍返回 `management_decision=null` 和未验证的业务验收观察。填写 grant 字符串或计算 SHA 不产生权限，管理仍需确认真实授权及本次预算。旧 v1–v4 合同不变。
+
+项目配置仍由 `task plan` 使用可信根 `cursor-project.json` 原字节准备到 `task_root/.cursor/cli.json`，不是旧切片的 `work/.cursor/cli.json`。固定 Cursor workspace/cwd 均为 task_root，模型仍为 Grok 4.7 High（非 Fast）；既有 1–3600 秒预算、fresh run、一次启动、0/1/null、Job 收束和加密封口原样复用。无新增参数、配置租约、全局配置回写、首单 waiver 或调度框架。
+
+任务目录内按已有授权开放正常读写、构建、测试与必要子进程，不由 Bridge 逐命令审批。Coding/Review 及能力/读写/保护范围、工具链、web/dependency scope 仍取现有 profile/authorization/task 合同；目录外写入、秘密外发、全局安装和生产发布不获附带授权。declared_scope 不是 OS 沙箱；未知原生权限效果、长时限和异常恢复保证分别列示，不把全部异常实测设为正常任务的前置。
+
+复用依据（2026-10-13）：[官方 headless CLI](https://cursor.com/docs/cli/headless)、[参数](https://cursor.com/docs/cli/reference/parameters)、[项目配置](https://cursor.com/docs/cli/reference/configuration)；已比较 [官方 SDK Bridge](https://github.com/cursor/sdk-bridge)，本次不新增 SDK/认证或切换协议。在线资料不是本机证明。本候选只做离线 fake 验证；真实 Cursor/model/key、部署、并发和业务接受仍需适用范围，独立 Review 另收。

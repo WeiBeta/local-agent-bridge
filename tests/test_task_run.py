@@ -354,6 +354,126 @@ def first_observation_receipt(case):
     )
 
 
+def authorized_cursor_receipt(case):
+    """Synthetic explicit workspace grant, never a runtime acceptance."""
+    case.receipt.update(
+        contract_version=5,
+        grant_ref=case.auth["grant_ref"],
+        runtime_acceptances=[],
+    )
+
+
+@pytest.mark.parametrize("role", ["Coding", "Review"])
+@pytest.mark.parametrize("extended", [False, True])
+def test_cursor_workspace_authorization_ready_without_acceptance(
+    tmp_path, monkeypatch, role, extended
+):
+    case = prepare(
+        tmp_path,
+        monkeypatch,
+        host="cursor",
+        role=role,
+        accepted=False,
+        caps={"execute": True, "web_reference": extended, "prepare_dependencies": extended},
+    )
+    authorized_cursor_receipt(case)
+    sync(case)
+    monkeypatch.setattr(slice_run, "_session_store", lambda: pytest.fail("dry key read"))
+    frozen = plan(case)
+    assert frozen["preflight_status"] == "Ready" and frozen["blockers"] == []
+    assert frozen["route"] == {"model": "grok-4.7-high", "effort": None}
+    assert frozen["contract_version"] == 1
+    result = run(case, frozen, tmp_path / "dry")
+    assert result["launch_count"] == 0 and result["transport_state"] == "NotRun"
+    assert case.receipt["runtime_acceptances"] == [] and not case.calls
+    assert b'"Accepted"' not in canonical([case.receipt, frozen, result])
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["missing_grant", "empty_grant", "null_grant", "wrong_host", "accepted", "native", "backend"],
+)
+def test_cursor_workspace_authorization_receipt_is_closed(tmp_path, monkeypatch, fault):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    acceptance = case.receipt["runtime_acceptances"]
+    authorized_cursor_receipt(case)
+    if fault == "missing_grant":
+        case.receipt.pop("grant_ref")
+    elif fault == "empty_grant":
+        case.receipt["grant_ref"] = ""
+    elif fault == "null_grant":
+        case.receipt["grant_ref"] = None
+    elif fault == "wrong_host":
+        case.receipt["host"] = "agy"
+    elif fault == "accepted":
+        case.receipt["runtime_acceptances"] = acceptance
+    elif fault == "native":
+        case.receipt["native_project"] = {}
+    else:
+        case.receipt["host_identity_files"] = []
+    sync(case)
+    with pytest.raises(runner.TaskRunError, match="InvalidContract"):
+        plan(case)
+    assert not (case.root / "control/plan.json").exists() and not case.calls
+
+
+@pytest.mark.parametrize("fault", ["grant", "boundary", "capability", "scope"])
+def test_cursor_workspace_authorization_retains_scope_gates(tmp_path, monkeypatch, fault):
+    case = prepare(
+        tmp_path,
+        monkeypatch,
+        host="cursor",
+        accepted=False,
+        boundary="required_enforced" if fault == "boundary" else "declared_scope",
+    )
+    authorized_cursor_receipt(case)
+    if fault == "grant":
+        case.receipt["grant_ref"] = "different-synthetic-grant"
+    elif fault == "capability":
+        case.auth["capabilities"]["execute"] = False
+    elif fault == "scope":
+        case.auth["write_roots"] = ["out", "scratch"]
+    sync(case)
+    monkeypatch.setattr(slice_run, "_session_store", lambda: pytest.fail("refused key read"))
+    if fault in {"capability", "scope"}:
+        with pytest.raises(runner.TaskRunError, match="AuthorizationMismatch"):
+            plan(case)
+    else:
+        frozen = plan(case)
+        assert frozen["blockers"] == ["WorkspaceAuthorizationUnverified"]
+        result = run(case, frozen, tmp_path / "refused", execute=True)
+        assert result["launch_count"] == 0 and result["transport_state"] == "NotRun"
+    assert not case.calls
+
+
+@pytest.mark.parametrize("target", ["host", "project", "global", "grant"])
+def test_cursor_workspace_authorization_rechecks_before_launch(tmp_path, monkeypatch, target):
+    case = prepare(tmp_path, monkeypatch, host="cursor", accepted=False)
+    authorized_cursor_receipt(case)
+    sync(case)
+    frozen = plan(case)
+    original_plan = (case.root / "control/plan.json").read_bytes()
+    if target == "host":
+        case.host_entry.write_bytes(b"synthetic drift")
+    elif target == "project":
+        (case.root / ".cursor/cli.json").write_bytes(b"{}")
+    elif target == "global":
+        Path(case.receipt["configuration"]["cursor_global"]["path"]).write_bytes(b"{}")
+    else:
+        case.auth["grant_ref"] = case.receipt["grant_ref"] = "new-synthetic-grant"
+        sync(case)
+    monkeypatch.setattr(slice_run, "_session_store", lambda: pytest.fail("drift key read"))
+    if target == "global":
+        result = run(case, frozen, tmp_path / "refused", execute=True)
+        assert result["launch_count"] == 0 and result["transport_state"] == "Failed"
+        assert "ConfigurationChanged" in result["blockers"]
+    else:
+        with pytest.raises(runner.TaskRunError, match="PlanChanged"):
+            run(case, frozen, tmp_path / "refused", execute=True)
+        assert not (tmp_path / "refused").exists()
+    assert (case.root / "control/plan.json").read_bytes() == original_plan and not case.calls
+
+
 def run(case, frozen, target, *, execute=False):
     return runner.run_task(
         task_root=case.root,
