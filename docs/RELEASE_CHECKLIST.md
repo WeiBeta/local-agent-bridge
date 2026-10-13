@@ -18,6 +18,22 @@
 下方按候选陆续增加的条目保留其原阶段范围。未勾选的历史检查项不是当前阻塞清单，
 也不因本节更新而逐项追认为通过；后续发行以精确候选和对应验收记录确定适用项。
 
+## Cursor 已授权 workspace v5（2026-10-13）
+
+候选 `180cb430f4728f0e4d3a2f77d5854635b6ffb4c6` 已完成实现自检（2636 通过、
+1 项 Windows 链接权限跳过）及 `LAB-CURSOR-AUTHORIZED-WORKSPACE-REVIEW-01`
+fresh 独立离线复核（112 通过、无 actionable finding）。仅新增 15 行生产代码，
+复用公开 Task prepare/plan/run/collect，不引入新配置租约或首单 waiver。
+
+- v5 严格绑定 Cursor、同一明确授权的 `grant_ref`、`declared_scope` 和空 `runtime_acceptances`；
+  Plan Ready 不是业务 Accepted。旧 v1–v4 的字段、接受条件及两宿主预算保留。
+- 任务目录内正常工程读写、测试与必要子进程按授权开放；目录外副作用另行控制。
+  不把命令字面一致、OS 沙箱或全部异常恢复证明列为普通任务的启动前置。
+- 本次源码汇合后的运行代码、测试与锁文件须与已审候选一致。新构建必须绑定新 wheel、
+  实际导入身份及安装回执；不得用旧 `a66a7e17…` 安装代替新 v5 候选。
+- 下一步是适用新授权下的单次合成 Coding+Testing 实测、受保护材料及必要来源核验和本地独立复测。
+  当前真实 Cursor、并发、生产部署和该候选远端交付均未完成；不能用 Gemini 4+1 或旧 slice 结果代替。
+
 ## 历史候选与检查范围
 
 - LAB-BRIDGE-DEADLINE-1H-01候选：Task全部已有角色及agy/Cursor上限3600秒，较短值保持；验证3600/3601和类型边界、两host剩余预算/argv、早退、timeout/异常恢复、task/permit/budget一致性及旧slice1020/15m兼容。自测不替代fresh独立Review或真实验收。
