@@ -1162,6 +1162,55 @@ def _validate_cursor_project_bytes(raw: bytes) -> None:
             _text(rule)
 
 
+def _cursor_global_control_digest(receipt: dict, *, pinned: bool) -> str | None:
+    """v5 read-only finalization: retain every field except documented UI preferences.
+
+    The startup snapshot still matches the frozen raw identity. Only its digest
+    lives in this process; no global configuration text or projection is persisted.
+    Unknown fields, permissions and all execution-related preferences stay bound.
+    """
+    identity = receipt["configuration"]["cursor_global"]
+    if identity["sha256"] is None:
+        _verify_file_identity(identity)
+        return None
+    raw = read_host_input_bytes(path=identity["path"])
+    if pinned and _digest(raw) != identity["sha256"]:
+        raise TaskRunError("ConfigurationChanged")
+    try:
+        value = contract.decode_strict_json_bytes(raw, label="native global configuration")
+    except contract.BridgeContractError as error:
+        raise TaskRunError("ConfigurationUnverified") from error
+    if type(value) is not dict:
+        raise TaskRunError("ConfigurationUnverified")
+
+    # Cursor documents these as presentation preferences. Remove only known,
+    # boolean leaves; preserve unknown siblings and reject malformed UI values.
+    for field in ("notifications", "hints", "suggestNextPrompt"):
+        if field in value and type(value.pop(field)) is not bool:
+            raise TaskRunError("ConfigurationUnverified")
+    ui_fields = {
+        "editor": {"vimMode"},
+        "display": {
+            "showLineNumbers",
+            "showThinkingBlocks",
+            "showStatusIndicators",
+            "showStatusLineRunningTime",
+        },
+    }
+    for field, leaves in ui_fields.items():
+        if field not in value:
+            continue
+        section = value[field]
+        if type(section) is not dict:
+            raise TaskRunError("ConfigurationUnverified")
+        for leaf in leaves:
+            if leaf in section and type(section.pop(leaf)) is not bool:
+                raise TaskRunError("ConfigurationUnverified")
+        if not section:
+            del value[field]
+    return _digest(_canonical(value))
+
+
 def prepare_cursor_project(
     *,
     task_root: Path,
@@ -1635,6 +1684,11 @@ def _execute_once(
             recheck()
             _verify_runtime_identity(receipt)
             _read_configuration(context)
+            cursor_global_before = (
+                _cursor_global_control_digest(receipt, pinned=True)
+                if receipt["contract_version"] == 5
+                else None
+            )
             if settings_path:
                 # Restoration is required even if a partial write raises.
                 result["restore_state"] = "Failed"
@@ -1676,9 +1730,16 @@ def _execute_once(
                     # Read-only on every path, including launch interruption.
                     # Cleanup cannot replace an exception already in flight.
                     try:
-                        for identity in receipt["configuration"].values():
-                            if identity is not None:
-                                _verify_file_identity(identity)
+                        if receipt["contract_version"] == 5:
+                            if (
+                                _cursor_global_control_digest(receipt, pinned=False)
+                                != cursor_global_before
+                            ):
+                                raise TaskRunError("ConfigurationChanged")
+                        else:
+                            for identity in receipt["configuration"].values():
+                                if identity is not None:
+                                    _verify_file_identity(identity)
                         if "native_project" in receipt:
                             observed = _verify_native_project(receipt, pinned=False)
                             _persist(run_root / "native-project-check.json", observed)

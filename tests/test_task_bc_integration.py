@@ -50,6 +50,53 @@ def collect(case, tmp_path, run_root=None):
 
 
 @pytest.mark.parametrize("role", ["Coding", "Review"])
+@pytest.mark.parametrize("drift", ["benign", "permission", "project"])
+def test_cursor_v5_config_finalization_actual_b_and_collect(tmp_path, monkeypatch, role, drift):
+    case = actual_case(tmp_path, monkeypatch, host="cursor", role=role, accepted=False)
+    global_path, value = fixtures.bind_cursor_global(case)
+    frozen = fixtures.plan(case)
+    original_global = global_path.read_bytes()
+
+    def maintain_configuration():
+        if drift == "benign":
+            value["hints"] = True
+            global_path.write_bytes(json.dumps(value, indent=2).encode())
+        elif drift == "permission":
+            value["permissions"]["deny"] = ["Write(work/**)"]
+            fixtures.write_json(global_path, value)
+        else:
+            (case.root / ".cursor/cli.json").write_bytes(b"{}")
+
+    fixtures.fake_spawn(case, monkeypatch, behavior=maintain_configuration)
+    run_root = tmp_path / "v5-run"
+    receipt = fixtures.run(case, frozen, run_root, execute=True)
+    outputs(case)
+    result = collect(case, tmp_path, run_root)
+    assert receipt["launch_count"] == len(case.calls) == 1
+    assert result["management_decision"] is None
+    assert all(
+        item["result"] == "Unverified"
+        for item in result["host_observations"]["acceptance_observations"]
+    )
+    assert (tmp_path / "collected/run/run.json").read_bytes() == (
+        run_root / "run.json"
+    ).read_bytes()
+    if drift == "benign":
+        assert receipt["transport_state"] == "Completed" and receipt["restore_state"] == "Unchanged"
+        assert not result["blockers"]
+        assert result["host_observations"]["scope_status"] == "Pass"
+        assert result["host_observations"]["outputs_status"] == "Pass"
+        assert global_path.read_bytes() != original_global
+    else:
+        assert receipt["transport_state"] == "Failed" and receipt["restore_state"] == "Failed"
+        assert {"CursorConfigurationUnverified", "RestoreFailed", "TransportFailed"} <= set(
+            result["blockers"]
+        )
+        if drift == "project":
+            assert "ControlChanged" in result["blockers"] and result["continuation"] is None
+
+
+@pytest.mark.parametrize("role", ["Coding", "Review"])
 def test_native_project_actual_b_prepare_fake_run_and_collect(tmp_path, monkeypatch, role):
     case = actual_case(tmp_path, monkeypatch, role=role)
     fixtures.bind_native_project(case)

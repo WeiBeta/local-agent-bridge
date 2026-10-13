@@ -377,3 +377,17 @@ native conversation 的 Unknown/Mismatch 必须保留，不能把 capture UID �
 | CW-LEGACY | 旧 Cursor v1 缺 R 仍 Blocked；agy v1–v4、native/station、Task collect、固定 argv/3600 秒与生命周期语义不变，由适用既有离线回归覆盖 |
 
 此矩阵只验证新增授权模式及其相接边界，不重测所有异常或逐命令许可。真实 Cursor/上游模型、原生权限、长时运行、并发、生产安装仍 NotRun；实现自检不是独立 Review。普通任务目录内读写/测试/必要子进程无需增加逐步审批，目录外与秘密/全局/发布边界保持。
+
+## Cursor v5 配置收尾离线矩阵（LAB-CURSOR-CONFIG-FINALIZE-01）
+
+| ID | 必需断言 |
+| --- | --- |
+| CF-BENIGN | global 格式/键顺序、已列 bool 显示/提示字段变化可保持必要语义；未知 editor/display 兄弟不丢弃；正常/异常/中断均只读收尾 |
+| CF-CONTROL | approvalMode、permissions 内容/顺序、sandbox 三维与未知字段、版本/模型/通道/网络及其他未知字段变化均失败；bool 与 int 不等同，显示字段类型错误不忽略 |
+| CF-DAMAGE | global 损坏、重复键、非有限数、BOM、非对象或消失失败，冻结不存在时新增也失败；无回写恢复、不覆盖漂移文件 |
+| CF-PRELAUNCH | capture 期间或紧前投影读取前的 global 漂移，即使仅 UI 变化仍零启动；project hash/目录、读取故障和原主中断保持原门禁 |
+| CF-LEGACY | 旧 Cursor v1 对相同无害 raw 变化仍失败；agy v1–v4、Task CLI/B collector/launch 生命周期按适用已有矩阵回归 |
+| CF-RESULT | v5 Unchanged 表示必要语义/项目控制未变，不声明 raw 字节身份；run/collect 不产生 Accepted，历史控制失败不改判 |
+
+仅离线自检；fresh 独立 Review、真实 CLI/model/config/key、并发和部署分别核收。本轮不做新真实调用，
+也不证明历史 2 字节变化的具体字段/actor/影响。共享 global 的启动前 raw 漂移和非持续快照限制留在使用/合同文档。

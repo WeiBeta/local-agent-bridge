@@ -1554,8 +1554,14 @@ def test_expired_work_budget_refuses_before_shared_launcher(monkeypatch, host):
 
 @pytest.mark.parametrize("outcome", ["normal", "error", "interrupt"])
 @pytest.mark.parametrize("drift", ["none", "project", "global", "io", "check_interrupt"])
-def test_cursor_configuration_finalized_on_all_launch_paths(tmp_path, monkeypatch, outcome, drift):
+@pytest.mark.parametrize("version", [1, 5])
+def test_cursor_configuration_finalized_on_all_launch_paths(
+    tmp_path, monkeypatch, outcome, drift, version
+):
     case = prepare(tmp_path, monkeypatch, host="cursor")
+    if version == 5:
+        authorized_cursor_receipt(case)
+        sync(case)
     project = case.root / ".cursor" / "cli.json"
     global_path = Path(case.receipt["configuration"]["cursor_global"]["path"])
     original_project = project.read_bytes()
@@ -1616,6 +1622,288 @@ def test_cursor_configuration_finalized_on_all_launch_paths(tmp_path, monkeypatc
     if outcome == "error":
         failure = json.loads((target / "lifecycle-failure.json").read_bytes())
         assert failure["exception_type"] == "ValueError"  # Cleanup does not replace the error.
+
+
+def bind_cursor_global(case, *, version=5):
+    """Synthetic configuration only; unknown siblings deliberately remain bound."""
+    value = {
+        "version": 1,
+        "approvalMode": "allowlist",
+        "permissions": {"allow": ["Shell(ls)", "Read(work/**)"], "deny": []},
+        "sandbox": {"mode": "enabled", "networkAccess": "disabled", "readBoundary": "workspace"},
+        "model": {"id": "fixture-model"},
+        "maxMode": False,
+        "hasChangedDefaultModel": False,
+        "channel": "stable",
+        "network": {"useHttp1ForAgent": False},
+        "attribution": {"attributeCommitsToAgent": True},
+        "rewind": False,
+        "editor": {"vimMode": False, "unknown": False},
+        "display": {"showThinkingBlocks": False, "unknown": False},
+        "unknown": False,
+    }
+    path = Path(case.receipt["configuration"]["cursor_global"]["path"])
+    write_json(path, value)
+    case.receipt["configuration"]["cursor_global"] = identity(path)
+    if version == 5:
+        authorized_cursor_receipt(case)
+    sync(case, refresh_r=version == 1)
+    return path, value
+
+
+@pytest.mark.parametrize("version", [1, 5])
+@pytest.mark.parametrize("change", ["format", "ui_add", "ui_remove"])
+@pytest.mark.parametrize("outcome", ["normal", "error", "interrupt"])
+def test_cursor_global_benign_maintenance_is_v5_only(
+    tmp_path, monkeypatch, version, change, outcome
+):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_global(case, version=version)
+    if change == "format":
+        value = dict(reversed(list(value.items())))
+        value["permissions"] = dict(reversed(list(value["permissions"].items())))
+        changed = json.dumps(value, indent=2).encode() + b"\r\n"
+    else:
+        value["notifications"] = value["hints"] = value["suggestNextPrompt"] = True
+        value["editor"]["vimMode"] = True
+        value["display"].update(
+            showLineNumbers=True,
+            showThinkingBlocks=True,
+            showStatusIndicators=True,
+            showStatusLineRunningTime=True,
+        )
+        if change == "ui_remove":
+            for field in ("notifications", "hints", "suggestNextPrompt"):
+                del value[field]
+            del value["editor"]["vimMode"]
+            del value["display"]["showThinkingBlocks"]
+        changed = canonical(value)
+    frozen = plan(case)
+    original_error = KeyboardInterrupt() if outcome == "interrupt" else ValueError()
+    process = fake_spawn(
+        case,
+        monkeypatch,
+        behavior=lambda: path.write_bytes(changed),
+        wait_error=original_error if outcome == "interrupt" else None,
+    )
+    shared_launcher = slice_run._launch_and_capture
+
+    def launch_then_fail(*args, **kwargs):
+        result = shared_launcher(*args, **kwargs)
+        if outcome == "error":
+            raise original_error
+        return result
+
+    monkeypatch.setattr(slice_run, "_launch_and_capture", launch_then_fail)
+    target = tmp_path / "benign-finalized"
+    if outcome == "interrupt":
+        with pytest.raises(KeyboardInterrupt) as error:
+            run(case, frozen, target, execute=True)
+        assert error.value is original_error
+        result = json.loads((target / "run.json").read_bytes())
+    else:
+        result = run(case, frozen, target, execute=True)
+    assert result["launch_count"] == len(case.calls) == 1 and process.closed
+    assert result["restore_state"] == ("Unchanged" if version == 5 else "Failed")
+    assert ("CursorConfigurationUnverified" in result["blockers"]) == (version != 5)
+    assert ("RestoreFailed" in result["blockers"]) == (version != 5)
+    assert result["transport_state"] == (
+        "Completed" if version == 5 and outcome == "normal" else "Failed"
+    )
+    assert path.read_bytes() == changed  # No global writeback, even on failure.
+    assert not (target / "private").exists()
+    assert not (target / "config-restore.json").exists()
+    if outcome == "error":
+        assert json.loads((target / "lifecycle-failure.json").read_bytes())["exception_type"] == (
+            "ValueError"
+        )
+
+
+@pytest.mark.parametrize(
+    ("fields", "replacement"),
+    [
+        (("version",), 2),
+        (("approvalMode",), "unrestricted"),
+        (("permissions", "allow"), ["Shell(*)"]),
+        (("permissions", "deny"), ["Write(work/**)"]),
+        (("permissions", "allow"), ["Read(work/**)", "Shell(ls)"]),
+        (("sandbox", "mode"), "disabled"),
+        (("sandbox", "networkAccess"), "enabled"),
+        (("sandbox", "readBoundary"), "system"),
+        (("sandbox", "unknown"), True),
+        (("model",), {"id": "other-model"}),
+        (("maxMode",), True),
+        (("hasChangedDefaultModel",), True),
+        (("channel",), "nightly"),
+        (("network", "useHttp1ForAgent"), True),
+        (("attribution", "attributeCommitsToAgent"), False),
+        (("rewind",), True),
+        (("unknown",), True),
+        (("unknown",), 0),  # False and 0 must not compare equal.
+        (("editor", "unknown"), True),
+        (("display", "unknown"), True),
+        (("notifications",), "true"),
+        (("editor", "vimMode"), 1),
+        (("display", "showThinkingBlocks"), None),
+    ],
+)
+@pytest.mark.parametrize("outcome", ["normal", "error", "interrupt"])
+def test_cursor_v5_global_control_drift_fails_on_every_launch_path(
+    tmp_path, monkeypatch, fields, replacement, outcome
+):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_global(case)
+    section = value
+    for field in fields[:-1]:
+        section = section[field]
+    section[fields[-1]] = replacement
+    changed = canonical(value)
+    frozen = plan(case)
+    original_error = KeyboardInterrupt() if outcome == "interrupt" else ValueError()
+    process = fake_spawn(
+        case,
+        monkeypatch,
+        behavior=lambda: path.write_bytes(changed),
+        wait_error=original_error if outcome == "interrupt" else None,
+    )
+    shared_launcher = slice_run._launch_and_capture
+
+    def launch_then_fail(*args, **kwargs):
+        result = shared_launcher(*args, **kwargs)
+        if outcome == "error":
+            raise original_error
+        return result
+
+    monkeypatch.setattr(slice_run, "_launch_and_capture", launch_then_fail)
+    target = tmp_path / "control-finalized"
+    if outcome == "interrupt":
+        with pytest.raises(KeyboardInterrupt) as error:
+            run(case, frozen, target, execute=True)
+        assert error.value is original_error
+        result = json.loads((target / "run.json").read_bytes())
+    else:
+        result = run(case, frozen, target, execute=True)
+    assert result["launch_count"] == len(case.calls) == 1 and process.closed
+    assert result["restore_state"] == "Failed" and result["transport_state"] == "Failed"
+    assert {"CursorConfigurationUnverified", "RestoreFailed"} <= set(result["blockers"])
+    assert path.read_bytes() == changed
+    if outcome == "error":
+        assert json.loads((target / "lifecycle-failure.json").read_bytes())["exception_type"] == (
+            "ValueError"
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, b"", b"{", b"[]", b'{"x":1,"x":2}', b'{"x":NaN}', b"\xef\xbb\xbf{}"],
+)
+def test_cursor_v5_missing_or_damaged_global_is_not_restored(tmp_path, monkeypatch, payload):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, _ = bind_cursor_global(case)
+    frozen = plan(case)
+
+    def damage():
+        if payload is None:
+            path.unlink()
+        else:
+            path.write_bytes(payload)
+
+    process = fake_spawn(case, monkeypatch, behavior=damage)
+    result = run(case, frozen, tmp_path / "damaged", execute=True)
+    assert result["launch_count"] == 1 and process.closed
+    assert result["restore_state"] == "Failed" and result["transport_state"] == "Failed"
+    assert {"CursorConfigurationUnverified", "RestoreFailed"} <= set(result["blockers"])
+    assert path.exists() == (payload is not None)
+    if payload is not None:
+        assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("change_at", ["capture", "snapshot"])
+def test_cursor_v5_even_ui_drift_before_launch_still_rejected(tmp_path, monkeypatch, change_at):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, value = bind_cursor_global(case)
+    frozen = plan(case)
+    changed = canonical({**value, "hints": True})
+    if change_at == "capture":
+        capture = runner._capture_bytes
+
+        def capture_with_drift(*args):
+            capture(*args)
+            path.write_bytes(changed)
+
+        monkeypatch.setattr(runner, "_capture_bytes", capture_with_drift)
+    else:
+        read = runner.read_host_input_bytes
+
+        def read_with_drift(*, path: str):
+            if path == case.receipt["configuration"]["cursor_global"]["path"]:
+                Path(path).write_bytes(changed)
+            return read(path=path)
+
+        monkeypatch.setattr(runner, "read_host_input_bytes", read_with_drift)
+    monkeypatch.setattr(
+        slice_run, "spawn_suspended_in_job", lambda *a, **k: pytest.fail("no launch")
+    )
+    result = run(case, frozen, tmp_path / "prelaunch-drift", execute=True)
+    assert result["launch_count"] == 0 and result["transport_state"] == "Failed"
+    assert path.read_bytes() == changed and not case.calls
+
+
+def test_cursor_v5_new_ui_sections_compare_without_unknown_field_loss(tmp_path, monkeypatch):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, _ = bind_cursor_global(case)
+    write_json(path, {"permissions": {"allow": [], "deny": []}})
+    case.receipt["configuration"]["cursor_global"] = identity(path)
+    before = runner._cursor_global_control_digest(case.receipt, pinned=True)
+    write_json(
+        path,
+        {
+            "permissions": {"allow": [], "deny": []},
+            "editor": {"vimMode": False},
+            "display": {"showLineNumbers": True},
+        },
+    )
+    assert runner._cursor_global_control_digest(case.receipt, pinned=False) == before
+    write_json(path, {"permissions": {"allow": [], "deny": []}, "editor": {"future": False}})
+    assert runner._cursor_global_control_digest(case.receipt, pinned=False) != before
+
+
+@pytest.mark.parametrize("fault", ["hardlink", "directory", "io", "interrupt"])
+def test_cursor_v5_global_read_failure_preserves_launch_and_primary_interrupt(
+    tmp_path, monkeypatch, fault
+):
+    case = prepare(tmp_path, monkeypatch, host="cursor")
+    path, _ = bind_cursor_global(case)
+    frozen = plan(case)
+    primary = KeyboardInterrupt()
+
+    def change_path():
+        if fault == "hardlink":
+            os.link(path, tmp_path / "global-link.json")
+        elif fault == "directory":
+            path.unlink()
+            path.mkdir()
+
+    process = fake_spawn(case, monkeypatch, behavior=change_path, wait_error=primary)
+    read = runner.read_host_input_bytes
+
+    def read_after_launch(*, path: str):
+        if case.calls and path == case.receipt["configuration"]["cursor_global"]["path"]:
+            if fault == "io":
+                raise OSError("synthetic global read failure")
+            if fault == "interrupt":
+                raise SystemExit(3)
+        return read(path=path)
+
+    monkeypatch.setattr(runner, "read_host_input_bytes", read_after_launch)
+    target = tmp_path / "global-read-failure"
+    with pytest.raises(KeyboardInterrupt) as error:
+        run(case, frozen, target, execute=True)
+    assert error.value is primary
+    result = json.loads((target / "run.json").read_bytes())
+    assert result["launch_count"] == len(case.calls) == 1 and process.closed
+    assert result["restore_state"] == "Failed" and result["transport_state"] == "Failed"
+    assert {"CursorConfigurationUnverified", "RestoreFailed"} <= set(result["blockers"])
 
 
 @pytest.mark.parametrize("target", ["provenance", "gate", "enforcement", "caller_plan"])

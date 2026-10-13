@@ -55,3 +55,25 @@ LAB-CURSOR-AUTHORIZED-WORKSPACE-01 使用既有公开 `task prepare → task pla
 任务目录内按已有授权开放正常读写、构建、测试与必要子进程，不由 Bridge 逐命令审批。Coding/Review 及能力/读写/保护范围、工具链、web/dependency scope 仍取现有 profile/authorization/task 合同；目录外写入、秘密外发、全局安装和生产发布不获附带授权。declared_scope 不是 OS 沙箱；未知原生权限效果、长时限和异常恢复保证分别列示，不把全部异常实测设为正常任务的前置。
 
 复用依据（2026-10-13）：[官方 headless CLI](https://cursor.com/docs/cli/headless)、[参数](https://cursor.com/docs/cli/reference/parameters)、[项目配置](https://cursor.com/docs/cli/reference/configuration)；已比较 [官方 SDK Bridge](https://github.com/cursor/sdk-bridge)，本次不新增 SDK/认证或切换协议。在线资料不是本机证明。本候选只做离线 fake 验证；真实 Cursor/model/key、部署、并发和业务接受仍需适用范围，独立 Review 另收。
+
+### v5 只读配置收尾（LAB-CURSOR-CONFIG-FINALIZE-01，离线候选）
+
+启动前继续核 global 的冻结存在/不存在与原字节 SHA，最后一次只读快照也须匹配该 SHA。
+启动后全局配置按严格 JSON 必要投影比较，容纳格式/对象键顺序及纯显示维护：仅忽略 bool 类型的
+`notifications`、`hints`、`suggestNextPrompt`、`editor.vimMode` 和 `display` 下
+`showLineNumbers/showThinkingBlocks/showStatusIndicators/showStatusLineRunningTime`。
+仅含这些叶子的 editor/display 对象可新增或消失；未知兄弟字段不丢弃。
+权限数组的内容与顺序、approvalMode、整个 sandbox、version、模型偏好、channel、network、rewind、attribution
+及所有未知字段仍绑定；缺省补齐不意味着这些字段可无条件变化。类型错误、损坏/消失配置或无法读取仍失败。
+投影摘要只留当前进程，不落盘全局正文或投影、不回写或恢复 global。
+
+项目 `.cursor/cli.json` 与目录清单仍精确核对，不能由全局比较放宽。上述检查覆盖正常、异常和中断；
+原异常/中断优先，配置失败仍为 CursorConfigurationUnverified/RestoreFailed，保留现场。
+v5 的 restore_state=Unchanged 指必要配置语义与项目控制未变，不保证 global 原字节相同，也不表示执行过恢复。
+RunReceipt/Plan/CLI schema 不变；旧 Cursor v1 和 agy v1–v4 保持原收尾。
+
+该规则来自本轮有界[官方配置](https://cursor.com/docs/cli/reference/configuration)与
+[permissions](https://cursor.com/docs/cli/reference/permissions)核验：CLI 管理部分字段并可补缺字段；
+文档不是本机行为证明，也不能证明历史全局 1931→1929 字节变化无害。原失败回执不重判。
+共享 global 在启动前因兄弟 CLI 正常维护而漂移仍会阻断；紧前快照不是持续文件锁，也不保证没有短暂漂移再恢复。
+真实 CLI、并发、部署及本修订的独立 Review 未运行/未完成，不能以离线正例代替。

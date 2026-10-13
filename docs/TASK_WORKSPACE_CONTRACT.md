@@ -770,3 +770,22 @@ Cursor 配置准备/只读核验、workspace=cwd=task_root、Grok 4.7 High 非 F
 Plan Ready 表示可执行，不是业务/runtime Accepted。正常执行后的 collector 继续保留原产物、启动/transport/capture/配置事实，`management_decision=null`，业务 acceptance 为 Unrun/Unverified，不生成 Accepted。正常任务内工程操作按既有授权整体开放；目录外副作用另控，declared_scope 不宣称 OS 隔离。异常恢复保证与正常流程验收分层，不新增“全部异常必须实测”的启动条件。
 
 本候选的合成授予、fake 进程和公开测试密钥仅验证软件合同；无真实 CLI/model/key、配置修改、部署或业务接受。具体使用与官方/GitHub 复用来源见 [CURSOR_USAGE.md](CURSOR_USAGE.md#task-已授权-workspace-模式receipt-v5离线候选)。
+
+### 19.1 v5 全局配置收尾（LAB-CURSOR-CONFIG-FINALIZE-01）
+
+仅 v5 修改启动后的 global 比较，覆盖正常返回、异常和中断。启动前（含紧前快照）仍要求冻结 raw SHA
+或准确路径不存在；project 文件 raw SHA、schema 和 `.cursor` 精确目录清单仍不变。
+global 必须可有界读取为普通单链接文件和严格 JSON 对象；收尾只忽略官方文档中的 bool 型
+notifications/hints/suggestNextPrompt、editor.vimMode 及 display 的 showLineNumbers/showThinkingBlocks/
+showStatusIndicators/showStatusLineRunningTime。格式与对象键顺序不构成必要语义漂移；仅含可忽略叶子的
+editor/display 空对象可规范化为缺省，未知兄弟字段保留。
+
+其他所有字段及类型/数组顺序仍精确比较，包括 approvalMode、permissions、sandbox、version、model/maxMode/
+hasChangedDefaultModel、channel、network、rewind、attribution 和未知字段。缺省补齐涉及这些字段时仍拒绝；
+无 global 的冻结对象不允许收尾新建配置。损坏、消失、IO/路径拒绝或必要投影变化仍记 restore_state=Failed、
+CursorConfigurationUnverified/RestoreFailed，并保留原材料和原主中断。正常语义不变为 Unchanged，
+不是 global 字节未变或实际恢复操作声明。投影摘要仅在本进程保留，不产生新证据/schema 或 global 回写。
+
+v1–v4、agy settings/native/station 和旧 Cursor slice 不变。共享 global 启动前正常维护造成的 raw 漂移仍是并发限制；
+只读快照不承诺持续隔离或发现短暂改回的配置。该候选不新增整场锁、不迁移或重判历史失败，
+离线自检之后须 fresh 独立 Review；新真实调用、部署与并发须另有适用授权。

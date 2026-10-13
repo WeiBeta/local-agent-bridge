@@ -167,3 +167,11 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 - [ ] 业务红/Review findings 与控制失联区分；0/1/null、transport 失败和 Unknown 保留；终态落盘失败不返回成功；不自动清理、重跑或修复暂停根。
 - [ ] 新 wheel 带 station_pool/station_task；sdist 带两份新测试及四份同步文档；实际导入源码身份包含两模块。pyproject 仅扩充 sdist 测试清单，uv.lock 不变。
 - [ ] 离线 pytest/JUnit、ruff/format 和失败证据完整；自检后冻结精确 commit 交独立 Review，再集中授权四路真实重叠加第五单复用。真实运行、包安装、生产接受和部署分别核收。
+
+## Cursor v5 配置收尾候选复核项
+
+- [ ] fresh 独立 Review 核仅 v5 收尾改变：启动前仍 raw hash；项目精确控制、必要 global 字段/未知字段/类型与数组顺序保持，白名单仅为官方列明的 bool 显示/提示叶子。
+- [ ] 正常/异常/中断的无害维护、必要语义漂移、损坏/消失/新增、紧前漂移、project/IO 失败及主异常优先均有离线 JUnit；旧 Cursor v1 与 agy v1–v4 适用回归不放宽。
+- [ ] 无新 schema/锁/全局回写/正文落盘，v5 Unchanged 为必要语义未变；B collect 继续不自动业务接受。
+- [ ] 历史 CursorConfigurationUnverified/RestoreFailed 原失败保留，具体 2 字节变更与 actor/语义仍 Unknown；新代码不能追认旧 Passed。
+- [ ] 启动前共享 global raw 漂移及非持续快照限制明确；真实 CLI/并发/部署需新冻结身份和适用授权，离线通过不升级为生产接受。
