@@ -122,12 +122,18 @@ def missing_flags(raw: bytes) -> list[str]:
             continue
         if flag == "--disable-slash-commands":
             continue
-        argument = re.match(r"(?:=\s*)?(<[^>\r\n]+>|\[[^\]\r\n]+\])", declaration)
+        # A declaration may list further aliases before the shared parameter form.
+        body = re.sub(r"^(?:\s*,\s*(?:-\w|--[\w-]+))+\s*", "", declaration)
+        argument = re.match(r"(?:=\s*)?(<[^>\r\n]+>|\[[^\]\r\n]+\])", body)
         if argument is None:
             missing.append(flag)
             continue
         required_value = {"--effort": "high", "--output-format": "stream-json"}.get(flag)
-        choices = re.search(r"(?:choices|options|values)\s*:\s*([^\r\n)]+)", declaration, re.I)
+        # Choice lists are read inside the declaration's enclosing parenthesis,
+        # which may wrap onto continuation lines before it closes.
+        choices = re.search(r"(?:choices|options|values)\s*:\s*([^)]+?)\)", declaration, re.I)
+        if choices is None:
+            choices = re.search(r"(?:choices|options|values)\s*:\s*([^\r\n)]+)", declaration, re.I)
         enum = argument.group(1)[1:-1]
         if choices or "|" in enum:
             tokens = re.findall(r"[A-Za-z][A-Za-z0-9_-]*", choices.group(1) if choices else enum)

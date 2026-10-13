@@ -1037,6 +1037,29 @@ def test_r06_closed_diagnostic_failure_releases_and_next_request_reuses(
     assert first["station_id"] == second["station_id"]
 
 
+@pytest.mark.parametrize("variant", ["wrapped_enum", "trailing_short_alias"])
+def test_r05_supported_help_formatting_reaches_the_unique_business_call(
+    tmp_path, monkeypatch, variant
+):
+    import test_agy_host as probes
+
+    text = probes.HELP
+    if variant == "wrapped_enum":
+        text = text.replace(
+            b"<level>               Effort",
+            b"<level>               Effort (choices: low,\n"
+            b"                                 medium, high)",
+        )
+    else:
+        text = text.replace(b"--model <model>", b"--model, -m <name>")
+    assert text != probes.HELP
+    case, path, pin, _document, spec = configured_stable(tmp_path, monkeypatch)
+    diags, business = install_stable_host(case, monkeypatch, help_text=text)
+    outcome = dispatch(path, pin, spec, execute=True)
+    assert outcome["release_state"] == "Released", outcome
+    assert len(diags) == 2 and outcome["launch_count"] == 1 and len(business) == 1, outcome
+
+
 @pytest.mark.parametrize("fault,count", [("resume_unknown", None), ("cleanup_unknown", 1)])
 def test_r07_unknown_diagnostic_control_suspends_without_business(
     tmp_path, monkeypatch, fault, count

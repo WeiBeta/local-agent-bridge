@@ -135,6 +135,12 @@ def test_r05_unparseable_version_stops_help(tmp_path, monkeypatch, version):
         ),
         HELP.replace(b"<level>", b"<low|high>").replace(b"<format>", b"<json|stream-json>"),
         HELP.replace(b"<level>", b"<level> (choices: low, high)"),
+        HELP.replace(
+            b"<level>               Effort",
+            b"<level>               Effort (choices: low,\n"
+            b"                                 medium, high)",
+        ),
+        HELP.replace(b"--model <model>", b"--model, -m <name>"),
     ],
 )
 def test_r05_help_projection_tolerates_layout_and_new_options(text):
@@ -157,6 +163,22 @@ def test_r05_each_required_parameter_missing(flag):
         (HELP.replace(b"--model <model>", b"--model"), "--model"),
         (HELP.replace(b"<level>", b"<low|medium>"), "--effort"),
         (HELP.replace(b"<format>", b"<format> (choices: json, text)"), "--output-format"),
+        (HELP.replace(b"--model <model>", b"--model, -m"), "--model"),
+        (
+            HELP.replace(
+                b"<level>               Effort",
+                b"<level>               Effort (choices: low,\n"
+                b"                                 medium)",
+            ),
+            "--effort",
+        ),
+        (
+            HELP.replace(
+                b"<level>               Effort",
+                b"<level>               Effort (choices: low, medium) (high planned later)",
+            ),
+            "--effort",
+        ),
     ],
 )
 def test_r05_explicit_incompatible_values_or_no_parameter(text, flag):
