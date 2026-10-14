@@ -178,6 +178,8 @@ Version 仍只解析 stdout。支持旧参数占位符声明和 `Usage of agy.ex
 相同声明可重复，冲突保守拒绝，不按输出先后覆盖，混合格式也不推断等价。
 离线真实字节夹具的来源、哈希、Git 换行转换和自检限制见
 [HOST-HELP-FORMAT-REPAIR-01 报告](reviews/LAB-AGY-HOST-HELP-FORMAT-REPAIR-01.md)。
+源码包清单另显式纳入同一真实 help fixture；实际 sdist 成员、原 SHA 和从解包源码执行的
+离线测试记录见 [HOST-HELP-PACKAGING-01 报告](reviews/LAB-AGY-HOST-HELP-PACKAGING-01.md)。
 
 失败立即停止后续调用且不重试。缺参数、非零、截断或已回收 timeout 保留红结果；诊断及
 原控制 cleanup 已证闭合即可释放该位，Unsupported 不是 schema 损坏。count/cleanup 未知

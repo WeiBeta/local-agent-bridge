@@ -254,6 +254,19 @@ def test_source_archives_do_not_carry_legacy_packages() -> None:
     assert packed_reports == []
 
 
+def test_source_archive_includes_the_recorded_agy_help_fixture() -> None:
+    document = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    included = document["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
+    relative = "tests/fixtures/agy-help-1.3.4.txt"
+    assert relative in included
+    # core.autocrlf may expand checkout newlines; the archive must carry this content.
+    raw = (REPOSITORY_ROOT / relative).read_bytes().replace(b"\r\n", b"\n")
+    assert len(raw) == 2905
+    assert hashlib.sha256(raw).hexdigest() == (
+        "337622c6dcdcb204312277570c4173dda83f3cbf006629f0eabe657069071e7c"
+    )
+
+
 def test_session_status_is_read_only_and_key_free(monkeypatch, tmp_path, capsys) -> None:
     from local_agent_bridge import cli
 

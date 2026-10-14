@@ -66,6 +66,7 @@ only-include = [
   "tests/test_task_bc_integration.py",
   "tests/test_legacy_launch_receipts.py",
   "tests/fixtures/ag_oneshot",
+  "tests/fixtures/agy-help-1.3.4.txt",
   "README.md",
   "docs/H3_USAGE.md",
   "docs/BRIDGE_USAGE.md",
