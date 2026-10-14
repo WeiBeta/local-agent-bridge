@@ -1153,6 +1153,9 @@ def test_installation_verifier_checks_real_fixture_bytes_and_origin(tmp_path, mo
         }
     }
     receipt = {
+        # This synthetic chain uses the helper's v1 contract: host_entry and
+        # host_identity_files are verified directly, without v6 entry checks.
+        "contract_version": 1,
         "bridge": {
             "entry": identity(entry),
             "version": "fixture",
