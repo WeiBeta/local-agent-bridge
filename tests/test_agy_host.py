@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import os
@@ -35,36 +36,47 @@ def entry_fixture(tmp_path):
     return {"path": str(entry), "install_root": str(root), "identity_mode": "StableInstalledEntry"}
 
 
-def probe_host(monkeypatch, *, version=b"1.3.4\n", help_text=HELP, fault=None):
+def probe_host(
+    monkeypatch,
+    *,
+    version=b"1.3.4\n",
+    version_stderr=b"SECRET-SENTINEL",
+    help_text=HELP,
+    help_stderr=b"SECRET-SENTINEL",
+    fault=None,
+    fault_at=None,
+):
     calls = []
 
     class Process(fixtures.FakeProcess):
         def close_job(self):
-            return None if fault == "cleanup_unknown" else True
+            return None if self.diagnostic_fault == "cleanup_unknown" else True
 
     def spawn(argv, cwd, *, lifecycle, env):
         assert len(argv) == 2 and argv[1] in {"--version", "--help"}
         assert env["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
         assert all(flag not in argv for flag in ("--model", "--project", "--print"))
         calls.append((argv, lifecycle, cwd))
+        active_fault = fault if fault_at is None or argv[1] == fault_at else None
         lifecycle.pid = 1234
         lifecycle.pid_created_filetime = 999
-        lifecycle.execution_state = "unknown" if fault == "resume_unknown" else "confirmed"
-        if fault == "resume_unknown":
+        lifecycle.execution_state = "unknown" if active_fault == "resume_unknown" else "confirmed"
+        if active_fault == "resume_unknown":
             lifecycle.stage = "resume_call"
             lifecycle.child_exit_observed = lifecycle.pipes_closed = lifecycle.job_closed = True
             raise RuntimeError("SECRET-SENTINEL")
-        if fault == "interrupt":
+        if active_fault == "interrupt":
             lifecycle.child_exit_observed = lifecycle.pipes_closed = lifecycle.job_closed = True
             raise KeyboardInterrupt("primary")
         process = Process(
-            exit_code=1 if fault == "exit" else 0,
-            wait_error=subprocess.TimeoutExpired(argv, 10) if fault == "timeout" else None,
+            exit_code=1 if active_fault == "exit" else 0,
+            wait_error=subprocess.TimeoutExpired(argv, 10) if active_fault == "timeout" else None,
         )
+        process.diagnostic_fault = active_fault
         process.stdout = io.BytesIO(
             (version() if callable(version) else version) if argv[1] == "--version" else help_text
         )
-        process.stderr = io.BytesIO(b"SECRET-SENTINEL")
+        process.stderr = io.BytesIO(help_stderr if argv[1] == "--help" else version_stderr)
         return process
 
     monkeypatch.setattr(slice_run, "spawn_suspended_in_job", spawn)
@@ -246,6 +258,231 @@ def test_r05_valid_enum_forms_preserve_declared_values(flag, argument, choices, 
     assert (
         host.missing_flags(HELP.replace(f"{flag} {argument}".encode(), declaration.encode())) == []
     )
+
+
+def checked_actual_help(raw):
+    # Git's Windows checkout may expand LF; the committed blob is the original bytes.
+    raw = raw.replace(b"\r\n", b"\n")
+    assert len(raw) == 2905
+    assert hashlib.sha256(raw).hexdigest() == (
+        "337622c6dcdcb204312277570c4173dda83f3cbf006629f0eabe657069071e7c"
+    )
+    return raw
+
+
+@pytest.fixture
+def actual_help():
+    # 2026-10-14 HELP-DIAG-01: secret-scanned stderr; original SHA is checked above.
+    return checked_actual_help(
+        (Path(__file__).parent / "fixtures" / "agy-help-1.3.4.txt").read_bytes()
+    )
+
+
+def test_help_format_fixture_git_checkout_normalization_preserves_original_bytes(actual_help):
+    assert checked_actual_help(actual_help.replace(b"\n", b"\r\n")) == actual_help
+
+
+def without_usage_row(raw, flag):
+    return b"\n".join(
+        line for line in raw.split(b"\n") if not line.lstrip().startswith(flag.encode() + b" ")
+    )
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr", "both"])
+def test_help_format_actual_bytes_projected_after_success(
+    tmp_path, monkeypatch, actual_help, stream
+):
+    stdout = actual_help if stream in {"stdout", "both"} else b""
+    stderr = actual_help if stream in {"stderr", "both"} else b""
+    before = set(tmp_path.rglob("*"))
+    value, calls, _ = observe(tmp_path, monkeypatch, help_text=stdout, help_stderr=stderr)
+    assert value["compatibility"] == {
+        "state": "Supported",
+        "missing_required_flags": [],
+        "reason": None,
+    }
+    assert value["reported_version"] == "1.3.4" and len(calls) == 2
+    assert host.diagnostics_complete(value)
+    assert set(tmp_path.rglob("*")) - before == {
+        tmp_path / "installation",
+        tmp_path / "installation" / "agy.exe",
+    }
+
+
+@pytest.mark.parametrize("flag", host.REQUIRED_FLAGS)
+def test_help_format_missing_declarations_are_not_supplied_by_prose(actual_help, flag):
+    text = without_usage_row(actual_help, flag)
+    text += f"\nNotes: {flag} is mentioned only in prose.\n".encode()
+    assert host.missing_flags(text) == [flag]
+
+
+@pytest.mark.parametrize("flag", host.REQUIRED_FLAGS)
+@pytest.mark.parametrize("placeholder", ["", " <value>"])
+def test_help_format_floating_option_examples_are_not_usage_rows(actual_help, flag, placeholder):
+    text = without_usage_row(actual_help, flag)
+    text += f"\nExamples:\n  {flag}{placeholder}  Planned example (high|stream-json)\n".encode()
+    assert host.missing_flags(text) == [flag]
+
+
+@pytest.mark.parametrize(
+    "original,replacement,flag",
+    [
+        (b"(low|medium|high|xhigh|max)", b"(low|medium) (high planned later)", "--effort"),
+        (b"(low|medium|high|xhigh|max)", b"(low|medium) default: high", "--effort"),
+        (b"(low|medium|high|xhigh|max)", b"High may be available later", "--effort"),
+        (b"(low|medium|high|xhigh|max)", b"(default high)", "--effort"),
+        (
+            b"(text, json, stream-json)",
+            b"(text, json) (stream-json planned later)",
+            "--output-format",
+        ),
+        (b"(text, json, stream-json)", b"(text, json) default: stream-json", "--output-format"),
+        (b"(text, json, stream-json)", b"stream-json may be available later", "--output-format"),
+    ],
+)
+def test_help_format_enum_values_belong_to_the_first_explicit_list(
+    actual_help, original, replacement, flag
+):
+    assert host.missing_flags(actual_help.replace(original, replacement)) == [flag]
+
+
+@pytest.mark.parametrize("flag", ["--effort", "--output-format"])
+def test_help_format_wrapped_prose_does_not_supply_a_usage_enum(actual_help, flag):
+    if flag == "--effort":
+        text = actual_help.replace(b"(low|medium|high|xhigh|max)", b"\n    (low|medium|high)")
+    else:
+        text = actual_help.replace(b"(text, json, stream-json)", b"\n    (text, json, stream-json)")
+    assert flag in host.missing_flags(text)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_help_format_conflicting_streams_are_order_independent(
+    tmp_path, monkeypatch, actual_help, reverse
+):
+    changed = actual_help.replace(b"(low|medium|high|xhigh|max)", b"(low|high)")
+    # Both standalone declarations support high; different declarations still conflict.
+    assert host.missing_flags(actual_help) == host.missing_flags(changed) == []
+    stdout, stderr = (changed, actual_help) if reverse else (actual_help, changed)
+    value, calls, _ = observe(tmp_path, monkeypatch, help_text=stdout, help_stderr=stderr)
+    assert len(calls) == 2
+    assert value["compatibility"] == {
+        "state": "Unsupported",
+        "missing_required_flags": ["--effort"],
+        "reason": "RequiredParametersMissing",
+    }
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_help_format_conflicting_untyped_descriptions_reject(actual_help, reverse):
+    changed = actual_help.replace(
+        b"--model                         Model for the current CLI session",
+        b"--model                         Disable model selection",
+    )
+    text = changed + b"\n" + actual_help if reverse else actual_help + b"\n" + changed
+    assert host.missing_flags(text) == ["--model"]
+
+
+@pytest.mark.parametrize("flag", ["--effort", "--output-format"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_help_format_legacy_conflicts_do_not_overwrite_supported_declarations(flag, reverse):
+    if flag == "--effort":
+        first = HELP.replace(b"<level>", b"<level> (choices: low, high)")
+        second = HELP.replace(b"<level>", b"<level> (choices: medium, high)")
+    else:
+        first = HELP.replace(b"<format>", b"<format> (choices: text, stream-json)")
+        second = HELP.replace(b"<format>", b"<format> (choices: json, stream-json)")
+    assert host.missing_flags(first) == host.missing_flags(second) == []
+    text = second + b"\n" + first if reverse else first + b"\n" + second
+    assert host.missing_flags(text) == [flag]
+
+
+def test_help_format_identical_legacy_streams_preserve_wrapped_and_alias_forms():
+    text = HELP.replace(b"--model <model>", b"--model, -m <name>").replace(
+        b"<level>", b"<level> (choices: low,\n       high)"
+    )
+    assert host.missing_flags(text + b"\n" + text) == []
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_help_format_boolean_duplicate_conflicts_do_not_overwrite(actual_help, reverse):
+    changed = actual_help.replace(
+        b"Disable slash command and skill expansion in print mode",
+        b"Enable slash command and skill expansion in print mode",
+    )
+    text = changed + b"\n" + actual_help if reverse else actual_help + b"\n" + changed
+    assert host.missing_flags(text) == ["--disable-slash-commands"]
+
+
+def test_help_format_usage_duplicate_spacing_is_not_a_conflict(actual_help):
+    changed = actual_help.replace(
+        b"Model for the current CLI session", b"Model  for\tthe current CLI session"
+    )
+    assert host.missing_flags(actual_help + b"\n" + changed) == []
+
+
+@pytest.mark.parametrize("fault", ["resume_unknown", "cleanup_unknown", "exit", "timeout"])
+def test_help_format_successful_text_cannot_bypass_help_lifecycle_gates(
+    tmp_path, monkeypatch, actual_help, fault
+):
+    def forbidden_projection(_raw):
+        pytest.fail("Help was projected before its existing lifecycle gates passed")
+
+    monkeypatch.setattr(host, "missing_flags", forbidden_projection)
+    value, calls, _ = observe(
+        tmp_path,
+        monkeypatch,
+        help_text=b"",
+        help_stderr=actual_help,
+        fault=fault,
+        fault_at="--help",
+    )
+    assert len(calls) == 2 and value["compatibility"]["state"] == "Unverified"
+    assert value["compatibility"]["reason"] in {
+        "HelpProbeFailed",
+        "DiagnosticCleanupUnverified",
+        "ProbeTimedOut",
+    }
+
+
+def test_help_format_stderr_truncation_prevents_projection(tmp_path, monkeypatch, actual_help):
+    def forbidden_projection(_raw):
+        pytest.fail("Truncated Help was projected")
+
+    monkeypatch.setattr(host, "missing_flags", forbidden_projection)
+    value, calls, _ = observe(
+        tmp_path, monkeypatch, help_text=b"x" * 262144, help_stderr=actual_help
+    )
+    assert len(calls) == 2 and value["compatibility"]["reason"] == "ProbeOutputTruncated"
+
+
+def test_help_format_incomplete_capture_prevents_projection(tmp_path, monkeypatch, actual_help):
+    actual = slice_run._launch_and_capture
+
+    def launcher(*args, **kwargs):
+        result = actual(*args, **kwargs)
+        if args[1][-1] == "--help":
+            result["capture_state"] = "incomplete"
+        return result
+
+    def forbidden_projection(_raw):
+        pytest.fail("Incomplete Help capture was projected")
+
+    monkeypatch.setattr(slice_run, "_launch_and_capture", launcher)
+    monkeypatch.setattr(host, "missing_flags", forbidden_projection)
+    value, calls, _ = observe(tmp_path, monkeypatch, help_text=b"", help_stderr=actual_help)
+    assert len(calls) == 2 and value["compatibility"]["reason"] == "HelpProbeFailed"
+
+
+def test_help_format_does_not_expand_version_to_stderr(tmp_path, monkeypatch, actual_help):
+    value, calls, _ = observe(
+        tmp_path,
+        monkeypatch,
+        version=b"",
+        version_stderr=b"1.3.4\n",
+        help_text=b"",
+        help_stderr=actual_help,
+    )
+    assert len(calls) == 1 and value["compatibility"]["reason"] == "VersionProbeFailed"
 
 
 @pytest.mark.parametrize(

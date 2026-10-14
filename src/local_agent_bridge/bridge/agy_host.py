@@ -130,37 +130,99 @@ def _declared_choice_tokens(description: str) -> list[str] | None:
     return re.findall(r"[A-Za-z][A-Za-z0-9_-]*", enum.group()) if enum else []
 
 
+def _agy_usage_rows(text: str) -> dict[int, str]:
+    """Locate the observed agy usage table, excluding prose and other sections."""
+    rows = {}
+    offset = 0
+    in_usage = False
+    for line in text.splitlines(keepends=True):
+        line_text = line.rstrip("\r\n")
+        if line_text == "Usage of agy.exe:":
+            in_usage = True
+        elif in_usage:
+            row = re.fullmatch(r"[ \t]{2,}(--[\w-]+|-\w)[ \t]{2,}(\S.*)", line_text)
+            if row is None:
+                in_usage = False
+            elif row.group(1).startswith("--"):
+                rows[offset + row.start(1)] = row.group(2)
+        offset += len(line)
+    return rows
+
+
+def _usage_choice_tokens(description: str) -> list[str] | None:
+    """Read the first complete comma/pipe enum on this usage declaration row."""
+    token = r"[A-Za-z][A-Za-z0-9_-]*"
+    for pair in re.finditer(r"\(([^()\r\n]*)\)", description):
+        values = pair.group(1)
+        if re.fullmatch(rf"[ \t]*{token}(?:[ \t]*[,|][ \t]*{token})+[ \t]*", values):
+            return re.findall(token, values)
+    return None
+
+
 def missing_flags(raw: bytes) -> list[str]:
-    """Project option declarations, allowing aliases, wrapping and extra options."""
+    """Project legacy declarations or agy usage rows; reject conflicting duplicates."""
     text = raw.decode("utf-8", "replace")
+    usage_rows = _agy_usage_rows(text)
+    usage_format = re.search(r"(?m)^Usage of agy\.exe:\r?$", text) is not None
     # A long option must occur in an option declaration, not prose mentioning it.
     declarations = {}
     starts = list(re.finditer(r"(?m)^\s*(?:(?:-\w|--[\w-]+)\s*,\s*)?(--[\w-]+)\b", text))
     for index, match in enumerate(starts):
         end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
-        declaration = text[match.end() : end].lstrip()
-        declarations[match.group(1)] = declaration
+        usage = usage_rows.get(match.start(1))
+        declaration = text[match.end() : end].lstrip() if usage is None else usage
+        if usage is None:
+            # A second help document's header is not enum metadata for this row.
+            declaration = re.split(
+                r"(?m)^(?:Options:|Usage of agy\.exe:)\r?$", declaration, maxsplit=1
+            )[0].rstrip()
+        declarations.setdefault(match.group(1), []).append((declaration, usage is not None))
     missing = []
     for flag in REQUIRED_FLAGS:
-        declaration = declarations.get(flag)
-        if declaration is None:
+        entries = declarations.get(flag)
+        if entries is None:
             missing.append(flag)
             continue
-        if flag == "--disable-slash-commands":
-            continue
-        # A declaration may list further aliases before the shared parameter form.
-        body = re.sub(r"^(?:\s*,\s*(?:-\w|--[\w-]+))+\s*", "", declaration)
-        argument = re.match(r"(?:=\s*)?(<[^>\r\n]+>|\[[^\]\r\n]+\])", body)
-        if argument is None:
-            missing.append(flag)
-            continue
+        signatures = set()
+        compatible = True
         required_value = {"--effort": "high", "--output-format": "stream-json"}.get(flag)
-        choices = _declared_choice_tokens(body[argument.end() :])
-        enum = argument.group(1)[1:-1]
-        if choices is not None or "|" in enum:
-            tokens = choices if choices is not None else re.findall(r"[A-Za-z][A-Za-z0-9_-]*", enum)
-            if required_value is not None and required_value not in tokens:
-                missing.append(flag)
+        for declaration, usage in entries:
+            if usage_format and not usage:
+                # A floating option example outside this usage table is not a row.
+                compatible = False
+                continue
+            if flag == "--disable-slash-commands":
+                first_line = declaration.splitlines()[0] if declaration else ""
+                signatures.add(("boolean", " ".join(first_line.split())))
+                continue
+            # A legacy declaration may list aliases before its shared parameter form.
+            body = re.sub(r"^(?:\s*,\s*(?:-\w|--[\w-]+))+\s*", "", declaration)
+            if usage:
+                choices = _usage_choice_tokens(body)
+                # Untyped rows do not expose parameter shape; compare the whole row.
+                signatures.add(("usage", " ".join(body.split())))
+                if required_value is not None and choices is None:
+                    compatible = False
+            else:
+                argument = re.match(r"(?:=\s*)?(<[^>\r\n]+>|\[[^\]\r\n]+\])", body)
+                if argument is None:
+                    compatible = False
+                    continue
+                choices = _declared_choice_tokens(body[argument.end() :])
+                enum = argument.group(1)[1:-1]
+                if choices is None and "|" in enum:
+                    choices = re.findall(r"[A-Za-z][A-Za-z0-9_-]*", enum)
+                signatures.add(
+                    (
+                        "parameter",
+                        argument.group(1),
+                        None if choices is None else tuple(sorted(set(choices))),
+                    )
+                )
+            if required_value is not None and choices is not None and required_value not in choices:
+                compatible = False
+        if not compatible or len(signatures) != 1:
+            missing.append(flag)
     return missing
 
 
@@ -270,7 +332,7 @@ def observe(entry_spec: dict, cwd: Path, deadline: float, observation: dict) -> 
                 return
             observation["reported_version"] = versions[0]
         else:
-            missing = missing_flags(bytes(stdout.raw))
+            missing = missing_flags(bytes(stdout.raw) + b"\n" + bytes(stderr.raw))
             if missing:
                 compatibility.update(
                     state="Unsupported",

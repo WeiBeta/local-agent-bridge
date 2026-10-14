@@ -170,6 +170,15 @@ launch_count 仍 0/1/null，诊断 count 为各项 0/1/null 的和，总数另�
 普通结果仅保存单个脱敏 agy-host-observation.json，无 raw help/stderr 或 key。
 必要声明检查容忍排版/附加选项，不锁供应商版本/全文，也不证明实际参数值或权限效果。
 
+Help 仅在原 capture/退出/截断/cleanup 门禁通过后合并 stdout 与 stderr，中间保留 LF 边界；
+Version 仍只解析 stdout。支持旧参数占位符声明和 `Usage of agy.exe:` 的连续缩进声明表；
+后一格式的 effort/output-format 必须在各自声明行明确列出含 high/stream-json 的括号枚举，
+正文、default、其他行或未来说明中的值不能补齐。出现此 Usage 标题时，表外的选项示例不作为声明。
+重复 Usage 声明比较整行描述（折叠空白）；旧格式比较参数形态与显式枚举集合；boolean 比较首行描述。
+相同声明可重复，冲突保守拒绝，不按输出先后覆盖，混合格式也不推断等价。
+离线真实字节夹具的来源、哈希、Git 换行转换和自检限制见
+[HOST-HELP-FORMAT-REPAIR-01 报告](reviews/LAB-AGY-HOST-HELP-FORMAT-REPAIR-01.md)。
+
 失败立即停止后续调用且不重试。缺参数、非零、截断或已回收 timeout 保留红结果；诊断及
 原控制 cleanup 已证闭合即可释放该位，Unsupported 不是 schema 损坏。count/cleanup 未知
 仍暂停该位；释放不等于业务 Accepted，下一独立请求不自动继承实测授权。

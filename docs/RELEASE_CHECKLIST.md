@@ -187,3 +187,11 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 - [ ] 管理冻结一次候选迁移的 wheel/canonical catalog/new receipt/profile/registry 摘要及两个无 prompt 诊断额度；保留旧部署和报告，不拿源码 sync 代替运行刷新。
 - [ ] 另按适用授权验证真实 version/help 无模型语义、正常首单、计数 2+1 和四位释放/复用；离线、自检、独立 Review、发布、业务接受分别报告。本实现真实 CLI/model/key/capture、生产/配置/Skill/远端为 0。
 - [ ] 说明 TOCTOU、磁盘 SHA 非内存 image/厂商认证、旧 provenance 仅快照、真实后端/上游模型/费用 Unknown；正常失败释放不代表兼容或 Accepted。
+
+## 实际 agy Help 格式修复候选复核项
+
+- [ ] fresh 独立 Review 核 Help 双流投影仅发生在原成功门禁之后，Version/launcher/WinJob/schema/额度不变。
+- [ ] 核原 Usage 夹具 Git blob 为 2905 字节，SHA256 `337622c6dcdcb204312277570c4173dda83f3cbf006629f0eabe657069071e7c`；checkout 仅允许 CRLF-to-LF 后核同原文。
+- [ ] 复核真实 stdout/stderr、重复一致/冲突、缺项、正文伪命中、本行枚举及旧 wrapped enum/alias/拒绝回归；重复冲突不能由先后覆盖。
+- [ ] 发源码包前补齐 `tests/fixtures/agy-help-1.3.4.txt` 的 sdist 纳入，并从实际包运行夹具测试；本修复工单未授权改 pyproject，当前仅源码 worktree 覆盖，不声称包内测试闭合。
+- [ ] 保留原自检失败、外层测试超时与最终结果的区别；离线通过不追认 LIVE-03，也不自动恢复真实调用或 Cursor。
