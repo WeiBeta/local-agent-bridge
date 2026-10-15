@@ -104,7 +104,7 @@
 | Cursor | [configuration](https://cursor.com/docs/cli/reference/configuration) 2026-10-03 | pwsh 7（产品固定） | 未核验 | 合成 smoke 文件流程+deny 正常（2026-10-03，限该范围） | 项目 `.cursor/cli.json`（仅 permissions）+ 全局 `cli-config.json` | 无（pwsh 7 依赖） |
 | agy legacy settings（历史） | [CLI reference](https://www.antigravity.google/docs/cli/reference/) 默认值 2026-10-04，其余 2026-10-03 | 直接 exe（Bridge argv） | 未核验 | 合成任务内读写、无人输入、配置恢复通过（2026-10-04）；目录外及其他权限行为未验 | CLI `antigravity-cli/settings.json` + 共享 `config/config.json` | 无（pwsh 7 辅助依赖） |
 | agy native station v4 | 产品 §18 与上述源码基线，文档核对 2026-10-13 | 受控 agy exe | 未核验 | normal 4+1 历史范围已管理核收（2026-10-12）；不外推当前目标机/版本 | 已配置 Project + registry/control root；不改全局 settings | 旧无 dispatch 的安装不能作等价回退 |
-| agy 稳定入口 v6 | 产品 §20 与源码基线 0433144，文档核对 2026-10-15 | 受控 agy exe | 未核验 | 2026-10-15 单工位限定验收：2 条无模型诊断+1 单文件 Coding 通过（AcceptedScopedFileCoding）；不外推任意版本/WorkerTesting/生产 | StableInstalledEntry 显式 opt-in；旧 v4 不自动升级，无等价回退承诺 |
+| agy 稳定入口 v6 | 产品 §20 与源码基线 0433144，文档核对 2026-10-15 | 受控 agy exe | 未核验 | 2026-10-15 单工位限定验收：2 条无模型诊断+1 单文件 Coding 通过（AcceptedScopedFileCoding）；不外推任意版本/WorkerTesting/生产 | StableInstalledEntry 显式 opt-in；沿用已配置 Project，不改全局设置 | 旧 v4 不自动升级；无等价回退承诺 |
 
 ## 管理区块格式
 
