@@ -1,6 +1,6 @@
 # Local Agent Bridge 参数与输出参考
 
-本文件随 Skill 安装，不依赖仓库外绝对路径。命令/schema 对照产品源码基线 `0e28d2bd09c88fcc2cecff9564eb6e2c8192db28`（2026-10-13）；目标安装按批准回执与获准的 help 核验。本 Skill 不安装、不升级、不登录、不改配置、不初始化密钥。
+本文件随 Skill 安装，不依赖仓库外绝对路径。命令/schema 对照产品源码基线 `043314411f7afe8f44874e3b84f509a588776576`（2026-10-15 文档核对，含合同 §20 v6 稳定入口）；目标安装按批准回执与获准的 help 核验。本 Skill 不安装、不升级、不登录、不改配置、不初始化密钥。
 
 ## 安装位置与版本
 
@@ -28,6 +28,7 @@ task dispatch --spec <absolute-json-spec> --pool-registry <absolute-registry> --
 | registry | `contract_version=1`、`id`、统一 `control_root`、完整 `deployment_receipt` seed、`policy`、1..4 条 `stations` |
 | station | `id`、`native_id`、`root`、`record`、`root_identity`；后者为 `st_dev`/`st_ino`；相同工位的调用共用 station ID/control root |
 | 逐单 deployment receipt | `contract_version=4`，加入 `native_project` 与 `station_binding`；不能把 CLI spec 版本改成 4 |
+| 逐单 deployment receipt v6 | 显式 opt-in：`contract_version=6`，`host_entry={path,install_root,identity_mode:"StableInstalledEntry"}`，较 v4 删除 `host_version`/`host_identity_files`；旧 v1–v5 strict 语义保留，registry 仍 v1；仅新原生 agy 工位，不支持 Cursor，旧 seed 不自动升级 |
 
 `task` 恰含 `role`、`capabilities`、`read_roots`、`write_roots`、`protected_paths`、`required_outputs`、`acceptance_ids`、`deadline_seconds`、`source_output_bytes_limit`。角色只有 Coding/Review；Testing 为 Coding/execute 且 work 只读，Mixed 为 Coding 工程操作；Review work 只读，写入型测试放 scratch。能力为 execute/web_reference/prepare_dependencies，当前 station 任务的后两项必须 false。相对任务路径数组与验收 ID 按合同排序去重；deadline/output 服从 policy 上限，deadline 最多 3600 秒。入场 timeout 为 null 或 0..86400 秒，实际值仍按本次获批预算。
 
@@ -36,6 +37,14 @@ registry SHA 固定原字节，不能由 Worker 换算替代。默认 `PreparedO
 `--execute` 只用于本次明确授权的任务。产品 admission/native mutex 管理空闲位与满位等待；选中工位后在 `root/jobs/<fresh UUID>` 完成 import/prepare/plan/run/collect/release，每单独立 request/root/result/capture 和新会话。调用方不手写 Accepted，不重置 state 或另建池绕过忙位。
 
 `PreparedOnly` / `Collected` 的 CLI 退出为 0，其他 dispatch 结果为 2；中断/解析异常仍按 CLI 错误回执。control_complete、launch_count=0/1/null、宿主退出、业务 Candidate/Incomplete、管理 Accepted 分开记录。`Collected` 只表示本单收集与控制收尾，不等于业务成功。
+
+### v6 稳定安装入口（显式 opt-in）与 2026-10-15 限定验收
+
+新原生 agy 工位可显式采用产品合同 §20 的 StableInstalledEntry：登记具体安装根与其唯一 agy.exe，供应商 hash/版本只记当次观察；Bridge/toolchain 字节仍 strict 绑定，正常 CLI 更新按当次观察处理，不写回 receipt/plan/registry，也不因更新自动重部署。旧 v1–v5 strict 语义保留；启用由管理一次冻结新 wheel、实际模块 catalog、receipt/profile/registry SHA 与诊断额度，旧 v4 不自动升级，也不支持 Cursor。
+
+实际执行前最多两条无 prompt --version/--help 诊断，再最多一次业务：诊断各至多 10 秒、共用本任务剩余执行预算（cleanup 另计），两流 RAM 合计上限 8 KiB/256 KiB；业务 launch_count 仍 0/1/null，诊断各 0/1/null、求和 0..2/null，总数另算。失败立即停止且不重试；诊断与控制 cleanup 已证闭合的失败可正常释放工位，Unsupported 不是 schema 损坏，释放不等于业务 Accepted。只落单个脱敏 agy-host-observation.json，无 raw help/stderr 或 key。
+
+2026-10-15 管理限定裁决 AcceptedScopedFileCoding：冻结源码 043314411f7afe8f44874e3b84f509a588776576，agy 1.3.4、固定模型路由（gemini-3.8-flash-high/high，不证上游实际身份）、900 秒本次任务合同、单合成文件 Coding；2 诊断+1 业务通过，独立四例 4/4。仅此范围成立，不外推任意更新版本、v6 Worker Testing、全产品或生产；900 是该次实验值，deadline 仍为每单显式 1..3600 秒，无新默认或新门禁。本机正式安装仍 a66/v4；该次验收所用 ff062390 wheel 构建自 043 源码，本文档所在新 HEAD 不是其构建来源。
 
 ## Task v1 多步工作流
 

@@ -89,6 +89,14 @@
 - `permissions.deny` 对 `always-proceed` 的优先级在 Windows 的实际表现（官方文档说 deny 优先，本机未测）。
 - CLI 层 `allowNonWorkspaceAccess=false` 与共享层 `ALLOW` 的合并顺序。
 
+### agy 稳定安装入口 v6（显式 opt-in，2026-10-15 补记）
+
+产品依据：TASK_WORKSPACE_CONTRACT.md §20 与 task_run/agy_host，源码基线 043314411f7afe8f44874e3b84f509a588776576（2026-10-15 文档核对）。v6 仅用于新的原生 agy 工位：host_entry 恰为 {path,install_root,identity_mode:"StableInstalledEntry"}，path 必须是获准 install_root 下唯一 agy.exe；旧 v1–v5 strict、registry v1/policy/Project/任务/lease 与 Bridge/toolchain 字节校验保留，旧 v4 seed/安装不自动升级，未知/混合 seed 拒绝。
+
+启用迁移由管理一次冻结新 wheel、实际模块 catalog、新 receipt/profile/registry SHA 与“2 诊断+1 业务”额度；源码 worktree sync 或文档更新不是生产刷新，也不写 global settings、原生 record 或 AGENTS。供应商正常更新按当次观察处理，hash/版本不写回 receipt/plan/registry，不要求每次更新重部署 Bridge；Bridge/toolchain 仍按既有合同绑定，观察结果不是未来版本的兼容保证。
+
+当前本机状态（2026-10-15）：正式安装与发布 registry 仍为 a66 wheel / receipt v4；候选 043 源码的 ff062390 wheel 已在 Scratch 完成限定验收 AcceptedScopedFileCoding（agy 1.3.4、固定模型路由、900 秒本次合同、单合成文件 Coding；2 诊断+1 业务、独立四例 4/4），未晋升正式安装。该验收不外推任意更新版本、v6 Worker Testing、全产品或生产；本参考所在源码新 HEAD 也不是 ff062390 wheel 的构建来源。并排正式安装与 v6 registry 绑定发布另按集中批准执行。
+
 ## 兼容表（持续维护）
 
 | Bridge | 官方来源及核验日 | 启动 Shell | Worker Shell | 本机实测 | 指令文件与作用域 | 降级支持 |
@@ -96,6 +104,7 @@
 | Cursor | [configuration](https://cursor.com/docs/cli/reference/configuration) 2026-10-03 | pwsh 7（产品固定） | 未核验 | 合成 smoke 文件流程+deny 正常（2026-10-03，限该范围） | 项目 `.cursor/cli.json`（仅 permissions）+ 全局 `cli-config.json` | 无（pwsh 7 依赖） |
 | agy legacy settings（历史） | [CLI reference](https://www.antigravity.google/docs/cli/reference/) 默认值 2026-10-04，其余 2026-10-03 | 直接 exe（Bridge argv） | 未核验 | 合成任务内读写、无人输入、配置恢复通过（2026-10-04）；目录外及其他权限行为未验 | CLI `antigravity-cli/settings.json` + 共享 `config/config.json` | 无（pwsh 7 辅助依赖） |
 | agy native station v4 | 产品 §18 与上述源码基线，文档核对 2026-10-13 | 受控 agy exe | 未核验 | normal 4+1 历史范围已管理核收（2026-10-12）；不外推当前目标机/版本 | 已配置 Project + registry/control root；不改全局 settings | 旧无 dispatch 的安装不能作等价回退 |
+| agy 稳定入口 v6 | 产品 §20 与源码基线 0433144，文档核对 2026-10-15 | 受控 agy exe | 未核验 | 2026-10-15 单工位限定验收：2 条无模型诊断+1 单文件 Coding 通过（AcceptedScopedFileCoding）；不外推任意版本/WorkerTesting/生产 | StableInstalledEntry 显式 opt-in；旧 v4 不自动升级，无等价回退承诺 |
 
 ## 管理区块格式
 
