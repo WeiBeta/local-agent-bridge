@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,6 +41,111 @@ FIXTURE_GRAND_SPAWNER = TESTS_ROOT / "fixtures" / "ag_oneshot" / "ag_grand_spawn
 
 def child_argv(*args: str) -> list[str]:
     return [sys.executable, str(FIXTURE_CHILD), *args]
+
+
+def fake_snapshot_kernel(monkeypatch, *, snapshot, thread_first, thread_next=None):
+    calls = []
+
+    def create_snapshot(flags, process_id):
+        calls.append(("snapshot", flags, process_id))
+        return snapshot
+
+    def first_thread(handle, entry_pointer):
+        calls.append(("first", handle))
+        return thread_first(handle, entry_pointer)
+
+    def next_thread(handle, entry_pointer):
+        calls.append(("next", handle))
+        return False if thread_next is None else thread_next(handle, entry_pointer)
+
+    def close_handle(handle):
+        calls.append(("close", handle))
+        return True
+
+    monkeypatch.setattr(
+        winjob,
+        "_kernel",
+        SimpleNamespace(
+            CreateToolhelp32Snapshot=create_snapshot,
+            Thread32First=first_thread,
+            Thread32Next=next_thread,
+            CloseHandle=close_handle,
+        ),
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [None, 0, (1 << (winjob.ctypes.sizeof(winjob.wintypes.HANDLE) * 8)) - 1],
+    ids=["none", "zero", "sentinel"],
+)
+def test_snapshot_failure_rejects_invalid_handle_before_enumeration(monkeypatch, snapshot):
+    calls = fake_snapshot_kernel(
+        monkeypatch,
+        snapshot=snapshot,
+        thread_first=lambda *_: pytest.fail("invalid handle reached enumeration"),
+    )
+    monkeypatch.setattr(winjob.ctypes, "get_last_error", lambda: 1234)
+
+    with pytest.raises(AgWinJobError) as error:
+        winjob._snapshot_thread_ids(42)
+
+    assert error.value.stage == "thread_snapshot_failed"
+    assert error.value.detail == "last_error=1234"
+    assert calls == [("snapshot", winjob._TH32CS_SNAPTHREAD, 0)]
+
+
+def test_snapshot_valid_empty_handle_closes_once(monkeypatch):
+    calls = fake_snapshot_kernel(monkeypatch, snapshot=123, thread_first=lambda *_: False)
+
+    assert winjob._snapshot_thread_ids(42) == []
+    assert calls == [
+        ("snapshot", winjob._TH32CS_SNAPTHREAD, 0),
+        ("first", 123),
+        ("close", 123),
+    ]
+
+
+def test_snapshot_valid_handle_returns_matching_thread_and_closes_once(monkeypatch):
+    def first_thread(_handle, entry_pointer):
+        entry = entry_pointer._obj
+        entry.th32OwnerProcessID = 42
+        entry.th32ThreadID = 77
+        return True
+
+    calls = fake_snapshot_kernel(monkeypatch, snapshot=123, thread_first=first_thread)
+
+    assert winjob._snapshot_thread_ids(42) == [77]
+    assert calls == [
+        ("snapshot", winjob._TH32CS_SNAPTHREAD, 0),
+        ("first", 123),
+        ("next", 123),
+        ("close", 123),
+    ]
+
+
+def test_snapshot_enumeration_exception_closes_once(monkeypatch):
+    error = OSError("synthetic enumeration failure")
+
+    def fail_enumeration(*_args):
+        raise error
+
+    calls = fake_snapshot_kernel(
+        monkeypatch,
+        snapshot=123,
+        thread_first=fail_enumeration,
+    )
+
+    with pytest.raises(OSError) as caught:
+        winjob._snapshot_thread_ids(42)
+
+    assert caught.value is error
+    assert calls == [
+        ("snapshot", winjob._TH32CS_SNAPTHREAD, 0),
+        ("first", 123),
+        ("close", 123),
+    ]
 
 
 def test_quick_run_through_suspended_job_spawn():

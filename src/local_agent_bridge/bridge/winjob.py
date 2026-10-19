@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 _WIN32 = sys.platform == "win32"
+_INVALID_HANDLE_VALUE = (1 << (ctypes.sizeof(wintypes.HANDLE) * 8)) - 1
 
 if _WIN32:
     _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -311,7 +312,8 @@ def assign_to_job(job: int, proc: subprocess.Popen) -> None:
 
 def _snapshot_thread_ids(pid: int) -> list[int]:
     snapshot = _kernel.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
-    if not snapshot:
+    snapshot_value = None if snapshot is None else int(snapshot)
+    if not snapshot_value or snapshot_value == _INVALID_HANDLE_VALUE:
         raise AgWinJobError("thread_snapshot_failed", f"last_error={ctypes.get_last_error()}")
     identifiers: list[int] = []
     try:
