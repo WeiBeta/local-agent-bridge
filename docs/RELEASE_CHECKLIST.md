@@ -182,7 +182,7 @@ LAB-FIRST-R-OBSERVATION-CONTRACT-01 改变共享 receipt 加载源码和首次�
 ## agy receipt v6 更新解耦候选复核项
 
 - [ ] fresh 独立 Review 核仅显式 v6 StableInstalledEntry，旧 v1–v5 strict 不变，registry v1/policy/Project/任务/lease 及 Bridge/toolchain/catalog 精确绑定；未吸收暂停 Cursor 候选。
-- [ ] native-conversation 固定错误分类复核：503容量、其它/缺失/类型不明、成功无错误、成功但带错误、凭据/URL/userinfo、多行与超长输入均有正负例；重复 init/result与CID/cwd/model失败仍原语义，SUCCESS/blockers/退出/权限/锁/时限不变，且回执不含任意上游文本。
+- [ ] native-conversation 固定错误分类复核：503容量、其它/缺失/类型不明、成功无错误、成功但带错误、凭据/URL/userinfo、多行与超长输入均有正负例；只有Observed且matched才归属类别，Mismatch/Unknown两字段null，SUCCESS带error使用中性说明；重复 init/result与CID/cwd/model/toolCID失败仍原语义，SUCCESS/blockers/退出/权限/锁/时限不变，且回执不含任意上游文本。
 - [ ] R01–R10 聚焦 JUnit：稳定根正常更新；旧合同/closed shape；来源逃逸；两条原 launcher RAM 诊断；help 宽容；已闭合失败释放；未知挂起；单观察 SHA/task-plan/脱敏；必要 native 终态与附加事件；中断/NotRun。
 - [ ] wheel 含实际 agy_host 模块，sdist 含新测试与共享夹具清单；只更新分发清单，不加依赖或改 uv.lock；适用回归、ruff/format 与原 exit/JUnit 保留。
 - [ ] 管理冻结一次候选迁移的 wheel/canonical catalog/new receipt/profile/registry 摘要及两个无 prompt 诊断额度；保留旧部署和报告，不拿源码 sync 代替运行刷新。

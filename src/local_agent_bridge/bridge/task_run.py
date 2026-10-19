@@ -113,7 +113,7 @@ _STABLE_RECEIPT_KEYS = _RECEIPT_KEYS - {"host_version", "host_identity_files"}
 _NATIVE_ERROR_TEXT_LIMIT = 512
 _NATIVE_UNKNOWN_ERROR = (
     "Unknown",
-    "Native reported an unsuccessful terminal state; details withheld.",
+    "Native error details are unavailable or did not match a known category.",
 )
 _NATIVE_CAPACITY_ERROR = (
     "ProviderCapacityUnavailable",
@@ -1763,7 +1763,9 @@ def _station_conversation(writer: session.SessionWriter, root: Path) -> dict:
         status = terminal[0].get("status")
         if type(status) is not str or len(status) > 128:
             raise TaskRunError("NativeConversationUnverified")
-        error_category, error_summary = _native_error_summary(status, terminal[0].get("error"))
+        error_category = error_summary = None
+        if matched:
+            error_category, error_summary = _native_error_summary(status, terminal[0].get("error"))
         return {
             "status": "Observed" if matched else "Mismatch",
             "conversation_id": cid,
@@ -1775,7 +1777,12 @@ def _station_conversation(writer: session.SessionWriter, root: Path) -> dict:
             "error_summary": error_summary,
         }
     except (OSError, TaskRunError, contract.BridgeContractError, session.SessionError):
-        return {"status": "Unknown", "conversation_id": None}
+        return {
+            "status": "Unknown",
+            "conversation_id": None,
+            "error_category": None,
+            "error_summary": None,
+        }
 
 
 def _execute_once(

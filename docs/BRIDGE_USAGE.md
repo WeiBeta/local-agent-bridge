@@ -171,8 +171,9 @@ launch_count 仍 0/1/null，诊断 count 为各项 0/1/null 的和，总数另�
 必要声明检查容忍排版/附加选项，不锁供应商版本/全文，也不证明实际参数值或权限效果。
 
 业务终态投影另保存 native-conversation.json。`result_status` 与原 SUCCESS 门禁不变；
-非 SUCCESS 可附带固定 `error_category/error_summary`。已知 503 容量错误显示
-`ProviderCapacityUnavailable` 与固定短说明，其它错误显示 `Unknown` 与通用说明。
+仅身份匹配的 Observed且非 SUCCESS 可附带固定 `error_category/error_summary`。已知 503
+容量错误显示 `ProviderCapacityUnavailable` 与固定短说明，其它错误显示 `Unknown` 与
+中性说明；Mismatch/Unknown 不归属具体原因，两字段均null。
 错误原文由不可信上游产生，不截断后转发；分类最多读取512字符并只输出固定标签，
 不携带凭据、URL、多行或超长文本。重复 init/result、CID/cwd/model 不匹配仍按原
 `NativeConversationUnverified` 语义阻断，新增字段不改变退出码、权限、锁、时限、

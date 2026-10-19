@@ -109,7 +109,12 @@ def test_station_conversation_rejects_duplicate_result_before_error_projection(t
     events = conversation_events(tmp_path, result=result)
     events.append(events[-1])
     observation = runner._station_conversation(ConversationStream(events), tmp_path)
-    assert observation == {"status": "Unknown", "conversation_id": None}
+    assert observation == {
+        "status": "Unknown",
+        "conversation_id": None,
+        "error_category": None,
+        "error_summary": None,
+    }
 
 
 def test_station_conversation_keeps_identity_gate_and_safe_error_projection(tmp_path):
@@ -119,7 +124,8 @@ def test_station_conversation_keeps_identity_gate_and_safe_error_projection(tmp_
     observation = runner._station_conversation(ConversationStream(events), tmp_path)
     assert observation["status"] == "Mismatch"
     assert observation["result_status"] == "ERROR"
-    assert observation["error_category"] == "ProviderCapacityUnavailable"
+    assert observation["error_category"] is None
+    assert observation["error_summary"] is None
 
 
 def test_capacity_error_summary_reaches_dispatch_receipt(tmp_path, monkeypatch):
@@ -141,3 +147,46 @@ def test_capacity_error_summary_reaches_dispatch_receipt(tmp_path, monkeypatch):
     }
     assert "NativeConversationUnverified" in outcome["run"]["blockers"]
     assert "SYNTHETIC_TOKEN" not in json.dumps(outcome["native_conversation"])
+
+
+@pytest.mark.parametrize(
+    "error",
+    [CAPACITY_ERROR, "", {}],
+    ids=["capacity-error", "empty-string", "object-error"],
+)
+def test_success_summary_does_not_claim_unsuccessful_terminal(tmp_path, error):
+    records = conversation_events(tmp_path, result={"status": "SUCCESS", "error": error})
+    observation = runner._station_conversation(ConversationStream(records), tmp_path)
+    assert observation["status"] == "Observed"
+    assert observation["result_status"] == "SUCCESS"
+    assert observation["error_category"] == "Unknown"
+    assert "unsuccessful terminal state" not in observation["error_summary"].casefold()
+
+
+@pytest.mark.parametrize("mismatch", ["result-cid", "model", "cwd", "tool-cid"])
+def test_mismatched_stream_does_not_attribute_capacity_cause_to_task(tmp_path, mismatch):
+    records = conversation_events(tmp_path, result={"status": "ERROR", "error": CAPACITY_ERROR})
+    if mismatch == "result-cid":
+        records[-1]["result"]["conversation_id"] = "foreign-conversation"
+    elif mismatch == "model":
+        records[0]["init"]["model"] = "foreign-model"
+    elif mismatch == "cwd":
+        other = tmp_path / "other"
+        other.mkdir()
+        records[0]["init"]["cwd"] = str(other)
+    else:
+        records.insert(
+            1,
+            {
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "tool",
+                    "conversation_id": "foreign-conversation",
+                },
+            },
+        )
+    observation = runner._station_conversation(ConversationStream(records), tmp_path)
+    assert observation["status"] == "Mismatch"
+    assert observation["result_status"] == "ERROR"
+    assert observation["error_category"] is None
+    assert observation["error_summary"] is None
