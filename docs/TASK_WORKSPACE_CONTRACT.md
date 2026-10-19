@@ -735,7 +735,7 @@ v4 receipt 恰为原 `_RECEIPT_KEYS` 加 native_project 与 station_binding；�
 
 request 及 trusted 目录首次 mkdir 前复用普通路径链检查，拒绝目标或父链中的 junction/reparse；收尾写入再次检查。检查是该步骤的时间点核验，不宣称消除链路被随后替换的竞态。
 
-本次 producer 在管道关闭后、seal 前以已在内存的密钥认证读取自己的 stdout，投影有界 init/result/tool conversation ID；不再读取密钥或历史 capture。seal 后保存 native-conversation.json 为原 evidence_refs/collector 副本。唯一 init/result、合法 ID、cwd、固定 model 和可见 tool IDs 匹配为 Observed；可见不匹配为 Mismatch，缺失/格式未知为 Unknown、conversation_id=null。capture UID 不代替 native conversation ID；投影不证明全部工具行为或业务成功。仅 Observed且非 SUCCESS 时另含 `error_category/error_summary`：最多512字符的样本同时匹配 UNAVAILABLE、503 与 no capacity available 时，才输出固定 `ProviderCapacityUnavailable` 与固定短说明；其它错误、缺失或类型不明只输出 `Unknown` 与中性固定说明。Mismatch与Unknown不归属具体原因，两字段均为null。新增字段不携带上游原文、凭据、URL、多行或超长文本，也不改变 result_status、唯一 init/result/CID/tool 门禁、blockers 或业务 Accepted 语义。
+本次 producer 在管道关闭后、seal 前以已在内存的密钥认证读取自己的 stdout，投影有界 init/result/tool conversation ID；不再读取密钥或历史 capture。seal 后保存 native-conversation.json 为原 evidence_refs/collector 副本。唯一 init/result、合法 ID、cwd、固定 model 和可见 tool IDs 匹配为 Observed；可见不匹配为 Mismatch，缺失/格式未知为 Unknown、conversation_id=null。capture UID 不代替 native conversation ID；投影不证明全部工具行为或业务成功。Observed 且非 SUCCESS 时另含 `error_category/error_summary`：最多512字符的样本同时匹配 UNAVAILABLE、503 与 no capacity available 时，才输出固定 `ProviderCapacityUnavailable` 与固定短说明；其它错误、缺失或类型不明只输出 `Unknown` 与中性固定说明。Observed 的 SUCCESS 若同时带有非 null 的 error，也输出 `Unknown` 与中性说明，不改变 SUCCESS 或原验收门禁；SUCCESS 的 error 缺失或为 null 时，两字段均为 null。Mismatch与Unknown不归属具体原因，两字段均为null。新增字段不携带上游原文、凭据、URL、多行或超长文本，也不改变 result_status、唯一 init/result/CID/tool 门禁、blockers 或业务 Accepted 语义。
 
 ### 完成、失败和保留
 
