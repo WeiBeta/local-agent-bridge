@@ -246,6 +246,14 @@ def load_registry(path: Path, expected: str) -> dict:
         ),
         "StationRootOverlap",
     )
+    require(
+        not any(
+            paths._is_within(entry.record, station.root)
+            for entry in stations
+            for station in stations
+        ),
+        "StationRecordRootOverlap",
+    )
     return {
         "document": value,
         "stations": stations,

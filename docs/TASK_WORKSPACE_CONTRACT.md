@@ -721,7 +721,7 @@ policy.roles 固定 `["Coding","Review"]`；capabilities 为既有三布尔能�
 
 四根忙时第五单先等待，取得 mutex 后才校验选中根的物理身份、读取其恢复状态及原生记录、建立新任务根与单任务授权。拒绝同线程递归取得同一工位。状态文件不是所有权锁；Idle/Reserved/Running/Suspended 仅记录恢复事实。遗弃 mutex 或无持有者却仍 Reserved/Running 时，保留 previous 并暂停该根；无效状态原字节保留并使该根不可用；本次尝试移除它并继续其他根。没有自动重跑、全池停机或后台修复。恢复需要管理核清原进程、绑定和材料后显式处理该根状态；不得靠删除证据恢复。
 
-注册表的 schema、policy、路径拼写、重复身份与重叠是全局拒绝条件。选中工位的 root/record 是否存在、是否普通文件链及物理身份是否仍一致，在持锁后检查；单工位不可用不阻止健康位入场，也不在坏位建立 job。state 的路径拒绝或无效原字节保留；写 Suspended 失败时保留原材料并记录有界类型诊断。本次尝试只移除坏位，不替它修复配置或执行任务。
+注册表的 schema、policy、路径拼写、重复身份与重叠是全局拒绝条件。每条 record 的路径须位于全部工位资源根之外；跨工位 record/root 包含关系以 StationRecordRootOverlap 拒绝，不读取原生记录。位于 control_root 内且仍在全部资源根之外的 record 不因此拒绝。选中工位的 root/record 是否存在、是否普通文件链及物理身份是否仍一致，在持锁后检查；单工位不可用不阻止健康位入场，也不在坏位建立 job。state 的路径拒绝或无效原字节保留；写 Suspended 失败时保留原材料并记录有界类型诊断。本次尝试只移除坏位，不替它修复配置或执行任务。
 
 选中 record 在创建 Lease/job 前复用 `read_host_input_bytes` 的实际单链接、读取上限与 descriptor/path 身份门禁；硬链接、读取失败或读取期间身份变化使本位不可用，原记录字节保留，继续选择健康位。物化 receipt 时仍用同一读取器做当步核验，不预读所有 native record。普通 source/import 输入错误保持启动前失败语义，不据此暂停正常工位。
 
@@ -740,6 +740,8 @@ request 及 trusted 目录首次 mkdir 前复用普通路径链检查，拒绝�
 ### 完成、失败和保留
 
 单次 launch_count 保留 0/1/null，宿主 transport、business 与管理决定分别记录。控制闭合要求零启动且无不完整 capture/失败配置状态，或一次启动、capture Sealed、原生绑定 Unchanged 和 launch 记录中的 child_exit_observed/pipes_closed/job_closed 全 true。宿主非零退出、预期红测试、Review findings 或收集层业务错误不会单独变成失去控制。控制未闭合、绑定/权限政策漂移或 release 不可确认仅暂停自身根；原生普通显示元数据漂移可接受，不核全工位历史 hash。
+
+capture 初始化在 bundle 目录创建后失败时，保留目录及已有文件，并在原异常上携带 capture_start_uid；run 据此记录该 UID 和 Incomplete，零启动也暂停本位。mkdir 抛错后只有确认 bundle 不存在才按无残留处理，无法核清时保留 Incomplete；配额/入锁等创建前失败及已确认无目录的 mkdir 失败仍为 NotRun，不单独导致暂停。原异常类型与 KeyboardInterrupt/SystemExit 身份保持，不能用清理或次生观察失败替换。
 
 进入 run 立即撤销启动前的 control_complete=true，并将无有效回执时的 launch_count 保留为 null。正常返回和异常恢复均复用 collector 的完整 run schema/本单 Task/Plan 绑定验证，再核必要 launch 清理字段及本次 run 内的 HostObserved SHA 引用；只有这些有效证据可以恢复控制闭合。run 缺失、读取拒绝、结构不足或错绑定，以及必要 launch 证据缺失/不足，均保留原失败与 null、暂停本位，不自动重跑。恢复读取的次生失败使用有界类型诊断，不能覆盖原 KeyboardInterrupt/SystemExit。有效控制已闭合的业务红或宿主非零退出仍可释放。
 

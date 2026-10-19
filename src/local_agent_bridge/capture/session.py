@@ -122,6 +122,7 @@ class SessionStore:
         )
 
     def start(self) -> SessionWriter:
+        """Retain failed bundles and bind their UID to the original exception."""
         session_id = str(uuid4())
         created_utc = datetime.now(UTC).isoformat()
         open_record = {
@@ -132,16 +133,36 @@ class SessionStore:
             "state": "partial",
         }
         payload = _canonical(open_record) + b"\n"
-        with self.domain.locked():
-            self.domain.reserve(len(payload) + len(MAGIC) * len(STREAMS), new_active=True)
-            path = self.domain.root / session_id
-            path.mkdir()
-            with (path / "open.json").open("xb") as stream:
-                stream.write(payload)
-            for name in STREAMS:
-                with (path / f"{name}.partial").open("xb") as stream:
-                    stream.write(MAGIC)
-        return SessionWriter(self, session_id, created_utc)
+        path = self.domain.root / session_id
+        mkdir_attempted = created = False
+        try:
+            with self.domain.locked():
+                self.domain.reserve(len(payload) + len(MAGIC) * len(STREAMS), new_active=True)
+                mkdir_attempted = True
+                path.mkdir()
+                created = True
+                with (path / "open.json").open("xb") as stream:
+                    stream.write(payload)
+                for name in STREAMS:
+                    with (path / f"{name}.partial").open("xb") as stream:
+                        stream.write(MAGIC)
+            return SessionWriter(self, session_id, created_utc)
+        except BaseException as error:
+            if mkdir_attempted and not created:
+                # mkdir may have created the bundle before raising. Only a
+                # confirmed absence can rule out residue; retain the primary
+                # exception even if the observation itself fails or interrupts.
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    pass
+                except BaseException:
+                    created = True
+                else:
+                    created = True
+            if created:
+                error.capture_start_uid = session_id
+            raise
 
     def _verify_bundle(self, path: Path) -> dict:
         if (

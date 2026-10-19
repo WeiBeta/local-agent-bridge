@@ -28,6 +28,66 @@ def _sealed(store: SessionStore, payload: bytes = TOKEN):
     return writer
 
 
+@pytest.mark.parametrize("point", ["open_record", "writer"])
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
+def test_start_retains_bundle_and_original_exception(tmp_path, monkeypatch, point, error_type):
+    store = SessionStore(KEY, root=tmp_path / "sessions")
+    primary = error_type("synthetic capture initialization failure")
+    original_open = Path.open
+
+    def opening(target, *args, **kwargs):
+        if target.parent.parent == store.domain.root and target.name == "open.json":
+            raise primary
+        return original_open(target, *args, **kwargs)
+
+    def writer(*args, **kwargs):
+        raise primary
+
+    if point == "open_record":
+        monkeypatch.setattr(Path, "open", opening)
+    else:
+        monkeypatch.setattr(session, "SessionWriter", writer)
+    with pytest.raises(error_type) as caught:
+        store.start()
+    assert caught.value is primary
+    bundle = store.domain.root / primary.capture_start_uid
+    assert bundle.is_dir() and not (bundle / "seal.json").exists()
+    if point == "open_record":
+        assert not list(bundle.iterdir())
+    else:
+        assert (bundle / "open.json").is_file()
+        assert all((bundle / (name + ".partial")).is_file() for name in session.STREAMS)
+        assert store.domain.status()["active_or_partial"] == 1
+
+
+@pytest.mark.parametrize("probe_error_type", [PermissionError, KeyboardInterrupt])
+def test_start_unconfirmed_mkdir_residue_keeps_primary_exception(
+    tmp_path, monkeypatch, probe_error_type
+):
+    store = SessionStore(KEY, root=tmp_path / "sessions")
+    primary = OSError("synthetic mkdir failure")
+    original_mkdir, original_lstat = Path.mkdir, Path.lstat
+    attempted = []
+
+    def mkdir(target, *args, **kwargs):
+        if target.parent == store.domain.root:
+            attempted.append(target)
+            raise primary
+        return original_mkdir(target, *args, **kwargs)
+
+    def lstat(target, *args, **kwargs):
+        if target in attempted:
+            raise probe_error_type("synthetic residue observation failure")
+        return original_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(OSError) as caught:
+        store.start()
+    assert caught.value is primary
+    assert attempted == [store.domain.root / primary.capture_start_uid]
+
+
 def test_sealed_roundtrip_and_no_plaintext_disk(tmp_path: Path) -> None:
     store = SessionStore(KEY, root=tmp_path / "sessions")
     writer = _sealed(store)

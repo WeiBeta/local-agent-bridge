@@ -2047,6 +2047,10 @@ def _execute_once(
                     result["blockers"].append("NativeConversationUnverified")
         except BaseException as error:
             result["launch_count"] = lifecycle.launch_count
+            capture_start_uid = getattr(error, "capture_start_uid", None)
+            if writer is None and isinstance(capture_start_uid, str):
+                result["capture_uid"] = capture_start_uid
+                result["capture_state"] = "Incomplete"
             if not isinstance(error, Exception):
                 interrupted = error
             result["transport_state"] = "Failed"

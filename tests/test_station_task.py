@@ -296,6 +296,102 @@ def test_unconfirmed_capture_cleanup_suspends_only_own_slot_then_other_completes
     assert other["station_id"] != failed["station_id"]
 
 
+@pytest.mark.parametrize("point", ["after_mkdir", "stream_open"])
+def test_capture_start_residue_suspends_without_host_launch(tmp_path, monkeypatch, point):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    calls = install_host(case, monkeypatch)
+    original_mkdir, original_open = Path.mkdir, Path.open
+
+    def mkdir(target, *args, **kwargs):
+        result = original_mkdir(target, *args, **kwargs)
+        if point == "after_mkdir" and target.parent == case.store.domain.root:
+            raise OSError("synthetic failure after bundle creation")
+        return result
+
+    def opening(target, *args, **kwargs):
+        if (
+            point == "stream_open"
+            and target.parent.parent == case.store.domain.root
+            and target.name == "request.partial"
+        ):
+            raise OSError("synthetic failure after open record")
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(Path, "open", opening)
+    outcome = dispatch(path, pin, spec, execute=True)
+    run = read(Path(outcome["terminal_path"]).parent / "run/run.json")
+    assert calls == [] and outcome["launch_count"] == run["launch_count"] == 0
+    assert run["capture_state"] == "Incomplete"
+    assert not outcome["control_complete"] and outcome["release_state"] == "Suspended"
+    state = read(Path(document["control_root"]) / "states" / (outcome["station_id"] + ".json"))
+    assert state["state"] == "Suspended"
+    bundles = [p for p in case.store.domain.root.iterdir() if p.is_dir()]
+    assert len(bundles) == 1 and bundles[0].name == run["capture_uid"]
+    assert not (bundles[0] / "seal.json").exists()
+    if point == "stream_open":
+        assert (bundles[0] / "open.json").is_file()
+        assert (bundles[0] / "task.partial").is_file()
+        assert case.store.domain.status()["active_or_partial"] == 1
+
+
+@pytest.mark.parametrize("primary_type", [KeyboardInterrupt, SystemExit])
+def test_capture_start_interrupt_saves_incomplete_run_and_suspends(
+    tmp_path, monkeypatch, primary_type
+):
+    case, path, pin, document, spec = configured(tmp_path, monkeypatch, count=1)
+    calls = install_host(case, monkeypatch)
+    primary = primary_type("synthetic capture start interrupt")
+    original_open = Path.open
+
+    def opening(target, *args, **kwargs):
+        if target.parent.parent == case.store.domain.root and target.name == "request.partial":
+            raise primary
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opening)
+    with pytest.raises(primary_type) as caught:
+        dispatch(path, pin, spec, execute=True)
+    assert caught.value is primary and calls == []
+    request = next((Path(document["control_root"]) / "requests").iterdir())
+    run = read(request / "run/run.json")
+    assert run["launch_count"] == 0 and run["capture_state"] == "Incomplete"
+    assert (case.store.domain.root / run["capture_uid"] / "open.json").is_file()
+    saved = read(request / "dispatch-cleanup.json")
+    assert not saved["control_complete"] and saved["release_state"] == "Suspended"
+    state = read(
+        Path(document["control_root"]) / "states" / (document["stations"][0]["id"] + ".json")
+    )
+    assert state["state"] == "Suspended"
+
+
+@pytest.mark.parametrize("point", ["reserve", "mkdir"])
+def test_capture_start_without_residue_releases_without_host_launch(tmp_path, monkeypatch, point):
+    case, path, pin, _document, spec = configured(tmp_path, monkeypatch, count=1)
+    calls = install_host(case, monkeypatch)
+    original_mkdir = Path.mkdir
+
+    def mkdir(target, *args, **kwargs):
+        if target.parent == case.store.domain.root:
+            raise PermissionError("synthetic mkdir refused before creation")
+        return original_mkdir(target, *args, **kwargs)
+
+    if point == "reserve":
+
+        def reserve(*args, **kwargs):
+            raise OSError("synthetic reserve refused before creation")
+
+        monkeypatch.setattr(case.store.domain, "reserve", reserve)
+    else:
+        monkeypatch.setattr(Path, "mkdir", mkdir)
+    outcome = dispatch(path, pin, spec, execute=True)
+    run = read(Path(outcome["terminal_path"]).parent / "run/run.json")
+    assert calls == [] and outcome["launch_count"] == run["launch_count"] == 0
+    assert run["capture_state"] == "NotRun" and run["capture_uid"] is None
+    assert outcome["control_complete"] and outcome["release_state"] == "Released"
+    assert not any(p.is_dir() for p in case.store.domain.root.iterdir())
+
+
 def test_prelaunch_import_failure_releases_without_key_or_host_retry(tmp_path, monkeypatch):
     _case, path, pin, _document, spec = configured(tmp_path, monkeypatch, count=1)
     monkeypatch.setattr(fixtures.slice_run, "_session_store", lambda: pytest.fail("key load"))

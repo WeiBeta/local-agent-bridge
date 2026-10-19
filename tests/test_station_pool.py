@@ -74,6 +74,43 @@ def save_registry(path, document):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("record_index,root_index", [(0, 1), (1, 0)])
+def test_registry_rejects_record_inside_any_station_root_without_reading_records(
+    tmp_path, monkeypatch, record_index, root_index
+):
+    path, _pin, document = registry(tmp_path, 2)
+    item = document["stations"][record_index]
+    nested = Path(document["stations"][root_index]["root"]) / (item["native_id"] + ".json")
+    item["record"] = str(nested)
+    pin = save_registry(path, document)
+    original_open = Path.open
+
+    def opening(target, *args, **kwargs):
+        assert target not in [Path(s["record"]) for s in document["stations"]]
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opening)
+    with pytest.raises(pool.StationError) as caught:
+        pool.load_registry(path, pin)
+    assert caught.value.code == "StationRecordRootOverlap"
+
+
+def test_registry_allows_external_records_under_control_without_reading_them(tmp_path, monkeypatch):
+    path, _pin, document = registry(tmp_path, 2)
+    item = document["stations"][1]
+    item["record"] = str(Path(document["control_root"]) / (item["native_id"] + ".json"))
+    pin = save_registry(path, document)
+    original_open = Path.open
+
+    def opening(target, *args, **kwargs):
+        assert target not in [Path(s["record"]) for s in document["stations"]]
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opening)
+    loaded = pool.load_registry(path, pin)
+    assert len(loaded["stations"]) == 2
+
+
 def terminal(lease):
     root = lease.pool.registry["control_root"] / "requests" / lease.request_id
     root.mkdir(parents=True, exist_ok=True)
@@ -386,12 +423,15 @@ def test_review_f03_acquire_preserves_primary_interrupt_and_releases_once(tmp_pa
     assert kernel.releases == 1
 
 
-@pytest.mark.parametrize("damage", ["missing_root", "record_directory"])
+@pytest.mark.parametrize("damage", ["missing_root", "record_directory", "missing_record"])
 def test_station_unavailable_before_registry_load_is_local(tmp_path, damage):
     path, pin, document = registry(tmp_path, 2)
     broken, healthy = document["stations"]
     if damage == "missing_root":
         Path(broken["root"]).rename(tmp_path / "retained-root")
+    elif damage == "missing_record":
+        record = Path(broken["record"])
+        record.rename(record.with_suffix(".json.retained"))
     else:
         record = Path(broken["record"])
         record.rename(record.with_suffix(".json.retained"))
