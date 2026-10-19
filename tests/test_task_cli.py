@@ -115,13 +115,27 @@ def planned(tmp_path, capsys, case):
     )
 
 
-@pytest.mark.parametrize("command", [None, "import", "prepare", "plan", "run", "collect"])
+@pytest.mark.parametrize(
+    "command", [None, "import", "prepare", "plan", "run", "collect", "dispatch"]
+)
 def test_help_reads_nothing(monkeypatch, capsys, command):
     monkeypatch.setattr(runner, "read_host_input_bytes", lambda **_: pytest.fail("file read"))
     monkeypatch.setattr(fixtures.slice_run, "_session_store", lambda: pytest.fail("key read"))
     args = ["task", *([] if command is None else [command]), "--help"]
     assert cli.main(args) == 0
     assert "usage: local-agent-bridge task" in capsys.readouterr().out
+
+
+def test_top_level_help_advertises_station_dispatch_without_io(monkeypatch, capsys):
+    monkeypatch.setattr(runner, "read_host_input_bytes", lambda **_: pytest.fail("file read"))
+    monkeypatch.setattr(fixtures.slice_run, "_session_store", lambda: pytest.fail("key read"))
+    assert cli.main(["--help"]) == 0
+    captured = capsys.readouterr()
+    assert not captured.err
+    assert "dispatch" in captured.out
+    assert "task dispatch --help" in captured.out
+    for command in cli.SUBCOMMANDS:
+        assert command in captured.out
 
 
 @pytest.mark.parametrize(

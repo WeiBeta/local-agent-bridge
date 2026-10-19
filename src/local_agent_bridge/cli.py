@@ -3,8 +3,8 @@
 The legacy commands ``prepare``, ``collect`` and ``plan`` come from the slice
 workspace module, ``run`` from the single-run module, two fixed session
 commands from this entry, ``shadow`` routes to the offline replay module and
-``cursor`` to the fixed Cursor call. ``task`` owns the five Task v1 operations.
-The commands keep their own parsers; this entry
+``cursor`` to the fixed Cursor call. ``task`` owns the five Task v1 operations
+and station dispatch. The commands keep their own parsers; this entry
 only routes the first token. There is no pass
 through for arbitrary commands, models, URLs, paths or permission rules, and the
 tool is not an OS sandbox.
@@ -42,9 +42,11 @@ Bounded local source-slice bridge (Windows 11). Commands:
   session-key-init  explicitly create this product's Windows session key
   shadow    offline fingerprint, snapshot, replay or comparison of sealed bundles
   cursor    preflight (default) or execute one fixed Cursor CLI call
-  task      import, prepare, plan, run or collect a frozen Task v1 workspace
+  task      import, prepare, plan, run or collect a frozen Task v1 workspace;
+            or dispatch across configured stations
 
-The Bridge commands, shadow and cursor have their own ``--help``; session commands take no options.
+The Bridge commands, shadow, cursor and task have their own ``--help`` (see
+``task dispatch --help`` for station dispatch); session commands take no options.
 Legacy slice limits (Task v1 has its separate frozen contract):
 
   * only existing text files can be prepared; added or deleted files are refused

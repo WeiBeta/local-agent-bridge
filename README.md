@@ -15,9 +15,9 @@ toolsmith 内容不属于本包，本文件取代旧 README 作为本包首页�
    会话，按文件长度计量、整包滚动；见 [docs/SESSION_STORAGE.md](docs/SESSION_STORAGE.md)。
 4. **离线影子回放**：只读取已封口会话，输出内容无关的终态、工具/文件集合与用量观察，并可保存自包含重加密快照；
    不回放指令、不调用模型；见 [docs/SHADOW_USAGE.md](docs/SHADOW_USAGE.md)。
-5. **Task v1 CLI 候选**：`task import/prepare/plan/run/collect` 包装冻结输入、任务副本、固定宿主生命周期与结果收集；
-   可信根和摘要由管理单独供给。只完成离线自检，独立 Review、首次真实 Task R 和部署分别待验；见
-   [docs/TASK_WORKSPACE_CONTRACT.md](docs/TASK_WORKSPACE_CONTRACT.md) 的 CLI v1 章节。
+5. **Task v1 CLI 与工位调度候选**：`task import/prepare/plan/run/collect` 包装冻结输入、任务副本、固定宿主生命周期与结果收集，另提供单单工位调度 `task dispatch`（见 `task dispatch --help`）；
+   五步工作流的可信根和摘要由管理单独供给，工位调度由管理提供工单、注册表与注册表摘要。各版本与范围（五步工作流、工位调度、首次观测与原生项目模式）的验证、独立审查与部署门禁状态详见
+   [docs/TASK_WORKSPACE_CONTRACT.md](docs/TASK_WORKSPACE_CONTRACT.md) 与 [docs/BRIDGE_USAGE.md](docs/BRIDGE_USAGE.md)。
 
 ## 安装与安装资源
 
@@ -39,7 +39,7 @@ wheel 内只包含 `local_agent_bridge` 包与两个打包资源：`resources/st
 
 | 入口 | 作用 |
 | --- | --- |
-| `local-agent-bridge` | 原八条切片/会话命令及 `task` 的五条 Task v1 操作 |
+| `local-agent-bridge` | 原八条切片/会话命令及 `task` 的五条 Task v1 操作与工位调度 |
 | `local-agent-bridge-h3` | 只注册四个 H3 MCP 工具的标准输入输出 MCP 服务 |
 
 `local-agent-bridge --help` 列出九条顶层命令与当前限制。各子命令用各自 `--help` 查看参数；原八条参数为：
@@ -55,10 +55,17 @@ local-agent-bridge shadow {fingerprint|snapshot|replay|compare} ...
 local-agent-bridge cursor  run --task-root <dir> --run-root <new dir> --exe <agent.ps1> --exe-sha256 <64 hex> [--execute]
 ```
 
-旧切片 `run` 缺省只做预检：不写文件、不启动进程。`--execute` 是单独的一次性授权，执行一次固定本地 CLI 调用。
-Task 命令使用单个绝对路径 `--spec`；`prepare/plan/run` 另须明确的 `--trusted-control-root` 和
-`--trusted-inputs-sha256`。`task run` 缺省不启动宿主，但在全新 `run_root` 保存原 NotRun 回执；
-只有显式 `--execute` 且原 C 门禁通过才启动一次。规格、退出码与原始字节规则见上述合同章节。
+旧切片 `run` 缺省只做预检：不写文件、不启动进程。`--execute` 是单独的一次性授权，执行一次固定本地 CLI 调用。注意旧切片命令仅限于既有文本文件的小切片修改，而 Task v1 具有独立的工作区合同与工程树语义（详见 [docs/TASK_WORKSPACE_CONTRACT.md](docs/TASK_WORKSPACE_CONTRACT.md)）。
+
+Task 命令保留五步工作流（`task import`、`task prepare`、`task plan`、`task run`、`task collect`），使用单个绝对路径 `--spec`；其中 `prepare/plan/run` 另须管理供给的明确 `--trusted-control-root` 和 `--trusted-inputs-sha256`。`task run` 缺省不启动宿主，但在全新 `run_root` 保存原 NotRun 回执；只有显式 `--execute` 且原 C 门禁通过才启动一次。规格、退出码与原始字节规则见上述合同章节。
+
+除五步工作流外，`task` 另提供面向配置工位的独立调度命令：
+
+```text
+local-agent-bridge task dispatch --spec <absolute-spec> --pool-registry <absolute-registry> --pool-sha256 <raw-sha256>
+```
+
+上述三个参数均由管理单独供给；`dispatch` 不接收五步工作流的 `--trusted-control-root` 与 `--trusted-inputs-sha256` 参数对。默认只验证工单与注册表，输出 `PreparedOnly`（`launch_count=0`、`task_root=null`），不租借工位、不落地任务副本、不使用宿主或会话密钥。仅在具备适用任务授权时才显式追加 `--execute`；调度完成输出 `Collected` 且退出码为 0 表示控制与收集生命周期闭合，不代表管理 `Accepted`。完整工位政策与发布核验见 [docs/BRIDGE_USAGE.md](docs/BRIDGE_USAGE.md) 与 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)。查看参数请用 `local-agent-bridge task dispatch --help`。
 
 在另一台机器上让 Codex 调用已安装的 Bridge：见 [skills/local-agent-bridge](skills/local-agent-bridge/SKILL.md)（Skill 只做调用，不安装、不升级、不登录、不改配置）。
 
@@ -92,7 +99,7 @@ Task 命令使用单个绝对路径 `--spec`；`prepare/plan/run` 另须明确�
   SHA-256 `dd3a463f…`）。仍**未**验收：MCP 客户端接入、主机部署、H3 容器时长/帧率独立探测、显存实际
   释放、后处理、agy 上游身份与费用可见性。逐项边界记录在导出来源仓库的验收报告
   （`docs/reviews/LAB_LIVE_ACCEPTANCE_01.md`）与本地归档中；该报告与原始日志**不在本仓库**，也不随发行包分发。
-- 切片桥只覆盖既有文本文件的小切片；不支持新增/删除文件、跨根 diff、二进制内容、并发运行或 Zcode。
+- 旧切片桥命令只覆盖既有文本文件的小切片；不支持新增/删除文件、跨根 diff、二进制内容、并发运行或 Zcode（Task v1 工作区语义遵循其独立合同）。
 - 该工具不是 OS 沙箱，不构成任何授权；`plan` 不是批准。
 - 任务工作副本与 `run_root/private/settings.*.bin` 仍可能是 ACL 私有明文：加密会话不代表整机无明文。
 - 离线影子回放不能推断未出现在 CLI 管道中的隐藏模型能力，也不构成模型复跑成功或候选接受。
