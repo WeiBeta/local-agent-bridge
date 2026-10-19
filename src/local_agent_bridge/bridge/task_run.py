@@ -110,10 +110,42 @@ _RECEIPT_KEYS = {
     "provenance_refs",
 }
 _STABLE_RECEIPT_KEYS = _RECEIPT_KEYS - {"host_version", "host_identity_files"}
+_NATIVE_ERROR_TEXT_LIMIT = 512
+_NATIVE_UNKNOWN_ERROR = (
+    "Unknown",
+    "Native reported an unsuccessful terminal state; details withheld.",
+)
+_NATIVE_CAPACITY_ERROR = (
+    "ProviderCapacityUnavailable",
+    "Upstream reported UNAVAILABLE 503 with no model capacity.",
+)
 
 
 def _is_station_receipt(receipt: dict) -> bool:
     return type(receipt.get("contract_version")) is int and receipt["contract_version"] in {4, 6}
+
+
+def _native_error_summary(status: str, error: object) -> tuple[str | None, str | None]:
+    """Project an untrusted terminal error as fixed labels, never source text."""
+    if status == "SUCCESS" and error is None:
+        return None, None
+    if status == "SUCCESS":
+        return _NATIVE_UNKNOWN_ERROR
+    if type(error) is not str:
+        return _NATIVE_UNKNOWN_ERROR
+    text = " ".join(error[:_NATIVE_ERROR_TEXT_LIMIT].split())
+    if (
+        re.search(r"(?:^|[^A-Za-z0-9])UNAVAILABLE(?:[^A-Za-z0-9]|$)", text, re.I) is not None
+        and re.search(r"(?:^|[^A-Za-z0-9])503(?:[^A-Za-z0-9]|$)", text) is not None
+        and re.search(
+            r"(?:^|[^A-Za-z0-9])no\s+capacity\s+available(?:[^A-Za-z0-9]|$)",
+            text,
+            re.I,
+        )
+        is not None
+    ):
+        return _NATIVE_CAPACITY_ERROR
+    return _NATIVE_UNKNOWN_ERROR
 
 
 FIRST_OBSERVATION_COMPOSITION = {"status": "Unknown", "scope": "FirstObservation"}
@@ -1731,6 +1763,7 @@ def _station_conversation(writer: session.SessionWriter, root: Path) -> dict:
         status = terminal[0].get("status")
         if type(status) is not str or len(status) > 128:
             raise TaskRunError("NativeConversationUnverified")
+        error_category, error_summary = _native_error_summary(status, terminal[0].get("error"))
         return {
             "status": "Observed" if matched else "Mismatch",
             "conversation_id": cid,
@@ -1738,6 +1771,8 @@ def _station_conversation(writer: session.SessionWriter, root: Path) -> dict:
             "model": model,
             "permission_mode": mode,
             "result_status": status,
+            "error_category": error_category,
+            "error_summary": error_summary,
         }
     except (OSError, TaskRunError, contract.BridgeContractError, session.SessionError):
         return {"status": "Unknown", "conversation_id": None}

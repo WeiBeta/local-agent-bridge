@@ -73,6 +73,7 @@ EXPECTED_TEST_MODULES = {
     "tests/test_h3_adapter.py",
     "tests/test_h3_mcp.py",
     "tests/test_legacy_launch_receipts.py",
+    "tests/test_native_error_summary.py",
     "tests/test_session_capture.py",
     "tests/test_session_retention.py",
     "tests/test_shadow_replay.py",

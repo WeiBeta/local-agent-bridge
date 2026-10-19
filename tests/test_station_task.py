@@ -70,6 +70,7 @@ def install_host(
     closed=True,
     exit_code=0,
     conversation="valid",
+    result_error=None,
     before_complete=None,
 ):
     calls = []
@@ -161,6 +162,7 @@ def install_host(
                 "result": {
                     "conversation_id": str(uuid.uuid4()) if conversation == "foreign" else cid,
                     "status": "SUCCESS" if exit_code == 0 else "ERROR",
+                    **({} if result_error is None else {"error": result_error}),
                 },
             },
         ]
@@ -934,10 +936,13 @@ def install_stable_host(
     version=b"1.3.4\n",
     conversation="valid",
     protocol=None,
+    result_error=None,
 ):
     import test_agy_host as probes
 
-    business_calls = install_host(case, monkeypatch, conversation=conversation)
+    business_calls = install_host(
+        case, monkeypatch, conversation=conversation, result_error=result_error
+    )
     business_spawn = fixtures.slice_run.spawn_suspended_in_job
     diagnostic_calls = probes.probe_host(
         monkeypatch,
@@ -961,6 +966,8 @@ def install_stable_host(
             del events[-1]["result"]["conversation_id"]
         elif protocol == "error":
             events[-1]["result"]["status"] = "ERROR"
+            if result_error is not None:
+                events[-1]["result"]["error"] = result_error
         process.stdout = io.BytesIO(b"".join(fixtures.canonical(event) + b"\n" for event in events))
         return process
 

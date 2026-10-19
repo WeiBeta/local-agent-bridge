@@ -57,6 +57,7 @@ only-include = [
   "tests/test_task_input.py",
   "tests/test_task_cli.py",
   "tests/test_task_run.py",
+  "tests/test_native_error_summary.py",
   "tests/test_agy_host.py",
   "tests/test_station_pool.py",
   "tests/test_station_task.py",
