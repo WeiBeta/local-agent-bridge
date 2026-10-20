@@ -139,6 +139,8 @@ v3 入口用明确首次记录身份回收，绑定原 Plan 与实际新 UID；�
 
 ### 四工位薄调度候选（LAB-AGY-STATION-IMPL-01）
 
+以下记录 v4 实现时的验收状态；v6 使用 §20 独立合同并按获准回执核验，不把本段“只有离线自检”当当前 v6 或目标机安装状态。
+
 新增固定入口 `local-agent-bridge task dispatch --spec <绝对路径> --pool-registry <绝对路径> --pool-sha256 <管理冻结原字节SHA>`。默认只验证注册表、工单与说明，输出 PreparedOnly/0，不取锁、不导入、不建任务目录。另有适用真实许可时才追加 `--execute`。调用方不能覆盖 model、argv、入口或权限规则；此命令本身不授予执行权限。
 
 每个已批准请求由自己的调用进程完成等待、import、prepare、plan、run、collect、release。注册表配置 1..4 个工位，本目标为四位；所有工位支持 Coding 与 Review。Testing 使用 Coding/execute、只读 work 和 out/scratch 输出；Mixed 使用 Coding 与允许的 work 写入。每单由控制器选取稳定原生根中的 `jobs/<fresh UUID>`，原生根无需清空，旧单保持保留。不得把旧根当 cwd 或直接复用上一单目录。
@@ -151,7 +153,7 @@ v3 入口用明确首次记录身份回收，绑定原 Plan 与实际新 UID；�
 
 每单的控制材料位于 `control_root/requests/<request UUID>`，包含独立 snapshot、trusted、run、result。dispatch.json 是释放前回执，release_state=Pending；dispatch-final.json 才是调用完成后的回执。Collected/退出 0 表示收集完成且控制生命周期闭合，business 仍为 Candidate 或 Incomplete、management_decision=null。预期红测试、Review findings 或已确认退出的普通宿主失败可以正常释放；不能把这些情况统一封位。采集/进程清理或原生绑定未确认时只暂停该工位，不重跑；其他工位可继续。
 
-本实现只有离线自检。独立 Review、四路真实重叠加第五单连续复用、业务接受、新冻结安装与部署尚需各自门禁，旧单次 PassScoped 不覆盖它们。
+本节“只有离线自检”是 v4 实现时状态。后续 v6 与具体安装的验收、部署以 §20 和该机回执为准，不据本段推断当前结果；旧单次 PassScoped 不覆盖任何后续范围。
 
 ### agy 自动更新解耦候选（receipt v6）
 

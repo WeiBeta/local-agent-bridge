@@ -1,6 +1,6 @@
 # Local Agent Bridge 参数与输出参考
 
-本文件随 Skill 安装，不依赖仓库外绝对路径。命令/schema 对照产品源码基线 `0e28d2bd09c88fcc2cecff9564eb6e2c8192db28`（2026-10-13）；目标安装按批准回执与获准的 help 核验。本 Skill 不安装、不升级、不登录、不改配置、不初始化密钥。
+本文件随 Skill 安装，不依赖仓库外绝对路径。命令/schema 对照产品源码基线 `375d822aa2341c35d06c1d6092ad9e0d25b5f8df`（2026-10-20 文档核对）；目标安装按批准回执与获准的 help 核验。本 Skill 不安装、不升级、不登录、不改配置、不初始化密钥。
 
 ## 安装位置与版本
 
@@ -28,6 +28,7 @@ task dispatch --spec <absolute-json-spec> --pool-registry <absolute-registry> --
 | registry | `contract_version=1`、`id`、统一 `control_root`、完整 `deployment_receipt` seed、`policy`、1..4 条 `stations` |
 | station | `id`、`native_id`、`root`、`record`、`root_identity`；后者为 `st_dev`/`st_ino`；相同工位的调用共用 station ID/control root |
 | 逐单 deployment receipt | `contract_version=4`，加入 `native_project` 与 `station_binding`；不能把 CLI spec 版本改成 4 |
+| 逐单 deployment receipt v6（显式 opt-in） | 顶层恰为 v4 字段删除 `host_version`、`host_identity_files`；`host_entry` 恰为 `{path, install_root, identity_mode:"StableInstalledEntry"}`；仅 agy，registry 仍为 v1，`runtime_acceptances=[]`；旧 v4 seed 不自动升级 |
 
 `task` 恰含 `role`、`capabilities`、`read_roots`、`write_roots`、`protected_paths`、`required_outputs`、`acceptance_ids`、`deadline_seconds`、`source_output_bytes_limit`。角色只有 Coding/Review；Testing 为 Coding/execute 且 work 只读，Mixed 为 Coding 工程操作；Review work 只读，写入型测试放 scratch。能力为 execute/web_reference/prepare_dependencies，当前 station 任务的后两项必须 false。相对任务路径数组与验收 ID 按合同排序去重；deadline/output 服从 policy 上限，deadline 最多 3600 秒。入场 timeout 为 null 或 0..86400 秒，实际值仍按本次获批预算。
 
@@ -36,6 +37,16 @@ registry SHA 固定原字节，不能由 Worker 换算替代。默认 `PreparedO
 `--execute` 只用于本次明确授权的任务。产品 admission/native mutex 管理空闲位与满位等待；选中工位后在 `root/jobs/<fresh UUID>` 完成 import/prepare/plan/run/collect/release，每单独立 request/root/result/capture 和新会话。调用方不手写 Accepted，不重置 state 或另建池绕过忙位。
 
 `PreparedOnly` / `Collected` 的 CLI 退出为 0，其他 dispatch 结果为 2；中断/解析异常仍按 CLI 错误回执。control_complete、launch_count=0/1/null、宿主退出、业务 Candidate/Incomplete、管理 Accepted 分开记录。`Collected` 只表示本单收集与控制收尾，不等于业务成功。
+
+### v6 稳定安装入口（显式 opt-in）
+
+仅新的原生 agy 工位可显式采用产品合同 §20 的 `StableInstalledEntry`。`path` 必须是获准 `install_root` 下唯一 `agy.exe`；供应商 hash/inode/数值版本只记当次观察，不写回 receipt、plan 或 registry。Bridge/toolchain 字节仍 strict 绑定，正常 CLI 更新不要求重新部署 Bridge。旧 v1–v5 strict 语义及 v4 工位合同保留；不支持 Cursor v6，旧 v4 seed 不会自动升级，未知或混合 seed 拒绝。
+
+启用前由管理一次冻结新 wheel、实际模块 catalog、新 receipt/profile/registry SHA 与诊断额度；复用现有 Project 只给绑定预览，不写 global settings、原生 record 或 AGENTS。源码 worktree sync、依赖同步或文档更新不是生产刷新。
+
+实际执行前最多调用两条无 prompt `--version`/`--help` 诊断，再最多一次业务。诊断各 `launch_count=0/1/null`，总和为两者之和；任一未知则总数为 null。业务 `launch_count` 仍为 0/1/null，诊断与业务计数另算。每条诊断最多 10 秒并共用任务剩余预算；Version/Help 诊断的流 RAM 上限分别为 8 KiB/256 KiB。失败立即停止且不重试；诊断或控制 cleanup 已闭合的失败可正常释放工位，释放不等于业务 Accepted。
+
+诊断观察仅保存单个脱敏 `run/agy-host-observation.json`，无 raw help/stderr 或 key。业务终态另保存 `native-conversation.json`：`result_status` 与原 SUCCESS 门禁不变；身份匹配的 Observed 非 SUCCESS 时，已知 503/no-capacity 样本输出固定 `ProviderCapacityUnavailable` 与短说明，其它错误固定为 `Unknown`，不转发上游原文。Mismatch/Unknown 不归属具体原因；新增错误字段不改变 blockers、退出码或业务接受。
 
 ## Task v1 多步工作流
 

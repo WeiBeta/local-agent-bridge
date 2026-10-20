@@ -54,7 +54,7 @@ fresh 独立离线复核（112 通过、无 actionable finding）。仅新增 15
 | 代码风格 | `uv run ruff check .` 与 `uv run ruff format --check .` |
 | 构建清单与哈希 | `uv build` 的 wheel / sdist 条目数、字节数与 SHA-256 |
 | 隔离安装 | wheel 装入全新 venv，确认导入来自该环境 `site-packages` |
-| 入口面 | `local-agent-bridge --help` 七条子命令；六条 Bridge 子命令各自 `--help`；`shadow --help` 四种操作 |
+| 入口面 | 2026-09-29 基线为 `local-agent-bridge --help` 七条子命令；Task CLI 候选后现行入口共九条，发布时按下文 Task CLI 复核项重新核验 |
 | H3 工具面 | 只注册 `h3_backend_status`、`h3_generate_video`、`h3_postprocess_video`、`h3_job_status` |
 | 旧模块隔离 | 隔离环境内 `ask_ai_mcp` 不可导入；wheel/sdist 清单不含旧包路径 |
 | 合成的会话与影子入口 | 注入测试密钥与临时状态根，跑通 `session-status`、`session-key-init`（桩化）、`shadow` 四条操作 |
